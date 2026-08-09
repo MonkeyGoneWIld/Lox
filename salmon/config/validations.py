@@ -64,10 +64,21 @@ class QobuzSettings(BaseStruct):
 
 class DeezerSettings(BaseStruct):
     arl: str | None = None
+    # Where finished downloads land. Falls back to directory.download_directory.
+    download_dir: str | None = None
+    preferred_format: Literal["FLAC", "MP3_320", "MP3_128"] = "FLAC"
+    # Accept a lower quality when the preferred one is not available to the account.
+    format_fallback: bool = True
+    concurrent_downloads: Annotated[int, msgspec.Meta(ge=1, le=8)] = 2
+
+    def __post_init__(self):
+        if self.download_dir and not os.path.isdir(self.download_dir):
+            raise ValueError("metadata.deezer.download_dir is not a valid directory")
 
 
 class Metadata(BaseStruct):
     discogs_token: str | None = None
+    apple_music_token: str | None = None
     qobuz: QobuzSettings = msgspec.field(default_factory=QobuzSettings)
     tidal: TidalSettings = msgspec.field(default_factory=TidalSettings)
     deezer: DeezerSettings = msgspec.field(default_factory=DeezerSettings)
@@ -211,6 +222,52 @@ class Upload(BaseStruct):
     compression: UploadCompression = msgspec.field(default_factory=UploadCompression)
 
 
+class Checker(BaseStruct):
+    """Budgets and filters for the tracker checkers.
+
+    Tracker APIs punish bursts, so nothing here is a background job: the UI only
+    spends budget when you press a check button. These numbers bound how much a
+    single press can cost.
+    """
+
+    # Hard ceiling on tracker calls in any rolling window. A check refuses to
+    # start rather than overdraw this.
+    tracker_budget: Annotated[int, msgspec.Meta(ge=1)] = 120
+    tracker_budget_window: Annotated[int, msgspec.Meta(ge=10)] = 600
+    # Minimum gap between two calls to the same tracker.
+    tracker_call_delay: Annotated[float, msgspec.Meta(ge=0.0)] = 2.0
+    # Extra pause when moving from one tracker to another.
+    tracker_switch_delay: Annotated[float, msgspec.Meta(ge=0.0)] = 5.0
+    # Consecutive failures before a tracker is benched.
+    failure_threshold: Annotated[int, msgspec.Meta(ge=1)] = 3
+    cooldown_seconds: Annotated[int, msgspec.Meta(ge=0)] = 300
+
+    # Album filters, applied before any tracker is contacted.
+    min_tracks: Annotated[int, msgspec.Meta(ge=0)] = 0
+    min_date: str | None = None
+    max_date: str | None = None
+
+    # Minimum confidence for a Deezer release to be offered as a request fill.
+    min_confidence: Annotated[float, msgspec.Meta(ge=0.0, le=1.0)] = 0.70
+
+    # Where scan state is kept. Defaults to <download_directory>/.salmon-checker.
+    state_dir: str | None = None
+
+
+class Notifications(BaseStruct):
+    """Optional Discord webhook notifications for checker results."""
+
+    enabled: bool = False
+    discord_webhook: str | None = None
+    # Post automatically when a scan finds something, rather than on request.
+    notify_missing: bool = False
+    notify_fillable: bool = False
+
+    def __post_init__(self):
+        if self.enabled and not self.discord_webhook:
+            raise ValueError("notifications.enabled is true but no discord_webhook is set")
+
+
 class Cfg(BaseStruct):
     "This class defines the schema that msgspec uses to parse the config"
 
@@ -220,3 +277,5 @@ class Cfg(BaseStruct):
     tracker: Tracker = msgspec.field(default_factory=Tracker)
     seedbox: list[Seedbox] = msgspec.field(default_factory=list)
     upload: Upload = msgspec.field(default_factory=Upload)
+    checker: Checker = msgspec.field(default_factory=Checker)
+    notifications: Notifications = msgspec.field(default_factory=Notifications)

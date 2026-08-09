@@ -67,10 +67,18 @@ user_auth_token = 'user_auth_token'
 # if you are using salmon from a non-english country, set this to true to avoid retrieving non-english genres
 # no_genres_from_qobuz = False
 
-# Optional Deezer ARL cookie, used to make authenticated requests to deezer.com.
-# Without it, requests fall back to unauthenticated (some metadata may be missing).
+# Deezer ARL cookie. Required for downloading, channel browsing and FLAC
+# availability checks. Without it only public search and charts work.
 # [metadata.deezer]
 # arl = 'your-arl-cookie'
+# Where downloads land. Defaults to directory.download_directory.
+# download_dir = '.music'
+# preferred_format = 'FLAC'   # FLAC, MP3_320 or MP3_128
+# format_fallback = true      # accept a lower quality if the preferred one is unavailable
+# concurrent_downloads = 2
+
+# Optional, only used to verify request track counts against Apple Music.
+# apple_music_token = 'your-developer-token'
 
 
 # ===============================
@@ -205,3 +213,44 @@ session = 'get-from-site-cookie'
 # compress_spectrals = true
 # lma_comment_in_t_desc = false
 # use_upc_as_catno = true
+
+
+# ===============================
+# TRACKER CHECKER
+# ===============================
+# Budgets for the Missing and Requests tabs. Nothing here runs on a timer: the
+# UI only spends tracker budget when you press a check button. These values
+# bound how much a single press can cost.
+# [checker]
+# # Hard ceiling on tracker calls per rolling window. A check refuses to start
+# # rather than overdraw this, and stops mid-scan rather than exceed it.
+# tracker_budget = 120
+# tracker_budget_window = 600
+# # Minimum gap between two calls to the same tracker.
+# tracker_call_delay = 2.0
+# tracker_switch_delay = 5.0
+# # Consecutive failures before a tracker is benched for cooldown_seconds.
+# failure_threshold = 3
+# cooldown_seconds = 300
+#
+# # Album filters, applied before any tracker is contacted.
+# min_tracks = 0
+# min_date = '2025-01-01'
+# max_date = ''
+#
+# # Minimum confidence for a Deezer release to be offered as a request fill.
+# min_confidence = 0.70
+#
+# # Where scan state lives. Defaults to <download_directory>/.salmon-checker
+# state_dir = ''
+
+
+# ===============================
+# NOTIFICATIONS
+# ===============================
+# [notifications]
+# enabled = false
+# discord_webhook = 'https://discord.com/api/webhooks/...'
+# # Post automatically when a scan finds something, instead of only on request.
+# notify_missing = false
+# notify_fillable = false

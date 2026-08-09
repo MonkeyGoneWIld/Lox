@@ -11,8 +11,58 @@
 > - **Folders are moved, not copied** — releases are moved into `download_directory` with `shutil.move` instead of being hardlinked or copied, and an emptied source parent directory is removed. The `hardlinks` and `remove_source_dir` options are gone.
 > - **Lossy-master prompts always ask** — even with `yes_all` enabled, you are still asked whether a release is lossy mastered and for the approval comment. This is deliberate: auto-answering "no" would assert something about a release nobody looked at.
 > - **No upstream footer** — the "Uploaded with smoked-salmon" line is dropped from torrent and transcode descriptions.
+> - **A web UI** — a deemix-shaped interface with search, explore, download, tracker checking and uploading in one place. See below.
 >
-> Everything below is upstream's README and still broadly applies.
+> Everything below the web UI section is upstream's README and still broadly applies.
+
+---
+
+## 🎛 Web UI
+
+```bash
+salmon ui
+```
+
+Opens on `http://127.0.0.1:55110` (configurable under `[upload.web_interface]`). The layout follows deemix — fixed
+sidebar, card grid, slide-in detail panel — but none of deemix's code is used, so this stays Apache-2.0 and needs no
+Node toolchain.
+
+| Tab | What it does | Touches a tracker? |
+|---|---|---|
+| **Search** | Deezer albums, tracks and artists. Download straight from a card. | No |
+| **Explore** | Deezer channels, charts by genre, and editorial new releases. Channels are read from the page's `__DZR_APP_STATE__`, the same surface deemix never exposed. | No |
+| **Missing** | Paste playlist / channel-module / album URLs → filtered candidate list → **Check trackers** button. | Only on the button |
+| **Requests** | Fetch open RED/OPS requests, match them against Deezer, verify track counts against Discogs, MusicBrainz, Bandcamp, Beatport, Qobuz, Tidal, Apple Music and Metal-Archives. | Fetch + check only |
+| **Downloads** | Live per-track progress for the built-in Deezer downloader. | No |
+| **Uploads** | Lists release folders and runs the salmon upload flow, streaming its output into a console you can type answers into. | Upload only |
+| **Settings** | Read-only view of config and stored scan history. | No |
+
+### Tracker budget
+
+Trackers time out hard and punish bursts, so **nothing contacts a tracker unless you press a check button.** Every
+tracker call goes through one gateway that:
+
+- spends from a token bucket (`checker.tracker_budget` calls per `checker.tracker_budget_window` seconds) and **refuses
+  to overdraw it** — a scan stops early and keeps its place rather than blowing the limit,
+- spaces calls by `checker.tracker_call_delay`,
+- opens a circuit breaker after `checker.failure_threshold` consecutive failures and benches that tracker for
+  `checker.cooldown_seconds`,
+- shows the remaining budget per tracker in the sidebar at all times.
+
+Everything that *can* be answered without a tracker is: release date and track-count filters, FLAC availability,
+streamability, Deezer match scoring and external track-count verification all run first, for free, so tracker calls are
+only spent on releases that already passed every other gate.
+
+### Downloading
+
+Set `metadata.deezer.arl` and downloads work in-process: stream URLs are resolved through Deezer's media API, the
+Blowfish-striped payload is decrypted as it streams, tags and cover art are written from the Deezer metadata, and the
+result is a plain release folder the upload flow already understands.
+
+### Credentials
+
+Every key lives in `config.toml`, which is gitignored — ARL, tracker sessions/API keys, Discogs/Qobuz/Tidal/Apple Music
+tokens and the optional Discord webhook. None of them are ever written to the repo. See `data/config.default.toml`.
 
 ---
 
