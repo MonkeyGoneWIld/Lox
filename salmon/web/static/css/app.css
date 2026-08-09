@@ -388,6 +388,37 @@ button.ghost { background: none; }
 
 .empty { color: var(--text-dim); text-align: center; padding: 44px 0; }
 
+/* ---------- per-album tracker check ---------- */
+
+.checkbox-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin: 16px 0;
+}
+
+.verdict { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+.verdict-head { margin-bottom: 6px; }
+
+.hitlist { list-style: none; padding: 0; margin: 0; font-size: 12.5px; }
+.hitlist .hit { display: flex; flex-direction: column; gap: 1px; padding: 6px 0 6px 9px; border-left: 2px solid var(--border); margin-bottom: 5px; }
+.hitlist .hit.matched { border-left-color: var(--ok); }
+
+.watchrow { border-bottom: 1px solid var(--border); padding: 8px 0; }
+.watchrow:last-of-type { border-bottom: 0; }
+
+.filebtn { border: 1px solid var(--border); border-radius: 8px; padding: 9px 16px; background: var(--bg-input); }
+.filebtn:hover { border-color: var(--accent); }
+
+select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+}
+
+#watchlist-form input[type="text"] { flex: 1; min-width: 150px; }
+
 .spinner {
   width: 15px;
   height: 15px;

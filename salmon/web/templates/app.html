@@ -68,6 +68,25 @@
 
       <section class="view" id="view-missing">
         <div class="panel">
+          <h2>Saved searches</h2>
+          <p class="hint">Re-runnable Deezer queries. Running one is free &mdash; it feeds albums into the collect step below.</p>
+          <div id="watchlists"></div>
+          <form class="row" id="watchlist-form">
+            <input type="text" id="watchlist-name" placeholder="Name, e.g. New house releases">
+            <select id="watchlist-kind">
+              <option value="new_releases">New releases (genre)</option>
+              <option value="chart">Chart (genre)</option>
+              <option value="search">Album search</option>
+              <option value="artist">Artist discography</option>
+              <option value="playlist">Playlist</option>
+              <option value="module">Channel module</option>
+            </select>
+            <input type="text" id="watchlist-target" placeholder="Genre ID, search text, or entity ID">
+            <button type="submit">Save search</button>
+          </form>
+        </div>
+
+        <div class="panel">
           <h2>1 &middot; Collect from Deezer</h2>
           <p class="hint">Paste playlist URLs, channel module URLs or album URLs, one per line. This step is free.</p>
           <textarea id="missing-sources" rows="4" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-..."></textarea>
@@ -102,6 +121,10 @@
           <p class="hint">Fetching a page costs one tracker call. Checking each request costs one more.</p>
           <textarea id="requests-ids" rows="3" placeholder="Or paste request IDs / URLs, one per line"></textarea>
           <div class="row">
+            <label class="check filebtn">
+              <input type="file" id="requests-file" accept=".txt,.csv,.log,text/plain" hidden>
+              Upload a list&hellip;
+            </label>
             <button class="primary" id="requests-check">Check selected</button>
             <span class="hint" id="requests-selected-count"></span>
           </div>
@@ -121,9 +144,11 @@
       <section class="view" id="view-uploads">
         <div class="row toolbar">
           <button id="folders-refresh">Refresh folders</button>
+          <span class="hint">Upload to:</span>
           <div class="segmented" id="upload-tracker"></div>
           <span class="hint" id="uploads-dir"></span>
         </div>
+        <p class="hint" id="linking-note"></p>
         <div id="folders-list"></div>
         <div class="panel" id="upload-console-panel" hidden>
           <h2>Upload console</h2>

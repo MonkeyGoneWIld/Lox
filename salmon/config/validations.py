@@ -166,10 +166,16 @@ class UploadWebInterface(BaseStruct):
     host: str = "127.0.0.1"
     port: int = 55110
     static_root_url: str = "/static"
+    # Shared secret required by every API call. Unset means no authentication,
+    # which is only safe while host stays on loopback: the API can spend tracker
+    # budget, read your Deezer session and start uploads.
+    auth_token: str | None = None
 
     def __post_init__(self):
         if self.port < 1 or self.port > 65535:
             raise ValueError("Port number is invalid")
+        if self.auth_token is not None and len(self.auth_token) < 16:
+            raise ValueError("upload.web_interface.auth_token must be at least 16 characters")
 
 
 class UploadRequests(BaseStruct):
@@ -254,6 +260,29 @@ class Checker(BaseStruct):
     state_dir: str | None = None
 
 
+class Linking(BaseStruct):
+    """Hardlinked per-tracker release folders, cross-seed style.
+
+    Uploading one release to two trackers needs two torrents pointed at two
+    paths. Hardlinking means those paths cost no extra disk.
+    """
+
+    enabled: bool = False
+    # Root of the torrent client's upload/seeding area.
+    link_dir: str | None = None
+    method: Literal["hardlink", "symlink", "copy"] = "hardlink"
+    # <link_dir>/<TRACKER>/<release> when true, <link_dir>/<release> when false.
+    per_tracker_dirs: bool = True
+    # Hardlinks cannot cross filesystems. Copy instead of failing when that happens.
+    fallback_to_copy: bool = False
+
+    def __post_init__(self):
+        if self.enabled and not self.link_dir:
+            raise ValueError("linking.enabled is true but linking.link_dir is not set")
+        if self.link_dir and not os.path.isdir(self.link_dir):
+            raise ValueError("linking.link_dir is not a valid directory")
+
+
 class Notifications(BaseStruct):
     """Optional Discord webhook notifications for checker results."""
 
@@ -278,4 +307,5 @@ class Cfg(BaseStruct):
     seedbox: list[Seedbox] = msgspec.field(default_factory=list)
     upload: Upload = msgspec.field(default_factory=Upload)
     checker: Checker = msgspec.field(default_factory=Checker)
+    linking: Linking = msgspec.field(default_factory=Linking)
     notifications: Notifications = msgspec.field(default_factory=Notifications)

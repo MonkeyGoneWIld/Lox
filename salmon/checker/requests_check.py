@@ -109,13 +109,10 @@ class RequestChecker:
         Raises:
             TrackerBudgetExceeded: If the tracker's budget is spent.
         """
-        api = self.gateway.api(tracker)
         params: dict[str, Any] = {"page": page, "show_filled": "false"}
         if search:
             params["search"] = search
-        data = await self.gateway._call(  # noqa: SLF001 - gateway owns budget accounting
-            tracker, lambda: api.request("requests", params)
-        )
+        data = await self.gateway.call_action(tracker, "requests", params)
         rows = (data or {}).get("results") or []
         return [
             {
@@ -198,6 +195,7 @@ class RequestChecker:
                 emit("result", match.as_dict())
         finally:
             await verifier.close()
+            self.store.flush("requests")
 
         return results
 

@@ -1,376 +1,216 @@
-> ## ⚠️ About this fork
->
-> **This is a vibe-coded fork of [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon) `0.10.0`, put together to help upload Deezer downloads to Gazelle-based music trackers.**
->
-> It is not maintained, not reviewed, and not affiliated with upstream. If you want the real thing, use [smokin-salmon/smoked-salmon](https://github.com/smokin-salmon/smoked-salmon).
->
-> What's different here:
->
-> - **Deezer only** — metadata search is restricted to Deezer. Bandcamp, Beatport, Discogs, iTunes, JunoDownload, MusicBrainz, Qobuz and Tidal are disabled.
-> - **Deezer ARL support** — set `arl` under `[metadata.deezer]` in your config to send an authenticated cookie with Deezer requests. It falls back to unauthenticated requests (with a warning) if the ARL is missing or expired.
-> - **Folders are moved, not copied** — releases are moved into `download_directory` with `shutil.move` instead of being hardlinked or copied, and an emptied source parent directory is removed. The `hardlinks` and `remove_source_dir` options are gone.
-> - **Lossy-master prompts always ask** — even with `yes_all` enabled, you are still asked whether a release is lossy mastered and for the approval comment. This is deliberate: auto-answering "no" would assert something about a release nobody looked at.
-> - **No upstream footer** — the "Uploaded with smoked-salmon" line is dropped from torrent and transcode descriptions.
-> - **A web UI** — a deemix-shaped interface with search, explore, download, tracker checking and uploading in one place. See below.
->
-> Everything below the web UI section is upstream's README and still broadly applies.
+# lox
+
+**A Deezer-to-Gazelle upload pipeline with a web UI.** Find a release on Deezer, check whether RED and OPS already have
+it, look at what the checker found, download it in FLAC, and upload it to whichever trackers are missing it — without
+leaving the browser.
+
+> **This is a vibe-coded fork of [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon) `0.10.0`.** It is not
+> maintained, not reviewed, and not affiliated with upstream. If you want the real, supported thing, use
+> [smokin-salmon/smoked-salmon](https://github.com/smokin-salmon/smoked-salmon). Upstream owns the tagging, spectral,
+> transcoding and upload machinery this is built on; everything Deezer-shaped here is the fork.
 
 ---
 
-## 🎛 Web UI
+## The one thing to understand first
 
-```bash
-salmon ui
+**Trackers are only contacted when you press a button that says so.**
+
+RED and OPS have small API budgets and punish bursts with hours-long lockouts. So every tracker call in this app goes
+through a single gateway that spends from a token bucket, spaces calls apart, and opens a circuit breaker after repeated
+failures. Search, Explore, album metadata, FLAC checks and downloads never touch a tracker at all.
+
+The sidebar shows the remaining budget per tracker at all times. When a scan would overdraw it, the scan **stops early
+and keeps its place** rather than blowing the limit.
+
+---
+
+## What it does
+
+### Check one album, then upload it
+
+Open any album and press **Check RED** or **Check all**. The checker searches the tracker, opens each candidate torrent
+group, and tells you what it found — including the groups it *rejected* and why:
+
+```
+RED · not on tracker · 4 call(s), 2 search(es) · artist page
+  ├─ Ana Vidal — Nocturne Variations (Remixes) (2026)   title mismatch (0.81)     WEB FLAC Lossless
+  └─ Anna Vidale — Nocturnes (2019)                     artist mismatch            CD FLAC Lossless
+OPS · not on tracker · 2 call(s), 1 search(es)
+  └─ Ana Vidal — Nocturne Variations (2026)             no WEB FLAC in group       CD MP3 320
 ```
 
-Opens on `http://127.0.0.1:55110` (configurable under `[upload.web_interface]`). The layout follows deemix — fixed
-sidebar, card grid, slide-in detail panel — but none of deemix's code is used, so this stays Apache-2.0 and needs no
-Node toolchain.
+Every group is a link. Open them, confirm the checker got it right, then press **Download & upload to RED + OPS**. The
+near misses are the point — a "missing" verdict is only trustworthy if you can see what it looked at.
 
-| Tab | What it does | Touches a tracker? |
-|---|---|---|
-| **Search** | Deezer albums, tracks and artists. Download straight from a card. | No |
-| **Explore** | Deezer channels, charts by genre, and editorial new releases. Channels are read from the page's `__DZR_APP_STATE__`, the same surface deemix never exposed. | No |
-| **Missing** | Paste playlist / channel-module / album URLs → filtered candidate list → **Check trackers** button. | Only on the button |
-| **Requests** | Fetch open RED/OPS requests, match them against Deezer, verify track counts against Discogs, MusicBrainz, Bandcamp, Beatport, Qobuz, Tidal, Apple Music and Metal-Archives. | Fetch + check only |
-| **Downloads** | Live per-track progress for the built-in Deezer downloader. | No |
-| **Uploads** | Lists release folders and runs the salmon upload flow, streaming its output into a console you can type answers into. | Upload only |
-| **Settings** | Read-only view of config and stored scan history. | No |
+### Check a list of requests against Deezer
 
-### Tracker budget
+Paste request IDs or URLs, or upload a `.txt` list. For each request lox fetches it from the tracker, searches Deezer,
+scores the match, then rejects it unless it clears every gate independently:
 
-Trackers time out hard and punish bursts, so **nothing contacts a tracker unless you press a check button.** Every
-tracker call goes through one gateway that:
+| Gate | Rule |
+|---|---|
+| Artist score | ≥ 0.50 |
+| Title score | ≥ 0.40 |
+| Combined | ≥ `checker.min_confidence` (0.70) |
+| Track count | Exact match when it can be determined |
+| Availability | Every track streamable in your region |
+| FLAC | All tracks lossless, when the request is FLAC-only |
+| External sources | Discogs, MusicBrainz, Bandcamp, Beatport, Qobuz, Tidal, Apple Music and Metal-Archives must agree on the track count |
 
-- spends from a token bucket (`checker.tracker_budget` calls per `checker.tracker_budget_window` seconds) and **refuses
-  to overdraw it** — a scan stops early and keeps its place rather than blowing the limit,
-- spaces calls by `checker.tracker_call_delay`,
-- opens a circuit breaker after `checker.failure_threshold` consecutive failures and benches that tracker for
-  `checker.cooldown_seconds`,
-- shows the remaining budget per tracker in the sidebar at all times.
+Filling a request with the wrong edition is worse than not filling it, so a great artist score cannot rescue a poor title
+score. Only the request fetch costs tracker budget; everything after it is free.
 
-Everything that *can* be answered without a tracker is: release date and track-count filters, FLAC availability,
-streamability, Deezer match scoring and external track-count verification all run first, for free, so tracker calls are
-only spent on releases that already passed every other gate.
+### Saved Deezer searches
+
+The **Missing** tab keeps re-runnable queries — new releases by genre, a chart, an album search, an artist's
+discography, a playlist, or a channel module. Running one is free and drops its albums straight into the collect step.
+Set one up for new releases in your genre and it becomes a two-click routine.
+
+### Explore
+
+Deezer channels, charts by genre, and editorial new releases. Channels are read out of the page's `__DZR_APP_STATE__`,
+which is the surface deemix never exposed. Any channel module can be sent to the Missing tab with one click.
 
 ### Downloading
 
-Set `metadata.deezer.arl` and downloads work in-process: stream URLs are resolved through Deezer's media API, the
-Blowfish-striped payload is decrypted as it streams, tags and cover art are written from the Deezer metadata, and the
-result is a plain release folder the upload flow already understands.
+With an ARL set, downloads happen in-process: stream URLs resolved through Deezer's media API, the Blowfish-striped
+payload decrypted as it streams, tags and cover art written from the Deezer metadata. The result is a plain release
+folder the upload flow already understands.
 
-### Credentials
+### Hardlinked per-tracker folders
 
-Every key lives in `config.toml`, which is gitignored — ARL, tracker sessions/API keys, Discogs/Qobuz/Tidal/Apple Music
-tokens and the optional Discord webhook. None of them are ever written to the repo. See `data/config.default.toml`.
+Uploading one release to two trackers needs two torrents pointed at two paths. Rather than keep two copies, lox
+hardlinks — the same thing cross-seed does:
+
+```
+/links/
+├── RED/
+│   └── Ana Vidal - Nocturne Variations (2026) [WEB FLAC]/
+│       ├── 01. Nocturne I.flac    → hardlink
+│       └── cover.jpg              → hardlink
+└── OPS/
+    └── Ana Vidal - Nocturne Variations (2026) [WEB FLAC]/
+        ├── 01. Nocturne I.flac    → hardlink
+        └── cover.jpg              → hardlink
+```
+
+A 500 MB release costs 500 MB no matter how many trackers it goes to. Point qBittorrent at `/links` and both torrents
+seed from their own directory.
+
+**Hardlinks cannot cross filesystems.** `linking.link_dir` must be on the same volume as your downloads. If it isn't,
+lox fails loudly rather than silently making real copies — unless you set `linking.fallback_to_copy = true`.
 
 ---
 
-# 🐟 smoked-salmon  
+## Install
 
-A simple tool to take the work out of uploading on Gazelle-based trackers. It generates spectrals, gathers metadata, allows re-tagging/renaming files, and automates the upload process.
+Needs Python 3.11+, plus `sox`, `flac`, `lame` and `mp3val` on PATH.
 
-## 🌟 Features  
+```bash
+uv tool install git+https://github.com/MonkeyGoneWIld/deezer-upload
+```
 
-- **Interactive Uploading** – Supports **multiple trackers** (RED / OPS / DIC).
-- **Log Checking** – Calculates log scores, verifies log checksum integrity, and validates log-to-FLAC file matching.
-- **Upconvert Detection** – Checks 24-bit flac files for potential upconverts.
-- **MQA Detection** – Checks files for common MQA markers.
-- **Duplicate Upload Detection** – Prevents redundant uploads.  
-- **Spectral Analysis** – Generates, compresses, and verifies spectrals, exposed via a web interface.  
-- **Spectral Upload** – Can generate spectrals for an existing upload (based on local files), and update the release description.  
-- **Lossy Master Report Generation** – Supports lossy master reports during upload.
-- **Metadata Retrieval** – Fetches metadata from Deezer. *(This fork disables the other sources upstream supports.)*
-- **File Management** –  
-  - Retags and renames files to standard formats (based on metadata).
-  - Checks file integrity and sanitizes if needed.  
-- **Request Filling** – Scans for matching requests on trackers.
-- **Description generation** – Edition description generation (tracklist, sources, available streaming platforms, encoding details...).
-- **Down-convert and Transcode** – Can downconvert 24-bit flac files to 16-bit, and transcode to mp3.
-- **Multi-Format Upload** – Automatically transcodes and uploads multiple formats (FLAC 16-bit, MP3, etc.) in a single workflow.
-- **Torrent Client Injection** – Can inject generated torrent files into torrent clients (qBittorrent, Transmission, Deluge, ruTorrent).
-- **Remote Seeding** – Can transfer files to multiple remote locations via rclone and inject torrents into remote torrent clients for automatic seeding.
-- **Update Notifications** – Informs users when a new version is available.
+Then write a config (see [`data/config.default.toml`](data/config.default.toml) for every option) and run:
 
-## 📥 Installation  
+```bash
+lox ui
+```
 
-Manual installation instructions can be found on the [Wiki](https://github.com/smokin-salmon/smoked-salmon/wiki/Installation).
-
-### 🔹  Install smoked-salmon 
-These steps use [`uv`](https://github.com/astral-sh/uv) for installing the *smoked-salmon* package. [`pipx`](https://github.com/pypa/pipx) also works.
-Installing with pip is not recommended because uv (and pipx) manage python versions and isolate the *smoked-salmon* installation from the system python installation.
-
-#### Linux
-1. Install system packages:
-    ```bash
-    sudo apt install sox flac mp3val curl lame
-    ```
-
-2. Install uv:
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    ```
-
-3. Install smoked-salmon package from github:
-	```bash
-	uv tool install git+https://github.com/smokin-salmon/smoked-salmon
-	```
-
-#### Windows
-1. Install required system packages using winget:
-    ```powershell
-    winget install -e ChrisBagwell.SoX Xiph.FLAC LAME.LAME ring0.MP3val.WF
-    ```
-
-2. Fix sox Unicode filename handling issue on Windows:
-    ```powershell
-    $soxDir = $((Get-Command sox).Source | Split-Path)
-    $zipPath = Join-Path -Path $soxDir -ChildPath "sox_windows_fix.zip"
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/DevYukine/red_oxide/master/.github/dependency-fixes/sox_windows_fix.zip" -OutFile $zipPath
-    Expand-Archive -Path $zipPath -DestinationPath $soxDir -Force
-    regedit "$soxDir\PreferExternalManifest.reg"
-    Remove-Item $zipPath
-    ```
-
-3. Install uv:
-    ```powershell
-    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-    ```
-
-4. Install smoked-salmon package from github:
-	```powershell
-	uv tool install git+https://github.com/smokin-salmon/smoked-salmon
-	```
-
-#### macOS
-1. Install Homebrew (if you haven't already):
-    ```bash
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    ```
-
-2. Install system packages using Homebrew:
-    ```bash
-    brew install sox flac mp3val curl lame
-    ```
-
-3. Install uv:
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    ```
-
-4. Install smoked-salmon package from github:
-	```bash
-	uv tool install git+https://github.com/smokin-salmon/smoked-salmon
-	```
-
-### 🔹  Initial Setup
-1. Run salmon for the first time and follow the instructions to create a default configuration:
-	```
-	salmon-user@salmon:~$ salmon
-	Could not find configuration path at /home/salmon-user/.config/smoked-salmon/config.toml.
-	Do you want smoked-salmon to create a default config file at /home/salmon-user/.config/smoked-salmon/config.default.toml? [y/N]:
-	```
-
-2. Copy the default config to `~/.config/smoked-salmon/config.toml`.
-	```
-	cp ~/.config/smoked-salmon/config.default.toml ~/.config/smoked-salmon/config.toml
-	```
-
-3. Edit the `config.toml` file with your preferred text editor to add your API keys, session cookies and update your preferences (see the [Configuration Wiki](https://github.com/smokin-salmon/smoked-salmon/wiki/Configuration)).
-
-4. Use the `checkconf` command to verify that the connection to the trackers is working:
-
-	```
-	salmon checkconf
-	```
-
-5. Use the `health` command to verify that all necesasary command line dependencies are installed:
-
-	```
-	salmon health
-	```
-
-### 🐳 Docker Installation
-
-A Docker image is generated per release.  
-**Disclaimer**: I am not actively using the docker image myself, feedback is appreciated regarding that guide.
-
-1. Pull the latest image:
-
-   ```bash
-   docker pull ghcr.io/smokin-salmon/smoked-salmon:latest
-   ```
-
-2. Copy the content of the file [`config.toml`](https://github.com/smokin-salmon/smoked-salmon/blob/master/data/config.default.toml) to a location on your host server.  
-   Edit the `config.toml` file with your preferred text editor to add your API keys, session cookies and update your preferences (see the [Configuration Wiki](https://github.com/smokin-salmon/smoked-salmon/wiki/Configuration)).
-
-3. Configure rclone if needed. The Docker Compose configuration expects an rclone configuration file. You can get the path to your rclone config file by running `rclone config file` on your host system.
+The `salmon` command still works as an alias, and every upstream CLI command is unchanged.
 
 ---
 
-### 🔁 Recommended Docker Operation Order
+## Docker
 
-1. **Check Configuration** -> **Run Migration** -> **Run the Web UI**  
-   Run the container with the `checkconf` command to verify that the connection to the trackers is working:
+```bash
+cp .env.example .env
+openssl rand -hex 32   # put this in LOX_AUTH_TOKEN
+cp config/config.docker.toml config/config.toml   # then fill in your credentials
+docker compose up -d
+```
 
-   ```bash
-   docker run --rm -it --network=host \
-   -v /path/to/your/music:/app/.music \
-   -v /path/to/your/config.toml/directory:/root/.config/smoked-salmon/ \
-   -v /path/to/your/smoked.db/directory:/root/.local/share/smoked-salmon/ \
-   -v /path/to/your/generated/dottorrents:/app/.torrents \
-   -v /get/this/from/"rclone config file":/root/.config/rclone/rclone.conf  # Optional: only if using rclone features \
-   ghcr.io/smokin-salmon/smoked-salmon:latest checkconf
-   ```
+[`docker-compose.yml`](docker-compose.yml) is annotated. Two things will bite you if you skip them:
 
-   If the configuration is valid, use the `migrate` command to initialize or upgrade the database schema:
-   Once migration is complete, you may launch container in persistent mode with `web` command.
+**Set `LOX_AUTH_TOKEN`.** The UI can spend your tracker API budget, read your authenticated Deezer session, and start
+uploads to your tracker accounts. The compose file binds to `127.0.0.1` by default for exactly this reason. If you
+publish the port, the token is the only thing standing between the internet and your upload privileges. lox prints a
+loud warning at startup if you bind publicly without one.
 
-2. **Connect to the Running Container**  
-   To manually execute operations inside the container(`web` command required), connect via SSH and run:
+**Put `/downloads` and `/links` on the same filesystem.** Different volumes means no hardlinks.
 
-   ```bash
-   docker exec -it smoked-salmon /bin/sh
-   ```
-
-   Then, inside the container, you can run the commands like this:
-
-   ```bash
-   .venv/bin/salmon up "/path/to/your/music" -s WEB
-   ```
+Open the UI once with `?token=<your token>` to set the session cookie.
 
 ---
 
-### ⚠️ Notes
+## Configuration
 
-- **Permission Issues**  
-  The container currently **able to handle permissions** properly.  
-  If your torrent client is not run as root, or if new uploads are inaccessible, you may need to:
-  - Manually adjust file/folder ownership (`chown`) or permissions (`chmod`)
-  - Ensure the container and torrent client users are compatible
-  - Optionally run containers with matching `--user` flags or add `umask` logic
-     ```bash
-    user: "1001:100"
-    environment:
-      - PUID=1001
-      - PGID=100
-     ```
+Everything lives in `config.toml`, which is gitignored. No credential is ever written to the repo.
 
-- **.torrent Directory Mapping**  
-  Depending on how you've set the `DOTTORRENTS_DIR` in your `config.toml`, you may need to map an additional directory for `.torrent` file output. Add:
+| Section | Key settings |
+|---|---|
+| `[metadata.deezer]` | `arl`, `download_dir`, `preferred_format`, `format_fallback`, `concurrent_downloads` |
+| `[linking]` | `enabled`, `link_dir`, `method`, `per_tracker_dirs`, `fallback_to_copy` |
+| `[checker]` | `tracker_budget`, `tracker_budget_window`, `tracker_call_delay`, `failure_threshold`, `cooldown_seconds`, `min_tracks`, `min_date`, `min_confidence` |
+| `[upload.web_interface]` | `host`, `port`, `auth_token` |
+| `[notifications]` | `enabled`, `discord_webhook`, `notify_missing`, `notify_fillable` |
+| `[tracker.red]` / `[tracker.ops]` | `session`, `api_key` |
+| `[metadata]` | `discogs_token`, `apple_music_token`, Qobuz and Tidal credentials — all used to verify request track counts |
 
-  ```bash
-  -v /your/host/torrent/output:/app/.torrents
-  ```
+### Getting your ARL
 
-- **rclone Configuration**  
-  If you're using rclone features, make sure to map your rclone configuration file. This is optional and only needed if you plan to use rclone functionality. You can find your rclone config file location by running `rclone config file` on your host system:
-
-  ```bash
-  -v /path/to/your/rclone.conf:/root/.config/rclone/rclone.conf
-  ```
+Log into Deezer, open developer tools → Application → Cookies → `https://www.deezer.com`, and copy the `arl` value. It
+is a full session credential: anyone holding it is logged into your account. Treat it like a password.
 
 ---
 
-### 📦 Portainer Stack Alternative
+## Differences from upstream smoked-salmon
 
-If using Portainer or Docker Compose, here's an example stack for persistent usage:
+- **Deezer only** — metadata search is restricted to Deezer. Bandcamp, Beatport, Discogs, iTunes, JunoDownload,
+  MusicBrainz, Qobuz and Tidal are disabled as *sources*, though several are still used to verify request track counts.
+- **Folders are moved, not copied** — releases are moved into `download_directory` with `shutil.move`, and an emptied
+  source parent is removed. The `hardlinks` and `remove_source_dir` options are gone; use `[linking]` instead.
+- **Lossy-master prompts always ask** — even with `yes_all`. Auto-answering "no" asserts something about a release
+  nobody looked at. In the web UI the prompt appears in the upload console and you answer it there.
+- **No upstream footer** — the "Uploaded with smoked-salmon" line is dropped from torrent and transcode descriptions.
+- **Icons** point at `img.onlyimage.org` rather than `ptpimg.me`.
 
-```yaml
-version: "3"
-services:
-  smoked-salmon:
-    image: ghcr.io/smokin-salmon/smoked-salmon:latest
-    container_name: smoked-salmon
-    network_mode: host
-    restart: unless-stopped
-    volumes:
-      - /path/to/your/music:/app/.music
-      - /path/to/your/config.toml/directory:/root/.config/smoked-salmon/
-      - /path/to/your/smoked.db/directory:/root/.local/share/smoked-salmon/
-      - /path/to/your/generated/dottorrents:/app/.torrents
-      - /get/this/from/"rclone config file":/root/.config/rclone/rclone.conf  # Optional: only if using rclone features
-    command: web
+---
+
+## How it fits together
+
+```
+salmon/deezer/     gw.py, crypto.py, download.py, explore.py
+                   Private gw-light API, Blowfish stream decryption, channels
+
+salmon/checker/    gateway.py    every tracker call, budgeted and breakered
+                   matching.py   title/artist/edition heuristics, request scoring
+                   missing.py    collect (free) then check (budgeted)
+                   requests_check.py + trackcount.py
+                   watchlists.py saved searches
+                   store.py      debounced atomic JSON state
+
+salmon/seeding/    links.py      hardlinked per-tracker folders
+
+salmon/web/        api.py        JSON API, auth middleware, path validation
+                   jobs.py       background jobs with progress
+                   static/       no-build SPA
 ```
 
-## 🚀 Usage
+---
 
-### 🎨 Terminal Colors
-smoked-salmon uses distinct terminal colors for different types of messages:
+## Status and caveats
 
-* Default – General information
-* Red – Errors or critical failures
-* Green – Success messages
-* Yellow – Information headers
-* Cyan – Section headers
-* Magenta – User prompts
+Written fast, verified where it could be. The UI was driven end to end against a mock API — every tab, every flow — and
+the Python is syntax- and import-clean. **What has not been exercised against the real thing:** the download chain
+(Deezer's media token flow and the Blowfish decryption), the channel page scraping, and live tracker calls under real
+rate limits. Deezer changes those surfaces; expect the download path to be the first thing that breaks.
 
-### 🔧 CLI Mode
-smoked-salmon runs in CLI mode, except for spectral visualization, which launches a web server. Quick start usage instructions can be found on the [Wiki Usage page](https://github.com/smokin-salmon/smoked-salmon/wiki#usage).
+The tracker budget defaults are conservative guesses, not measured limits. Tune `[checker]` to what your trackers
+actually allow.
 
-The examples below show how to run smoked-salmon directly. If you're using Docker, you'll need to adjust them accordingly, but the underlying principles remain the same.
+---
 
-On the first run, you will need to create the database:
-```bash
-salmon migrate
-```
+## Licence
 
-To see the available commands, just type:
-```bash
-salmon
-```
-
-To test the connection to the trackers, run:
-```bash
-salmon checkconf
-```
-
-To check the status of salmon's command line and config dependencies, run:
-```bash
-salmon health
-```
-
-To start an upload (with the WEB source):
-```bash
-salmon up /data/path/to/album -s WEB
-```
-
-You can get help directly from the CLI by appending --help to any command. This is especially useful for the up command which has a lot of possible options.
-
-### 🌐 Spectral Web Interface
-Spectrals are viewable via a built-in web server. By default, access it at: http://localhost:55110/spectrals
-
-## 🔄 Updating
-
-For **normal installs**:
-```bash
-uv tool update salmon
-```
-
-For **manual installs**:
-```bash
-cd smoked-salmon
-git pull
-uv sync
-```
-
-For **Docker users**:
-```bash
-docker pull ghcr.io/smokin-salmon/smoked-salmon:latest
-```
-
-## 📞 Support
-For bug reports and feature requests, use GitHub Issues. Or use the forums.
-
-
-## 🎭 Testimonials
-```
-"Salmon filled the void in my heart. I no longer chase after girls." ~boot
-"With the help of salmon, I overcame my addiction to kpop thots." ~b
-"I warn 5 people every day on the forums using salmon!" ~jon
-```
-
-## 🎩 Credits
-* Originally created by [ligh7s](https://github.com/ligh7s/smoked-salmon). Huge thanks!
-* Further development & maintenance by elghoto, xmoforf, miandru, redusys, kyokomiki and others. Keeping the dream alive.
-* Docker image build workflow and update notification mechanisms heavily inspired from the awesome work of Audionut on his [Upload Assistant tool](https://github.com/Audionut/Upload-Assistant) !
+Apache-2.0, inherited from upstream. deemix is GPL-3.0 and none of its code is used here — the UI resembles it, it does
+not reuse it.

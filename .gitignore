@@ -22,3 +22,12 @@ accounts.json
 salmon/web/static/specs
 !.gitkeep
 .venv
+
+# lox deployment
+.env
+config/config.toml
+config/state/
+data/music/
+data/links/
+data/torrents/
+data/tmp/

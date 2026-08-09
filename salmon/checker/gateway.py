@@ -232,6 +232,20 @@ class TrackerGateway:
             state.record_success()
             return result
 
+    async def call_action(self, code: str, action: str, params: dict[str, Any] | None = None) -> dict:
+        """Run an arbitrary Gazelle ajax action against the budget.
+
+        Args:
+            code: Tracker code.
+            action: The ajax action name.
+            params: Query parameters.
+
+        Returns:
+            The tracker's response object.
+        """
+        api = self.api(code)
+        return await self._call(code, lambda: api.request(action, params or {}))
+
     async def browse(self, code: str, searchstr: str) -> list[dict]:
         """Run a ``browse`` search on a tracker.
 

@@ -17,6 +17,11 @@ from salmon.deezer.gw import DeezerGW, DeezerGWError
 
 _APP_STATE_RE = re.compile(r"window\.__DZR_APP_STATE__\s*=\s*(\{.+?\})\s*;?\s*</script>", re.DOTALL)
 
+# Channel slugs and module IDs arrive from the browser and are interpolated into
+# a deezer.com path, so they are constrained rather than trusted.
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$", re.IGNORECASE)
+_MODULE_RE = re.compile(r"^[0-9a-f-]{8,64}$", re.IGNORECASE)
+
 COVER_TEMPLATE = "https://e-cdns-images.dzcdn.net/images/{kind}/{code}/{size}x{size}-000000-80-0-0.jpg"
 
 
@@ -57,7 +62,7 @@ class Explorer:
         Raises:
             DeezerGWError: If the page cannot be fetched or has no app state.
         """
-        session = await self.gw._ensure_session()  # noqa: SLF001 - one shared session by design
+        session = await self.gw.session()
         url = f"https://www.deezer.com{path}"
         try:
             async with session.get(url) as resp:
@@ -113,6 +118,8 @@ class Explorer:
             Dict with ``title`` and a list of ``sections``, each carrying the
             module ID needed by :meth:`module` plus a preview of its items.
         """
+        if not _SLUG_RE.match(slug):
+            raise DeezerGWError(f"Invalid channel slug: {slug!r}")
         state = await self._page_state(f"/en/channels/{slug}")
         sections = []
         for section in state.get("sections", []) or []:
@@ -141,6 +148,8 @@ class Explorer:
         Returns:
             Dict with ``title`` and the module's ``items``.
         """
+        if not _MODULE_RE.match(module_id):
+            raise DeezerGWError(f"Invalid module ID: {module_id!r}")
         state = await self._page_state(f"/en/channels/module/{module_id}")
         items: list[dict[str, Any]] = []
         for section in state.get("sections", []) or []:
@@ -228,7 +237,7 @@ class Explorer:
         """
         data = await self.gw.public(f"/chart/{genre_id}", {"limit": limit})
         return {
-            "albums": [self._public_album(a) for a in (data.get("albums") or {}).get("data", [])],
+            "albums": [self.public_album(a) for a in (data.get("albums") or {}).get("data", [])],
             "tracks": [
                 {
                     "type": "track",
@@ -255,12 +264,12 @@ class Explorer:
     async def new_releases(self, genre_id: str | int = 0, limit: int = 50) -> list[dict[str, Any]]:
         """Fetch editorial new releases for a genre."""
         data = await self.gw.public(f"/editorial/{genre_id}/releases", {"limit": limit})
-        return [self._public_album(a) for a in data.get("data", [])]
+        return [self.public_album(a) for a in data.get("data", [])]
 
     async def artist_albums(self, artist_id: str | int, limit: int = 100) -> list[dict[str, Any]]:
         """Fetch an artist's discography from the public API."""
         data = await self.gw.public(f"/artist/{artist_id}/albums", {"limit": limit})
-        return [self._public_album(a) for a in data.get("data", [])]
+        return [self.public_album(a) for a in data.get("data", [])]
 
     async def playlist_albums(self, playlist_id: str | int) -> list[dict[str, Any]]:
         """Collapse a playlist's tracks down to the distinct albums they sit on.
@@ -289,7 +298,7 @@ class Explorer:
         return list(seen.values())
 
     @staticmethod
-    def _public_album(album: dict) -> dict[str, Any]:
+    def public_album(album: dict) -> dict[str, Any]:
         """Normalize a public-API album into an Explore card."""
         return {
             "type": "album",

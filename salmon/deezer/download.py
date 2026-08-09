@@ -286,7 +286,10 @@ class Downloader:
 
             semaphore = asyncio.Semaphore(self.concurrency)
             await asyncio.gather(
-                *(self._download_track(job, song, track, meta, semaphore) for song, track in zip(songs, job.tracks))
+                *(
+                    self._download_track(job, song, track, meta, semaphore)
+                    for song, track in zip(songs, job.tracks, strict=True)
+                )
             )
 
             failures = [t for t in job.tracks if t.status != "done"]
@@ -327,7 +330,7 @@ class Downloader:
         url = meta.get("cover_xl") or meta.get("cover_big") or meta.get("cover")
         if not url or not job.folder:
             return
-        session = await self.gw._ensure_session()  # noqa: SLF001 - one shared session by design
+        session = await self.gw.session()
         with contextlib.suppress(aiohttp.ClientError, OSError):
             async with session.get(url) as resp:
                 if resp.status == 200:
@@ -353,8 +356,9 @@ class Downloader:
                 filename = f"{track.number:02d}. {sanitize(track.title, 'Track')}{extension}"
                 path = os.path.join(job.folder or self.download_dir, filename)
 
-                await self._stream_to_disk(job, track, song, url, path)
-                self._tag(path, fmt, song, meta, track, job)
+                await self._stream_to_disk(job, track, url, path)
+                # Mutagen rewrites the whole file to insert tags; keep it off the loop.
+                await asyncio.to_thread(self._tag, path, fmt, song, meta, track, job)
 
                 track.path = path
                 track.status = "done"
@@ -368,13 +372,18 @@ class Downloader:
         self,
         job: DownloadJob,
         track: TrackDownload,
-        song: dict,
         url: str,
         path: str,
     ) -> None:
         """Stream an encrypted track to disk, decrypting stripe by stripe."""
         key = blowfish_key(track.id)
-        session = await self.gw._ensure_session()  # noqa: SLF001 - one shared session by design
+        session = await self.gw.session()
+
+        def decrypt_and_write(handle, payload: bytes, index: int) -> int:
+            """Decrypt one aligned buffer and write it. Runs off the event loop."""
+            plaintext, next_index = decrypt_stripes(payload, key, index)
+            handle.write(plaintext)
+            return next_index
 
         async with session.get(url) as resp:
             if resp.status != 200:
@@ -384,22 +393,26 @@ class Downloader:
             buffer = bytearray()
             stripe_index = 0
             last_notify = 0.0
-            with open(path, "wb") as out:
-                async for chunk in resp.content.iter_chunked(CHUNK_SIZE * 16):
+            # Blowfish over a few hundred MB plus the disk writes would stall the
+            # event loop, and everything else in the process shares it.
+            out = await asyncio.to_thread(open, path, "wb")
+            try:
+                async for chunk in resp.content.iter_chunked(CHUNK_SIZE * 32):
                     buffer += chunk
                     track.downloaded += len(chunk)
                     aligned = len(buffer) - (len(buffer) % CHUNK_SIZE)
                     if aligned:
-                        plaintext, stripe_index = decrypt_stripes(bytes(buffer[:aligned]), key, stripe_index)
-                        out.write(plaintext)
+                        payload = bytes(buffer[:aligned])
                         del buffer[:aligned]
+                        stripe_index = await asyncio.to_thread(decrypt_and_write, out, payload, stripe_index)
                     now = time.monotonic()
                     if now - last_notify > 0.5:
                         last_notify = now
                         self._notify(job)
                 if buffer:
-                    plaintext, _ = decrypt_stripes(bytes(buffer), key, stripe_index)
-                    out.write(plaintext)
+                    await asyncio.to_thread(decrypt_and_write, out, bytes(buffer), stripe_index)
+            finally:
+                await asyncio.to_thread(out.close)
 
     @staticmethod
     def _tag(path: str, fmt: str, song: dict, meta: dict, track: TrackDownload, job: DownloadJob) -> None:

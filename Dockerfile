@@ -22,5 +22,9 @@ RUN mkdir -p /app/.torrents && chmod -R 777 /app
 # Install the required Python packages
 RUN uv sync --no-dev
 
-# Set the entrypoint to run the 'salmon' script
-ENTRYPOINT ["uv", "run", "--project", "/app", "--no-sync", "salmon"]
+# The web UI listens here; see docker-compose.yml for the auth-token warning.
+EXPOSE 55110
+
+# Set the entrypoint to run the 'lox' script
+ENTRYPOINT ["uv", "run", "--project", "/app", "--no-sync", "lox"]
+CMD ["ui"]

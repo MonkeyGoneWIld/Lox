@@ -39,6 +39,8 @@ dependencies = [
 ]
 
 [project.scripts]
+lox = "run:main"
+# Kept so existing scripts and the upstream muscle memory still work.
 salmon = "run:main"
 
 [build-system]

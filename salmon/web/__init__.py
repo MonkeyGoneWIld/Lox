@@ -34,7 +34,20 @@ async def web_cmd() -> None:
 async def ui_cmd() -> None:
     """Start the web UI: Deezer search, explore, download, check and upload."""
     url = f"http://{web_cfg.host}:{web_cfg.port}/"
-    click.secho(f"deezer-upload UI on {url}", fg="cyan", bold=True)
+    click.secho(f"lox UI on {url}", fg="cyan", bold=True)
+
+    if api.binds_publicly(web_cfg.host) and not api.auth_required():
+        click.secho(
+            "\nWARNING: the UI is bound to a non-loopback address with no auth_token set.\n"
+            "Anyone who can reach this port can spend your tracker API budget, read your\n"
+            "Deezer session and start uploads to your tracker accounts.\n"
+            "Set upload.web_interface.auth_token, or bind host to 127.0.0.1.\n",
+            fg="red",
+            bold=True,
+        )
+    elif api.auth_required():
+        click.secho("Auth token required. Open the UI with ?token=<your token> once to set the cookie.", fg="cyan")
+
     if not cfg.metadata.deezer.arl:
         click.secho(
             "No Deezer ARL configured. Search and charts will work; downloads, "
@@ -61,7 +74,7 @@ async def create_app_async() -> web.AppRunner:
     Raises:
         WebServerIsAlreadyRunning: If the port is already in use.
     """
-    app = web.Application()
+    app = web.Application(middlewares=[api.auth_middleware])
     add_routes(app)
     app.on_startup.append(api.setup_services)
     app.on_cleanup.append(api.teardown_services)
