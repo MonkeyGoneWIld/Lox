@@ -11,7 +11,6 @@ from salmon import cfg
 from salmon.common import str_to_int_if_int
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.errors import RequestError
-from salmon.release_notification import get_version
 from salmon.sources import SOURCE_ICONS
 from salmon.tagger.sources import METASOURCES
 from salmon.uploader.spectrals import (
@@ -403,7 +402,11 @@ def generate_t_description(
         track = next(iter(track_data.values()))
         sample_rate = track["sample rate"] / 1000
         if track["precision"]:
-            icon_url = "https://img.onlyimage.org/nzVvCN.png" if track["precision"] == 16 else "https://img.onlyimage.org/nzb4F8.png"
+            icon_url = (
+                "https://img.onlyimage.org/nzVvCN.png"
+                if track["precision"] == 16
+                else "https://img.onlyimage.org/nzb4F8.png"
+            )
             prefix = f"[img]{icon_url}[/img]" if cfg.upload.description.icons_in_descriptions else "Encode Specifics:"
             encode_specifics = (
                 f"{prefix} [b]{track['precision']} bit [color=#2E86C1]{sample_rate:.01f}[/color] kHz[/b]\n"

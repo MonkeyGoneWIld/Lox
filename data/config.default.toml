@@ -6,11 +6,9 @@
 # DIRECTORY SETTINGS
 # ===============================
 [directory]
-# Where to copy files (usually the download/seeding folder for your torrent client)
+# Where releases are moved to (usually the download/seeding folder for your torrent client)
+# Note: this fork moves the source folder here instead of copying/hardlinking it.
 download_directory = '.music'
-
-# Hardlinks are enabled by default, set the option below to false to DISABLE hardlinks (and use standard copy files)
-# hardlinks = true
 
 # Can be a watch folder for your torrent client, or a folder somewhere else where the .torrent files will be generated
 # You still need to have it set even if using direct torrent injection with qbittorrent
@@ -68,6 +66,11 @@ app_id = 'app-id'
 user_auth_token = 'user_auth_token'
 # if you are using salmon from a non-english country, set this to true to avoid retrieving non-english genres
 # no_genres_from_qobuz = False
+
+# Optional Deezer ARL cookie, used to make authenticated requests to deezer.com.
+# Without it, requests fall back to unauthenticated (some metadata may be missing).
+# [metadata.deezer]
+# arl = 'your-arl-cookie'
 
 
 # ===============================
@@ -161,7 +164,6 @@ session = 'get-from-site-cookie'
 # # templates for folder and file naming
 # folder_template = "{artists} - {title} ({year}) [{source} {format}]"
 # file_template = "{tracknumber}. {artist} - {title}"
-# remove_source_dir = false
 
 # # formatting options
 # no_artist_in_filename_if_only_one_album_artist = true

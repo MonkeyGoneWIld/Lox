@@ -10,7 +10,6 @@ import msgspec
 
 from salmon.common.files import process_files
 from salmon.errors import InvalidSampleRate
-from salmon.release_notification import get_version
 from salmon.tagger.audio_info import gather_audio_info
 
 BitDepth = Literal[16, 24]

@@ -12,7 +12,6 @@ from mutagen.flac import VCFLACDict
 from mutagen.id3 import APIC, TXXX, Frames
 
 from salmon.common.files import process_files
-from salmon.release_notification import get_version
 
 Bitrate = Literal["V0", "320"]
 

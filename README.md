@@ -1,4 +1,20 @@
-[![Build and Publish Docker Image](https://github.com/smokin-salmon/smoked-salmon/actions/workflows/docker-image.yml/badge.svg)](https://github.com/smokin-salmon/smoked-salmon/actions/workflows/docker-image.yml) [![Linting](https://github.com/smokin-salmon/smoked-salmon/actions/workflows/lint.yml/badge.svg?branch=master)](https://github.com/smokin-salmon/smoked-salmon/actions/workflows/lint.yml)
+> ## ⚠️ About this fork
+>
+> **This is a vibe-coded fork of [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon) `0.10.0`, put together to help upload Deezer downloads to Gazelle-based music trackers.**
+>
+> It is not maintained, not reviewed, and not affiliated with upstream. If you want the real thing, use [smokin-salmon/smoked-salmon](https://github.com/smokin-salmon/smoked-salmon).
+>
+> What's different here:
+>
+> - **Deezer only** — metadata search is restricted to Deezer. Bandcamp, Beatport, Discogs, iTunes, JunoDownload, MusicBrainz, Qobuz and Tidal are disabled.
+> - **Deezer ARL support** — set `arl` under `[metadata.deezer]` in your config to send an authenticated cookie with Deezer requests. It falls back to unauthenticated requests (with a warning) if the ARL is missing or expired.
+> - **Folders are moved, not copied** — releases are moved into `download_directory` with `shutil.move` instead of being hardlinked or copied, and an emptied source parent directory is removed. The `hardlinks` and `remove_source_dir` options are gone.
+> - **Lossy-master prompts always ask** — even with `yes_all` enabled, you are still asked whether a release is lossy mastered and for the approval comment. This is deliberate: auto-answering "no" would assert something about a release nobody looked at.
+> - **No upstream footer** — the "Uploaded with smoked-salmon" line is dropped from torrent and transcode descriptions.
+>
+> Everything below is upstream's README and still broadly applies.
+
+---
 
 # 🐟 smoked-salmon  
 
@@ -14,8 +30,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 - **Spectral Analysis** – Generates, compresses, and verifies spectrals, exposed via a web interface.  
 - **Spectral Upload** – Can generate spectrals for an existing upload (based on local files), and update the release description.  
 - **Lossy Master Report Generation** – Supports lossy master reports during upload.
-- **Metadata Retrieval** – Fetches metadata from:
-  - Bandcamp, Beatport, Deezer, Discogs, iTunes, JunoDownload, MusicBrainz, Qobuz, Tidal.
+- **Metadata Retrieval** – Fetches metadata from Deezer. *(This fork disables the other sources upstream supports.)*
 - **File Management** –  
   - Retags and renames files to standard formats (based on metadata).
   - Checks file integrity and sanitizes if needed.  

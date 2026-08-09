@@ -43,7 +43,6 @@ def tag_files(path, tags, metadata, auto_rename):
         retag_files(path, album_changes, track_changes)
 
 
-
 def check_whether_to_tag(tags, metadata):
     """
     Make sure the number of tracks in the metadata equals the number of tracks
