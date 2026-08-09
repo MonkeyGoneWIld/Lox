@@ -54,7 +54,7 @@ async def check_spectrals(
         lossy_master: Whether files are lossy mastered.
         spectral_ids: Track IDs for spectrals.
         check_lma: Whether to check for lossy master.
-        force_prompt_lossy_master: Force lossy master prompt.
+        force_prompt_lossy_master: Force the spectral selection prompt even when yes_all is set.
         format: Audio format.
 
     Returns:
@@ -74,14 +74,14 @@ async def check_spectrals(
         while True:
             await view_spectrals(spectrals_path, all_spectral_ids)
             if lossy_master is None and check_lma:
-                lossy_master = await prompt_lossy_master(force_prompt_lossy_master)
+                lossy_master = await prompt_lossy_master()
                 if lossy_master is not None:
                     break
             else:
                 break
     else:
         if lossy_master is None:
-            lossy_master = await prompt_lossy_master(force_prompt_lossy_master)
+            lossy_master = await prompt_lossy_master()
 
     if not spectral_ids:
         spectral_ids = await prompt_spectrals(
@@ -504,7 +504,7 @@ async def prompt_spectrals(spectral_ids, lossy_master, check_lma, force_prompt_l
         )
 
 
-async def prompt_lossy_master(force_prompt_lossy_master=False):
+async def prompt_lossy_master():
     while True:
         flush_stdin()
         r = (
@@ -558,7 +558,7 @@ async def report_lossy_master(
     click.secho("\nReported upload for Lossy Master/WEB Approval Request.", fg="cyan")
 
 
-async def generate_lossy_approval_comment(source_url, filenames, force_prompt_lossy_master=False):
+async def generate_lossy_approval_comment(source_url, filenames):
     while True:
         comment = await click.prompt(
             click.style(
@@ -634,9 +634,7 @@ async def post_upload_spectral_check(
 
     lossy_comment = None
     if lossy_master:
-        lossy_comment = await generate_lossy_approval_comment(
-            source_url, list(track_data.keys()), force_prompt_lossy_master=True
-        )
+        lossy_comment = await generate_lossy_approval_comment(source_url, list(track_data.keys()))
         click.echo()
 
     spectrals_path = get_spectrals_path(path)

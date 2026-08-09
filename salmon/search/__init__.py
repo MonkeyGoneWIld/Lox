@@ -13,17 +13,7 @@ from salmon.common import (
     re_split,
     re_strip,
 )
-from salmon.search import (
-    bandcamp,
-    beatport,
-    deezer,
-    discogs,
-    itunes,
-    junodownload,
-    musicbrainz,
-    qobuz,
-    tidal,
-)
+from salmon.search import deezer
 
 SEARCHSOURCES = {
     "Deezer": deezer,

@@ -11,7 +11,6 @@ class BaseStruct(msgspec.Struct, forbid_unknown_fields=False):
 class Directory(BaseStruct):
     dottorrents_dir: str
     download_directory: str
-    hardlinks: bool = True
     tmp_dir: str | None = None
     clean_tmp_dir: bool = False
 
@@ -24,7 +23,7 @@ class Directory(BaseStruct):
             raise ValueError("tmp_dir is not a valid directory")
 
 
-ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbox", "imgbox"]
+ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox"]
 
 
 class ImageUploader(BaseStruct):
@@ -126,7 +125,6 @@ class UploadSearch(BaseStruct):
 class UploadFormatting(BaseStruct):
     folder_template: str = "{artists} - {title} ({year}) [{source} {format}]"
     file_template: str = "{tracknumber}. {artist} - {title}"
-    remove_source_dir: bool = False
 
     # formatting options
     no_artist_in_filename_if_only_one_album_artist: bool = True
