@@ -13,12 +13,15 @@ are small and easy to burn.
 """
 
 from salmon.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerStatus
-from salmon.checker.missing import MissingScanner, ScanResult
+from salmon.checker.missing import AlbumCheck, GroupHit, MissingScanner, ScanResult, TrackerVerdict
 from salmon.checker.requests_check import RequestChecker, RequestMatch
 from salmon.checker.store import CheckerStore
+from salmon.checker.watchlists import Watchlist, WatchlistManager
 
 __all__ = [
+    "AlbumCheck",
     "CheckerStore",
+    "GroupHit",
     "MissingScanner",
     "RequestChecker",
     "RequestMatch",
@@ -26,4 +29,7 @@ __all__ = [
     "TrackerBudgetExceeded",
     "TrackerGateway",
     "TrackerStatus",
+    "TrackerVerdict",
+    "Watchlist",
+    "WatchlistManager",
 ]

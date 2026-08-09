@@ -129,12 +129,20 @@ class DeezerGW:
         """Exit the async context, closing the HTTP session."""
         await self.close()
 
-    async def _ensure_session(self) -> aiohttp.ClientSession:
-        """Return the shared session, creating it on first use."""
+    async def session(self) -> aiohttp.ClientSession:
+        """Return the shared HTTP session, creating it on first use.
+
+        One session is reused across the client, the downloader and the
+        explorer so the ARL cookie and connection pool are shared.
+        """
         if self._session is None or self._session.closed:
             cookies = {"arl": self.arl} if self.arl else {}
             self._session = aiohttp.ClientSession(timeout=self.timeout, headers=HEADERS, cookies=cookies)
         return self._session
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        """Deprecated alias for :meth:`session`."""
+        return await self.session()
 
     async def close(self) -> None:
         """Close the underlying HTTP session."""
@@ -171,7 +179,7 @@ class DeezerGW:
 
     async def _call_raw(self, method: str, payload: dict) -> dict:
         """POST to gw-light without requiring a prior login."""
-        session = await self._ensure_session()
+        session = await self.session()
         params = {
             "method": method,
             "input": "3",
@@ -331,7 +339,7 @@ class DeezerGW:
         Raises:
             DeezerGWError: On transport failure or a persistent rate limit.
         """
-        session = await self._ensure_session()
+        session = await self.session()
         for attempt in range(4):
             try:
                 async with session.get(PUBLIC_API + path, params=params or {}) as resp:
@@ -426,7 +434,7 @@ class DeezerGW:
             "track_tokens": [token],
         }
 
-        session = await self._ensure_session()
+        session = await self.session()
         try:
             async with session.post(MEDIA_URL, json=payload) as resp:
                 body = await resp.read()

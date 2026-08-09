@@ -23,7 +23,10 @@
     selectedCandidates: new Set(),
     missingTrackers: new Set(),
     requestsTracker: null,
-    uploadTracker: null,
+    uploadTrackers: new Set(),
+    albumCheck: null,
+    watchlists: [],
+    linking: false,
     requestRows: [],
     selectedRequests: new Set(),
     trackers: [],
@@ -83,6 +86,7 @@
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
     $('#view-title').textContent = $(`.nav-item[data-view="${view}"]`).textContent.trim();
     if (view === 'explore') loadExplore();
+    if (view === 'missing') loadWatchlists();
     if (view === 'downloads') pollDownloads(true);
     if (view === 'uploads') loadFolders();
     if (view === 'settings') loadSettings();
@@ -182,16 +186,19 @@
       ),
     );
 
-    if (!state.uploadTracker && state.trackers.length) state.uploadTracker = state.trackers[0].code;
+    if (!state.uploadTrackers.size && state.trackers.length) state.uploadTrackers.add(state.trackers[0].code);
     $('#upload-tracker').replaceChildren(
       ...state.trackers.map((t) =>
         el(
           'button',
           {
             type: 'button',
-            class: state.uploadTracker === t.code ? 'active' : '',
+            class: state.uploadTrackers.has(t.code) ? 'active' : '',
+            title: 'Uploading to several trackers creates one hardlinked folder each',
             onclick: () => {
-              state.uploadTracker = t.code;
+              state.uploadTrackers.has(t.code)
+                ? state.uploadTrackers.delete(t.code)
+                : state.uploadTrackers.add(t.code);
               renderTrackerPickers();
             },
           },
@@ -425,13 +432,28 @@
           { class: 'row' },
           el('button', { class: 'primary', onclick: () => download(album.id) }, 'Download'),
           album.url ? el('a', { class: 'linkbtn', href: album.url, target: '_blank', rel: 'noopener' }, 'Open on Deezer') : null,
-          el(
-            'button',
-            { onclick: () => sendToMissing(`https://www.deezer.com/album/${album.id}`) },
-            'Check trackers later',
-          ),
         ),
         el('p', {}, verdict),
+        el(
+          'div',
+          { class: 'checkbox-panel', id: 'album-check' },
+          el(
+            'div',
+            { class: 'row' },
+            el('strong', {}, 'Trackers'),
+            ...state.trackers.map((t) =>
+              el('button', { onclick: (e) => checkAlbum(album, [t.code], e.target) }, `Check ${t.code}`),
+            ),
+            state.trackers.length > 1
+              ? el(
+                  'button',
+                  { class: 'primary', onclick: (e) => checkAlbum(album, state.trackers.map((t) => t.code), e.target) },
+                  'Check all',
+                )
+              : null,
+          ),
+          el('div', { id: 'album-check-body' }, el('p', { class: 'hint' }, 'Nothing has been asked of a tracker yet.')),
+        ),
         el(
           'dl',
           { class: 'meta' },
@@ -460,6 +482,188 @@
       );
     } catch (e) {
       body.replaceChildren(empty(e.message));
+    }
+  }
+
+  // ------------------------------------------------------ per-album check
+
+  async function checkAlbum(album, trackers, button) {
+    const target = $('#album-check-body');
+    if (!target) return;
+    if (button) button.disabled = true;
+    target.replaceChildren(spinner(`Asking ${trackers.join(' and ')}`));
+
+    try {
+      const { job_id } = await api(`/api/album/${album.id}/check`, { method: 'POST', body: { trackers } });
+      followJob(job_id, {
+        onUpdate: (job) => {
+          if (job.results.length) state.albumCheck = job.results[job.results.length - 1];
+        },
+        onDone: (job) => {
+          if (button) button.disabled = false;
+          refreshStatus();
+          if (job.error) return target.replaceChildren(empty(job.error));
+          renderAlbumCheck(album, state.albumCheck);
+        },
+      });
+    } catch (e) {
+      if (button) button.disabled = false;
+      target.replaceChildren(empty(e.message));
+    }
+  }
+
+  function renderAlbumCheck(album, check) {
+    const target = $('#album-check-body');
+    if (!target || !check) return;
+
+    const blocks = check.verdicts.map((v) => {
+      const head = el(
+        'div',
+        { class: 'row verdict-head' },
+        el('strong', {}, v.tracker),
+        el(
+          'span',
+          { class: `tag ${v.status === 'missing' ? 'ok' : v.status === 'found' ? 'dim' : 'warn'}` },
+          v.status === 'missing' ? 'not on tracker' : v.status,
+        ),
+        el('span', { class: 'card-sub' }, `${v.calls_used} call(s), ${v.queries.length} search(es)`),
+        v.artist_url ? el('a', { href: v.artist_url, target: '_blank', rel: 'noopener' }, 'artist page') : null,
+      );
+
+      const inspected = v.inspected.length
+        ? el(
+            'ul',
+            { class: 'hitlist' },
+            ...v.inspected.map((h) =>
+              el(
+                'li',
+                { class: h.matched ? 'hit matched' : 'hit' },
+                el('a', { href: h.url, target: '_blank', rel: 'noopener' }, `${h.artist} — ${h.name}${h.year ? ` (${h.year})` : ''}`),
+                el('span', { class: 'card-sub' }, h.matched ? 'matched' : h.reason),
+                h.formats.length ? el('span', { class: 'card-sub' }, h.formats.join(' · ')) : null,
+              ),
+            ),
+          )
+        : el('p', { class: 'hint' }, v.error || 'No groups came back from the search.');
+
+      return el('div', { class: 'verdict' }, head, inspected);
+    });
+
+    const uploadable = check.uploadable_to || [];
+    const actions = el(
+      'div',
+      { class: 'row' },
+      uploadable.length
+        ? el(
+            'button',
+            { class: 'primary', onclick: () => uploadAlbum(album, uploadable) },
+            `Download & upload to ${uploadable.join(' + ')}`,
+          )
+        : el('span', { class: 'hint' }, 'Nothing to upload — every checked tracker already has it, or the check did not finish.'),
+    );
+
+    target.replaceChildren(
+      el(
+        'p',
+        { class: 'hint' },
+        'Open the links and confirm the checker got it right before uploading. Rejected groups are listed with the reason.',
+      ),
+      ...blocks,
+      actions,
+    );
+  }
+
+  async function uploadAlbum(album, trackers) {
+    // The release has to exist on disk before there is anything to upload. If a
+    // matching folder is already there, go straight to the upload; otherwise
+    // queue the download and hand off to the Downloads tab.
+    state.uploadTrackers = new Set(trackers);
+    renderTrackerPickers();
+
+    let folders = [];
+    try {
+      ({ folders } = await api('/api/folders'));
+    } catch {
+      folders = [];
+    }
+
+    const needle = `${album.artist} - ${album.title}`.toLowerCase();
+    const existing = folders.find((f) => f.name.toLowerCase().startsWith(needle.slice(0, 40)));
+
+    $('#detail').hidden = true;
+    if (existing) {
+      setView('uploads');
+      startUpload(existing.path, trackers);
+      return;
+    }
+
+    await download(album.id);
+    setView('downloads');
+    toast(`Downloading first. When it finishes, upload it from the Uploads tab — ${trackers.join(' and ')} are preselected.`);
+  }
+
+  // ---------------------------------------------------------------- watchlists
+
+  async function loadWatchlists() {
+    const container = $('#watchlists');
+    try {
+      const { watchlists } = await api('/api/watchlists');
+      state.watchlists = watchlists;
+      if (!watchlists.length) {
+        container.replaceChildren(el('p', { class: 'hint' }, 'No saved searches yet.'));
+        return;
+      }
+      container.replaceChildren(
+        ...watchlists.map((w) =>
+          el(
+            'div',
+            { class: 'row watchrow' },
+            el('strong', {}, w.name),
+            el('span', { class: 'tag dim' }, w.kind_label),
+            el('span', { class: 'card-sub' }, w.target),
+            w.last_run ? el('span', { class: 'card-sub' }, `${w.last_count} last run`) : null,
+            el('button', { onclick: () => runWatchlist(w) }, 'Run'),
+            el('button', { class: 'ghost', onclick: () => deleteWatchlist(w.id) }, 'Delete'),
+          ),
+        ),
+      );
+    } catch (e) {
+      container.replaceChildren(empty(e.message));
+    }
+  }
+
+  async function saveWatchlist(event) {
+    event.preventDefault();
+    const name = $('#watchlist-name').value.trim();
+    const kind = $('#watchlist-kind').value;
+    const target = $('#watchlist-target').value.trim() || '0';
+    try {
+      await api('/api/watchlists', { method: 'POST', body: { name, kind, target } });
+      $('#watchlist-name').value = '';
+      $('#watchlist-target').value = '';
+      loadWatchlists();
+      toast('Saved', 'ok');
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
+  async function deleteWatchlist(id) {
+    await api(`/api/watchlists/${id}`, { method: 'DELETE' });
+    loadWatchlists();
+  }
+
+  async function runWatchlist(watch) {
+    toast(`Running "${watch.name}"…`);
+    try {
+      const { results } = await api(`/api/watchlists/${watch.id}/run`, { method: 'POST' });
+      if (!results.length) return toast('No albums returned', 'bad');
+      const box = $('#missing-sources');
+      const urls = results.map((a) => `https://www.deezer.com/album/${a.id}`);
+      box.value = urls.join('\n');
+      toast(`${results.length} album(s) loaded into the collect box. Still no tracker contacted.`, 'ok');
+    } catch (e) {
+      toast(e.message, 'bad');
     }
   }
 
@@ -830,8 +1034,12 @@
     const list = $('#folders-list');
     list.replaceChildren(spinner('Reading download folder'));
     try {
-      const { folders, directory } = await api('/api/folders');
+      const { folders, directory, linking } = await api('/api/folders');
       $('#uploads-dir').textContent = directory;
+      state.linking = linking;
+      $('#linking-note').textContent = linking
+        ? 'Linking is on: each tracker gets its own hardlinked folder under the seeding directory, so the bytes exist once.'
+        : 'Linking is off — every tracker will seed from the same folder. Set [linking] in your config for cross-seed style layout.';
       if (!folders.length) {
         list.replaceChildren(empty('No release folders yet.'));
         return;
@@ -850,7 +1058,11 @@
                 {},
                 el('td', {}, f.name),
                 el('td', {}, String(f.tracks)),
-                el('td', {}, el('button', { class: 'primary', onclick: () => startUpload(f.path) }, 'Upload')),
+                el(
+                  'td',
+                  {},
+                  el('button', { class: 'primary', onclick: () => startUpload(f.path) }, 'Upload'),
+                ),
               ),
             ),
           ),
@@ -861,14 +1073,18 @@
     }
   }
 
-  async function startUpload(folder) {
+  async function startUpload(folder, trackers) {
+    const targets = trackers && trackers.length ? trackers : [...state.uploadTrackers];
+    if (!targets.length) return toast('Pick at least one tracker', 'bad');
+
     $('#upload-console-panel').hidden = false;
     $('#upload-console').textContent = '';
     try {
-      const { job_id } = await api('/api/upload', {
+      const { job_id, linking } = await api('/api/upload', {
         method: 'POST',
-        body: { folder, tracker: state.uploadTracker },
+        body: { folder, trackers: targets },
       });
+      if (linking && targets.length > 1) toast(`Hardlinking one folder per tracker: ${targets.join(', ')}`);
       state.uploadJob = job_id;
       followJob(job_id, {
         interval: 700,
@@ -970,6 +1186,19 @@
     });
     $('#requests-fetch').addEventListener('click', requestsFetch);
     $('#requests-check').addEventListener('click', requestsCheck);
+    $('#requests-file').addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      const ids = text
+        .split(/\r?\n/)
+        .map((line) => (line.match(/(\d+)/) || [])[1])
+        .filter(Boolean);
+      $('#requests-ids').value = ids.join('\n');
+      e.target.value = '';
+      toast(`${ids.length} request ID(s) loaded from ${file.name}`, ids.length ? 'ok' : 'bad');
+    });
+    $('#watchlist-form').addEventListener('submit', saveWatchlist);
     $('#downloads-clear').addEventListener('click', async () => {
       await api('/api/downloads/clear', { method: 'POST' });
       pollDownloads(true);

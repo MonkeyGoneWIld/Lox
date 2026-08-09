@@ -1,0 +1,69 @@
+# lox — Deezer to Gazelle upload pipeline
+#
+# Read the two warnings before deploying:
+#
+# 1. Set LOX_AUTH_TOKEN. The UI can spend your tracker API budget, read your
+#    Deezer session and start uploads to your tracker accounts. Exposing it
+#    without a token hands all of that to anyone who can reach the port.
+#
+# 2. /downloads and /links must be the SAME Docker volume or the same
+#    underlying filesystem. Hardlinks cannot cross filesystems, and if they
+#    can't be made you either get an error or a full second copy of every
+#    release, depending on linking.fallback_to_copy.
+
+services:
+  lox:
+    build: .
+    # Or pull a prebuilt image instead of building:
+    # image: ghcr.io/monkeygonewild/lox:latest
+    container_name: lox
+    restart: unless-stopped
+    command: ["ui"]
+
+    ports:
+      # Bind to loopback and put a reverse proxy in front of it. Change to
+      # "55110:55110" only if you have set an auth token.
+      - "127.0.0.1:55110:55110"
+
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      # Read by config.toml via ${LOX_AUTH_TOKEN}; generate one with:
+      #   openssl rand -hex 32
+      LOX_AUTH_TOKEN: ${LOX_AUTH_TOKEN:?set LOX_AUTH_TOKEN in your .env}
+
+    volumes:
+      # config.toml holds every credential. Mounted where find_config_path()
+      # looks first, so it wins over anything baked into the image.
+      - ./config/config.toml:/app/config.toml:ro
+      # Scan history and saved searches persist here.
+      - ./config/state:/config/state
+
+      # Finished downloads. This is what the Uploads tab lists.
+      - ${MUSIC_DIR:-./data/music}:/downloads
+
+      # Hardlink target: your qBittorrent upload/seeding directory. Must be on
+      # the same filesystem as /downloads. lox writes /links/RED/... and
+      # /links/OPS/... here, and qBittorrent seeds from those paths.
+      - ${LINKS_DIR:-./data/links}:/links
+
+      # Generated .torrent files, or a client watch folder.
+      - ${TORRENTS_DIR:-./data/torrents}:/torrents
+
+      # Spectral scratch space. Fast disk helps.
+      - ${TMP_DIR:-./data/tmp}:/tmp/lox
+
+    # Match your qBittorrent user so hardlinks and permissions line up.
+    user: "${PUID:-1000}:${PGID:-1000}"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,os,sys; r=urllib.request.Request('http://127.0.0.1:55110/api/status', headers={'X-Auth-Token': os.environ.get('LOX_AUTH_TOKEN','')}); sys.exit(0 if urllib.request.urlopen(r, timeout=5).status==200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -27,6 +27,9 @@ FINAL_STATUSES = frozenset(
 )
 """Outcomes that will never change; these albums are never re-checked."""
 
+FLUSH_INTERVAL = 5.0
+"""Seconds between debounced writes of a collection to disk."""
+
 RETEST_STATUSES = frozenset(
     {
         "deezer_info_failed",
@@ -57,11 +60,12 @@ class CheckerStore:
                 ``checker.state_dir``, then ``<download_directory>/.salmon-checker``.
         """
         self.directory = directory or cfg.checker.state_dir or os.path.join(
-            cfg.directory.download_directory, ".salmon-checker"
+            cfg.directory.download_directory, ".lox-checker"
         )
         os.makedirs(self.directory, exist_ok=True)
         self._cache: dict[str, dict[str, Any]] = {}
-        self._lock = threading.Lock()
+        self._dirty: dict[str, float] = {}
+        self._lock = threading.RLock()
 
     def _path(self, name: str) -> str:
         """Return the file path backing a collection."""
@@ -108,27 +112,51 @@ class CheckerStore:
         """Return one entry from a collection."""
         return self.load(name).get(str(key))
 
-    def put(self, name: str, key: str, value: dict[str, Any], flush: bool = True) -> None:
+    def put(self, name: str, key: str, value: dict[str, Any], flush: bool = False) -> None:
         """Store one entry, stamping it with the current time.
+
+        Writes are debounced. Serializing the whole collection after every album
+        turns a long scan into O(n^2) disk churn, so by default the entry lands
+        in memory and hits disk at most once every :data:`FLUSH_INTERVAL`
+        seconds. Call :meth:`flush` to force it — the scanners do so when they
+        finish.
 
         Args:
             name: Collection name.
             key: Entry key.
             value: Entry payload.
-            flush: Write to disk immediately.
+            flush: Write to disk immediately regardless of the interval.
         """
-        collection = self.load(name)
-        collection[str(key)] = {**value, "checked_at": time.time()}
-        if flush:
-            self.save(name)
+        with self._lock:
+            collection = self.load(name)
+            collection[str(key)] = {**value, "checked_at": time.time()}
+            last = self._dirty.get(name)
+            if last is None:
+                self._dirty[name] = time.monotonic()
+                last = self._dirty[name]
+        if flush or time.monotonic() - last >= FLUSH_INTERVAL:
+            self.flush(name)
+
+    def flush(self, name: str | None = None) -> None:
+        """Write pending changes to disk.
+
+        Args:
+            name: Collection to flush, or None for every dirty collection.
+        """
+        names = [name] if name else list(self._dirty)
+        for collection in names:
+            self.save(collection)
+            self._dirty.pop(collection, None)
 
     def delete(self, name: str, key: str, flush: bool = True) -> None:
         """Remove one entry from a collection."""
-        collection = self.load(name)
-        if str(key) in collection:
+        with self._lock:
+            collection = self.load(name)
+            if str(key) not in collection:
+                return
             del collection[str(key)]
-            if flush:
-                self.save(name)
+        if flush:
+            self.flush(name)
 
     def should_skip(self, name: str, key: str) -> bool:
         """True when an entry has a final status and need not be re-checked."""

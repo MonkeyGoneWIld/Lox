@@ -42,6 +42,76 @@ class Candidate(msgspec.Struct):
         return msgspec.to_builtins(self)
 
 
+class GroupHit(msgspec.Struct):
+    """One tracker torrent group that was inspected, and why it did or did not match.
+
+    Near misses are kept deliberately. When the checker says a release is
+    missing, the useful question is "what did it look at?", and a link to the
+    rejected group is the fastest way to answer it by eye.
+    """
+
+    group_id: int
+    name: str
+    artist: str
+    year: int | None
+    url: str
+    matched: bool
+    reason: str
+    formats: list[str] = msgspec.field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Serialize for the web API."""
+        return msgspec.to_builtins(self)
+
+
+class TrackerVerdict(msgspec.Struct):
+    """What one tracker said about one album."""
+
+    tracker: str
+    status: str
+    match: GroupHit | None = None
+    inspected: list[GroupHit] = msgspec.field(default_factory=list)
+    queries: list[str] = msgspec.field(default_factory=list)
+    calls_used: int = 0
+    error: str | None = None
+    artist_url: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Serialize for the web API."""
+        return msgspec.to_builtins(self)
+
+
+class AlbumCheck(msgspec.Struct):
+    """The per-album check the UI runs before offering an upload."""
+
+    album_id: str
+    title: str
+    artist: str
+    verdicts: list[TrackerVerdict] = msgspec.field(default_factory=list)
+
+    @property
+    def missing_from(self) -> list[str]:
+        """Trackers that definitely do not have this release."""
+        return [v.tracker for v in self.verdicts if v.status == "missing"]
+
+    @property
+    def found_on(self) -> list[str]:
+        """Trackers that already have this release."""
+        return [v.tracker for v in self.verdicts if v.status == "found"]
+
+    def as_dict(self) -> dict[str, Any]:
+        """Serialize for the web API."""
+        return {
+            "album_id": self.album_id,
+            "title": self.title,
+            "artist": self.artist,
+            "verdicts": [v.as_dict() for v in self.verdicts],
+            "missing_from": self.missing_from,
+            "found_on": self.found_on,
+            "uploadable_to": self.missing_from,
+        }
+
+
 class ScanResult(msgspec.Struct):
     """Outcome of checking one album against the trackers."""
 
@@ -126,6 +196,7 @@ class MissingScanner:
             if candidate:
                 candidates.append(candidate)
 
+        self.store.flush("albums")
         emit("collect_done", {"candidates": len(candidates)})
         return candidates
 
@@ -370,6 +441,7 @@ class MissingScanner:
                 emit("budget_exhausted", {"checked": len(results), "remaining": len(candidates) - len(results)})
                 break
 
+        self.store.flush("albums")
         return results
 
     async def _check_one(self, candidate: Candidate, code: str) -> tuple[bool, int | None, int, int]:
@@ -379,32 +451,162 @@ class MissingScanner:
             Tuple of (found, group id, tracker calls spent, queries tried).
         """
         info = await self.gw.album(candidate.album_id)
+        verdict = await self._inspect(info, code, collect_all=False)
+        if verdict.error:
+            raise TrackerBudgetExceeded(verdict.error)
+        found = verdict.status == "found"
+        group_id = verdict.match.group_id if verdict.match else None
+        return found, group_id, verdict.calls_used, len(verdict.queries)
+
+    async def _inspect(self, info: dict, code: str, collect_all: bool = True) -> TrackerVerdict:
+        """Search one tracker and record every group it looked at.
+
+        Args:
+            info: Public-API album payload.
+            code: Tracker code.
+            collect_all: Keep searching after a match so the UI can show the
+                near misses too. The batch scanner sets this false and stops at
+                the first hit to save budget.
+
+        Returns:
+            A populated TrackerVerdict.
+        """
+        verdict = TrackerVerdict(tracker=code, status="missing")
         queries = build_search_queries(info)
-        calls = 0
-        tried = 0
         seen_groups: set[int] = set()
 
         for query in queries:
             if not self.gateway.can_check(code):
-                raise TrackerBudgetExceeded(f"{code} budget spent mid-album")
-            tried += 1
+                verdict.error = f"{code} budget spent after {verdict.calls_used} call(s)"
+                verdict.status = "incomplete"
+                return verdict
+
+            verdict.queries.append(query)
             rows = await self.gateway.browse(code, query)
-            calls += 1
+            verdict.calls_used += 1
 
             for row in rows:
-                group_id = row.get("groupId") or row.get("id")
-                if not group_id or group_id in seen_groups:
+                raw_id = row.get("groupId") or row.get("id")
+                if not raw_id or int(raw_id) in seen_groups:
                     continue
+                group_id = int(raw_id)
                 seen_groups.add(group_id)
-                if not self.gateway.can_check(code):
-                    raise TrackerBudgetExceeded(f"{code} budget spent mid-album")
-                group = await self.gateway.torrentgroup(code, int(group_id))
-                calls += 1
-                matched, _reason = evaluate_group(info, group)
-                if matched:
-                    return True, int(group_id), calls, tried
 
-        return False, None, calls, tried
+                if not self.gateway.can_check(code):
+                    verdict.error = f"{code} budget spent after {verdict.calls_used} call(s)"
+                    verdict.status = "incomplete"
+                    return verdict
+
+                group = await self.gateway.torrentgroup(code, group_id)
+                verdict.calls_used += 1
+                matched, reason = evaluate_group(info, group)
+                hit = self._group_hit(code, group_id, group, matched, reason)
+                verdict.inspected.append(hit)
+
+                if matched:
+                    verdict.status = "found"
+                    verdict.match = hit
+                    if not collect_all:
+                        return verdict
+
+            if verdict.status == "found":
+                break
+
+        return verdict
+
+    def _group_hit(self, code: str, group_id: int, group: dict, matched: bool, reason: str) -> GroupHit:
+        """Summarize a torrent group for display."""
+        info = group.get("group") or {}
+        torrents = group.get("torrents") or []
+        formats = sorted(
+            {
+                f"{t.get('media', '?')} {t.get('format', '?')} {t.get('encoding', '?')}".strip()
+                for t in torrents
+            }
+        )
+        return GroupHit(
+            group_id=group_id,
+            name=info.get("name") or "",
+            artist=info.get("artist") or "",
+            year=info.get("year"),
+            url=f"{self.gateway.api(code).base_url}/torrents.php?id={group_id}",
+            matched=matched,
+            reason=reason,
+            formats=formats[:8],
+        )
+
+    async def check_album(self, album_id: str, trackers: list[str]) -> AlbumCheck:
+        """Check a single album against trackers, keeping every group inspected.
+
+        This backs the per-album flow in the UI: check, eyeball the links, then
+        decide whether to upload. It costs more budget than the batch scanner
+        because it does not stop at the first hit.
+
+        Args:
+            album_id: Deezer album ID.
+            trackers: Tracker codes to check.
+
+        Returns:
+            An AlbumCheck with one verdict per tracker.
+
+        Raises:
+            DeezerGWError: If the album cannot be read from Deezer.
+        """
+        info = await self.gw.album(album_id)
+        check = AlbumCheck(
+            album_id=str(album_id),
+            title=info.get("title") or "",
+            artist=(info.get("artist") or {}).get("name") or "",
+        )
+
+        for code in trackers:
+            if code not in self.gateway.configured_trackers():
+                check.verdicts.append(TrackerVerdict(tracker=code, status="unconfigured", error="not configured"))
+                continue
+            if not self.gateway.can_check(code):
+                status = self.gateway.status(code).as_dict()
+                message = (
+                    f"cooling down for {status['cooldown_seconds']}s"
+                    if status["cooldown_seconds"]
+                    else f"no budget left ({status['remaining']}/{status['budget']})"
+                )
+                check.verdicts.append(TrackerVerdict(tracker=code, status="unavailable", error=message))
+                continue
+
+            try:
+                verdict = await self._inspect(info, code)
+            except Exception as e:  # noqa: BLE001 - one tracker failing must not hide the other
+                check.verdicts.append(TrackerVerdict(tracker=code, status="error", error=str(e)))
+                continue
+
+            artist_name = (info.get("artist") or {}).get("name") or ""
+            if artist_name:
+                verdict.artist_url = self.gateway.artist_url(code, artist_name)
+            check.verdicts.append(verdict)
+
+        if check.found_on:
+            status = "exists_" + "_".join(sorted(c.lower() for c in check.found_on))
+        elif check.missing_from:
+            status = "missing_" + "_".join(sorted(c.lower() for c in check.missing_from))
+        else:
+            # Every tracker was unconfigured, out of budget or errored. Leave it
+            # retestable rather than recording a verdict nobody reached.
+            status = "tracker_failed"
+
+        self.store.put(
+            "albums",
+            album_id,
+            {
+                "status": status,
+                "title": check.title,
+                "artist": check.artist,
+                "found_on": check.found_on,
+                "missing_from": check.missing_from,
+                "source": "album check",
+            },
+            flush=True,
+        )
+        return check
 
     @staticmethod
     def _status_for(result: ScanResult, trackers: list[str]) -> str:

@@ -13,6 +13,8 @@ from typing import Any
 
 MAX_EVENTS = 400
 MAX_LOG_LINES = 2000
+MAX_RESULTS = 5000
+"""Ceiling on retained results. A runaway scan must not exhaust memory."""
 
 
 class Job:
@@ -53,7 +55,8 @@ class Job:
             self.progress = payload
             return
         if event == "result":
-            self.results.append(payload)
+            if len(self.results) < MAX_RESULTS:
+                self.results.append(payload)
             return
         self.events.append({"event": event, "at": time.time(), **payload})
         del self.events[:-MAX_EVENTS]

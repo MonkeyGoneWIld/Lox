@@ -7,8 +7,12 @@ spend tracker budget, and each reports what it cost.
 """
 
 import asyncio
+import contextlib
+import ipaddress
 import os
+import secrets
 import shlex
+import shutil
 import sys
 from typing import Any
 
@@ -20,13 +24,61 @@ from salmon.checker.gateway import TrackerGateway
 from salmon.checker.missing import Candidate, MissingScanner
 from salmon.checker.requests_check import RequestChecker
 from salmon.checker.store import CheckerStore
+from salmon.checker.watchlists import WatchlistManager
 from salmon.deezer.download import Downloader
 from salmon.deezer.explore import Explorer
 from salmon.deezer.gw import DeezerGW, DeezerGWError
 from salmon.notify.discord import DiscordNotifier
+from salmon.seeding.links import LinkError, link_release
 from salmon.web.jobs import JobRegistry
 
 routes = web.RouteTableDef()
+
+AUTH_COOKIE = "lox_token"
+AUTH_HEADER = "X-Auth-Token"
+
+
+def auth_required() -> bool:
+    """True when an auth token is configured."""
+    return bool(cfg.upload.web_interface.auth_token)
+
+
+def _token_ok(supplied: str | None) -> bool:
+    """Compare a supplied token against the configured one in constant time."""
+    expected = cfg.upload.web_interface.auth_token
+    if not expected:
+        return True
+    return bool(supplied) and secrets.compare_digest(supplied, expected)
+
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler):
+    """Gate every request on the configured shared secret.
+
+    The API can spend tracker budget, read an authenticated Deezer session and
+    launch uploads, so on any non-loopback bind it must not be open. Static
+    assets are left unauthenticated because they carry nothing.
+    """
+    if not auth_required() or request.path.startswith("/static"):
+        return await handler(request)
+
+    supplied = request.headers.get(AUTH_HEADER) or request.cookies.get(AUTH_COOKIE) or request.query.get("token")
+    if _token_ok(supplied):
+        response = await handler(request)
+        # Let a ?token= link establish the session so the SPA's fetches work.
+        if request.query.get("token") and not request.cookies.get(AUTH_COOKIE):
+            response.set_cookie(
+                AUTH_COOKIE,
+                request.query["token"],
+                httponly=True,
+                samesite="Strict",
+                max_age=60 * 60 * 24 * 30,
+            )
+        return response
+
+    if request.path.startswith("/api/"):
+        return error("authentication required", status=401)
+    raise web.HTTPUnauthorized(text="Authentication required. Append ?token=<your token> to the URL.")
 
 
 def json_response(data: Any, status: int = 200) -> web.Response:
@@ -37,6 +89,60 @@ def json_response(data: Any, status: int = 200) -> web.Response:
 def error(message: str, status: int = 400) -> web.Response:
     """Return a JSON error body."""
     return json_response({"error": message}, status=status)
+
+
+def allowed_roots(app: web.Application) -> list[str]:
+    """Directories the API is willing to read or upload from.
+
+    Everything the UI operates on lives under the download directory or the
+    seeding directory. Anything else is out of bounds.
+    """
+    roots = [app["downloader"].download_dir]
+    if cfg.linking.link_dir:
+        roots.append(cfg.linking.link_dir)
+    if cfg.directory.download_directory not in roots:
+        roots.append(cfg.directory.download_directory)
+    return [os.path.realpath(r) for r in roots if r]
+
+
+def resolve_release_path(app: web.Application, folder: str) -> str:
+    """Validate a client-supplied folder path.
+
+    The upload endpoint takes a path from the browser and hands it to a
+    subprocess, so it must not be possible to walk out of the managed
+    directories and point salmon at, say, an SSH key directory.
+
+    Args:
+        app: The web application, for the configured roots.
+        folder: Path supplied by the client.
+
+    Returns:
+        The resolved absolute path.
+
+    Raises:
+        ValueError: If the path is missing, not a directory, or outside the
+            allowed roots.
+    """
+    if not folder:
+        raise ValueError("folder is required")
+    resolved = os.path.realpath(folder)
+    if not os.path.isdir(resolved):
+        raise ValueError(f"{folder} is not a directory")
+    for root in allowed_roots(app):
+        if resolved == root or resolved.startswith(root + os.sep):
+            return resolved
+    raise ValueError("folder is outside the download and seeding directories")
+
+
+def binds_publicly(host: str) -> bool:
+    """True when the configured host is reachable from outside this machine."""
+    if host in ("", "*"):
+        return True
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        # A hostname rather than an address; assume it resolves off-box.
+        return host not in ("localhost",)
 
 
 async def setup_services(app: web.Application) -> None:
@@ -52,6 +158,7 @@ async def setup_services(app: web.Application) -> None:
     app["store"] = store
     app["scanner"] = MissingScanner(gw, gateway, store)
     app["request_checker"] = RequestChecker(gw, gateway, store)
+    app["watchlists"] = WatchlistManager(gw, store)
     app["notifier"] = DiscordNotifier()
     app["jobs"] = JobRegistry()
 
@@ -176,7 +283,7 @@ async def api_search(request: web.Request) -> web.Response:
             ]
         else:
             rows = await gw.search_albums(query, limit)
-            results = [explorer._public_album(a) for a in rows]  # noqa: SLF001 - shared normalizer
+            results = [explorer.public_album(a) for a in rows]
     except DeezerGWError as e:
         return error(str(e), status=502)
 
@@ -234,6 +341,31 @@ async def api_album(request: web.Request) -> web.Response:
             "availability_error": availability_error,
         }
     )
+
+
+@routes.post("/api/album/{album_id}/check")
+async def api_album_check(request: web.Request) -> web.Response:
+    """Check one album against the trackers, keeping every group it inspected.
+
+    This is the per-album flow: check, read the links it found, then decide
+    whether to upload. It costs more budget than the batch scanner because it
+    does not stop at the first match — the near misses are the point.
+    """
+    album_id = request.match_info["album_id"]
+    body = await request.json() if request.can_read_body else {}
+    trackers = body.get("trackers") or TrackerGateway.configured_trackers()
+    if not trackers:
+        return error("no trackers configured")
+
+    scanner: MissingScanner = request.app["scanner"]
+    jobs: JobRegistry = request.app["jobs"]
+
+    async def run(job) -> None:
+        check = await scanner.check_album(album_id, trackers)
+        job.results.append(check.as_dict())
+
+    job = jobs.spawn("album_check", f"Checking album {album_id} on {', '.join(trackers)}", run)
+    return json_response({"job_id": job.id})
 
 
 @routes.get("/api/artist/{artist_id}/albums")
@@ -315,6 +447,49 @@ async def api_releases(request: web.Request) -> web.Response:
         return json_response({"results": await request.app["explorer"].new_releases(genre)})
     except DeezerGWError as e:
         return error(str(e), status=502)
+
+
+# ----------------------------------------------------------------------
+# Saved searches
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/watchlists")
+async def api_watchlists(request: web.Request) -> web.Response:
+    """List saved Deezer searches."""
+    manager: WatchlistManager = request.app["watchlists"]
+    return json_response({"watchlists": [w.as_dict() for w in manager.list()]})
+
+
+@routes.post("/api/watchlists")
+async def api_watchlist_create(request: web.Request) -> web.Response:
+    """Save a new Deezer search."""
+    body = await request.json()
+    kind = body.get("kind")
+    if kind not in ("new_releases", "chart", "search", "artist", "playlist", "module"):
+        return error("kind must be one of new_releases, chart, search, artist, playlist, module")
+    manager: WatchlistManager = request.app["watchlists"]
+    watch = manager.create(body.get("name", ""), kind, body.get("target", "0"), int(body.get("limit", 50)))
+    return json_response(watch.as_dict())
+
+
+@routes.delete("/api/watchlists/{watch_id}")
+async def api_watchlist_delete(request: web.Request) -> web.Response:
+    """Delete a saved search."""
+    return json_response({"deleted": request.app["watchlists"].delete(request.match_info["watch_id"])})
+
+
+@routes.post("/api/watchlists/{watch_id}/run")
+async def api_watchlist_run(request: web.Request) -> web.Response:
+    """Run a saved search. Deezer only, no tracker budget spent."""
+    manager: WatchlistManager = request.app["watchlists"]
+    try:
+        albums = await manager.run(request.match_info["watch_id"])
+    except KeyError:
+        return error("no such watchlist", status=404)
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+    return json_response({"results": albums})
 
 
 # ----------------------------------------------------------------------
@@ -489,82 +664,140 @@ async def api_folders(request: web.Request) -> web.Response:
     if not os.path.isdir(directory):
         return json_response({"directory": directory, "folders": []})
 
-    folders = []
-    with os.scandir(directory) as entries:
-        for entry in entries:
-            if not entry.is_dir() or entry.name.startswith("."):
-                continue
-            audio = 0
-            for _root, _dirs, files in os.walk(entry.path):
-                audio += sum(1 for f in files if f.lower().endswith((".flac", ".mp3")))
-            folders.append(
-                {
-                    "name": entry.name,
-                    "path": entry.path,
-                    "tracks": audio,
-                    "modified": entry.stat().st_mtime,
-                }
-            )
-    folders.sort(key=lambda f: f["modified"], reverse=True)
-    return json_response({"directory": directory, "folders": folders})
+    def scan() -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                audio = 0
+                size = 0
+                for root, _dirs, files in os.walk(entry.path):
+                    for name in files:
+                        if name.lower().endswith((".flac", ".mp3")):
+                            audio += 1
+                            with contextlib.suppress(OSError):
+                                size += os.path.getsize(os.path.join(root, name))
+                found.append(
+                    {
+                        "name": entry.name,
+                        "path": entry.path,
+                        "tracks": audio,
+                        "bytes": size,
+                        "modified": entry.stat().st_mtime,
+                    }
+                )
+        found.sort(key=lambda f: f["modified"], reverse=True)
+        return found
+
+    # Walking a large music directory is slow enough to stall the event loop.
+    folders = await asyncio.to_thread(scan)
+    return json_response({"directory": directory, "folders": folders, "linking": cfg.linking.enabled})
 
 
-@routes.post("/api/upload")
-async def api_upload(request: web.Request) -> web.Response:
-    """Run the salmon upload flow for a folder as a streamed subprocess.
+def _cli_command() -> list[str]:
+    """Return the argv prefix that invokes this package's CLI."""
+    console_script = shutil.which("lox") or shutil.which("salmon")
+    if console_script:
+        return [console_script]
+    return [sys.executable, "-u", "-m", "salmon"]
 
-    The CLI still owns the upload; the browser just gets its stdout and can send
-    answers back through :func:`api_upload_input`. That keeps prompts that must
-    stay interactive — the lossy-master question above all — actually working.
+
+async def _run_cli(job, args: list[str]) -> int:
+    """Run the CLI as a subprocess, streaming its output into a job.
+
+    Args:
+        job: The job to stream into. Its ``stdin`` is wired to the process so
+            the browser can answer prompts.
+        args: CLI arguments after the program name.
+
+    Returns:
+        The process exit code.
     """
-    body = await request.json()
-    folder = body.get("folder")
-    if not folder or not os.path.isdir(folder):
-        return error("folder must be an existing directory")
-
-    tracker = body.get("tracker")
-    source = body.get("source", "WEB")
-    extra: list[str] = ["up", folder, "--source", source]
-    if tracker:
-        extra += ["--tracker", tracker]
-    if body.get("auto_rename", True):
-        extra.append("--auto-rename")
-
-    jobs: JobRegistry = request.app["jobs"]
-
-    async def run(job) -> None:
-        job.write_log(f"$ salmon {shlex.join(extra)}")
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-u",
-            "-m",
-            "salmon",
-            *extra,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=os.getcwd(),
-            env={**os.environ, "PYTHONUNBUFFERED": "1", "TERM": "dumb"},
-        )
-        job.stdin = process.stdin
+    command = _cli_command()
+    job.write_log(f"$ {os.path.basename(command[0])} {shlex.join(args)}")
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=os.getcwd(),
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "TERM": "dumb"},
+    )
+    job.stdin = process.stdin
+    try:
         assert process.stdout is not None
         while True:
             line = await process.stdout.readline()
             if not line:
                 break
             job.write_log(line.decode(errors="replace").rstrip("\n"))
-        code = await process.wait()
+        return await process.wait()
+    finally:
         job.stdin = None
-        job.status = "done" if code == 0 else "failed"
-        if code != 0:
-            job.error = f"salmon exited with code {code}"
 
-    job = jobs.spawn("upload", f"Uploading {os.path.basename(folder)}", run)
-    return json_response({"job_id": job.id})
+
+@routes.post("/api/upload")
+async def api_upload(request: web.Request) -> web.Response:
+    """Upload a release folder to one or more trackers.
+
+    When ``linking.enabled`` is set, each tracker gets its own hardlinked copy
+    of the folder first and the torrent is built from that path, so both
+    trackers can seed the same bytes from separate directories — the cross-seed
+    layout. The CLI still drives the upload itself; the browser gets its stdout
+    and can answer prompts through :func:`api_job_input`.
+    """
+    body = await request.json()
+    try:
+        folder = resolve_release_path(request.app, body.get("folder", ""))
+    except ValueError as e:
+        return error(str(e))
+
+    trackers = body.get("trackers") or ([body["tracker"]] if body.get("tracker") else [])
+    trackers = [t for t in trackers if t in TrackerGateway.configured_trackers()]
+    if not trackers:
+        return error("at least one configured tracker is required")
+
+    source = body.get("source", "WEB")
+    auto_rename = bool(body.get("auto_rename", True))
+    jobs: JobRegistry = request.app["jobs"]
+
+    async def run(job) -> None:
+        failures = 0
+        for tracker in trackers:
+            target = folder
+            if cfg.linking.enabled:
+                try:
+                    link = await asyncio.to_thread(link_release, folder, tracker)
+                except LinkError as e:
+                    job.write_log(f"[{tracker}] linking failed: {e}")
+                    job.emit("link_failed", {"tracker": tracker, "error": str(e)})
+                    failures += 1
+                    continue
+                target = link.destination
+                verb = "reused" if link.reused else link.method
+                job.write_log(f"[{tracker}] {verb} {link.files} file(s) -> {link.destination}")
+                job.emit("linked", link.as_dict())
+
+            args = ["up", target, "--source", source, "--tracker", tracker]
+            if auto_rename:
+                args.append("--auto-rename")
+            code = await _run_cli(job, args)
+            if code != 0:
+                job.write_log(f"[{tracker}] exited with code {code}")
+                failures += 1
+
+        job.status = "failed" if failures else "done"
+        if failures:
+            job.error = f"{failures} of {len(trackers)} tracker upload(s) failed"
+
+    job = jobs.spawn("upload", f"Uploading {os.path.basename(folder)} to {', '.join(trackers)}", run)
+    return json_response({"job_id": job.id, "trackers": trackers, "linking": cfg.linking.enabled})
 
 
 @routes.post("/api/jobs/{job_id}/input")
-async def api_upload_input(request: web.Request) -> web.Response:
+async def api_job_input(request: web.Request) -> web.Response:
     """Send a line of stdin to a running upload job."""
     job = request.app["jobs"].get(request.match_info["job_id"])
     if not job or not job.stdin:
