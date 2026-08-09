@@ -13,9 +13,9 @@ from salmon.sources import DeezerBase
 
 class Searcher(DeezerBase, SearchMixin):
     async def search_releases(self, searchstr, limit):
+        await self._check_arl()
         releases = {}
         resp = await self.get_json("/search/album", params={"q": searchstr})
-        # print(resp)
         for rls in resp["data"]:
             releases[rls["id"]] = (
                 IdentData(rls["artist"]["name"], rls["title"], None, rls["nb_tracks"], "WEB"),
@@ -31,10 +31,6 @@ class Searcher(DeezerBase, SearchMixin):
         return "Deezer", releases
 
     async def get_artist_releases(self, artiststr):
-        """
-        Get the releases of an artist on Deezer. Find their artist page and request
-        all their releases.
-        """
         artist_ids = await self._get_artist_ids(artiststr)
         tasks = [self._get_artist_albums(artist_id, artiststr) for artist_id in artist_ids]
         return "Deezer", list(chain.from_iterable(await asyncio.gather(*tasks)))
@@ -48,7 +44,7 @@ class Searcher(DeezerBase, SearchMixin):
         return [
             ArtistRlsData(
                 url=rls["link"],
-                quality="LOSSLESS",  # Cannot determine.
+                quality="LOSSLESS",
                 year=self._parse_year(rls["release_date"]),
                 artist=artist_name,
                 album=rls["title"],
@@ -59,8 +55,6 @@ class Searcher(DeezerBase, SearchMixin):
         ]
 
     async def get_label_releases(self, labelstr, maximum=0, year=None):
-        """Gets all the albums released by a label up to a total number.
-        Year filtering doesn't actually work."""
         yearstr = "year='" + year + "'" if year else ""
         url_str = f"/search/album&q=label:'{labelstr}' {yearstr}/albums"
         resp = await self.get_json(url_str)
@@ -74,7 +68,7 @@ class Searcher(DeezerBase, SearchMixin):
                 albums.append(
                     LabelRlsData(
                         url=rls["link"],
-                        quality="LOSSLESS",  # Cannot determine.
+                        quality="LOSSLESS",
                         year=str(self._parse_year(album["release_date"])),
                         artist=rls["artist"]["name"],
                         album=rls["title"],

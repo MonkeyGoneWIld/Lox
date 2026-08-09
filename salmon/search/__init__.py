@@ -26,14 +26,6 @@ from salmon.search import (
 )
 
 SEARCHSOURCES = {
-    "Bandcamp": bandcamp,
-    "MusicBrainz": musicbrainz,
-    "iTunes": itunes,
-    "Junodownload": junodownload,
-    "Discogs": discogs,
-    "Beatport": beatport,
-    "Qobuz": qobuz,
-    "Tidal": tidal,
     "Deezer": deezer,
 }
 

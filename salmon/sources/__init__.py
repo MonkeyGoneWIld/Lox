@@ -24,13 +24,13 @@ __all__ = [
 ]
 
 SOURCE_ICONS = {
-    "Bandcamp": "https://ptpimg.me/91oo89.png",
+    "Bandcamp": "https://img.onlyimage.org/nzbFEn.png",
     "Beatport": "https://ptpimg.me/5hwjpv.png",
-    "Deezer": "https://ptpimg.me/m265v2.png",
-    "Discogs": "https://ptpimg.me/mt4ql3.png",
-    "iTunes": "https://ptpimg.me/0z2x90.png",
+    "Deezer": "https://img.onlyimage.org/nzV3fO.png",
+    "Discogs": "https://img.onlyimage.org/nzbmXc.png",
+    "iTunes": "https://img.onlyimage.org/nzbDC0.png",
     "Junodownload": "https://ptpimg.me/u1rpx9.png",
-    "MusicBrainz": "https://ptpimg.me/56plwd.png",
-    "Qobuz": "https://ptpimg.me/e4d045.png",
-    "Tidal": "https://ptpimg.me/5vxo23.png",
+    "MusicBrainz": "https://img.onlyimage.org/nzbK3p.png",
+    "Qobuz": "https://img.onlyimage.org/nzbQ2V.png",
+    "Tidal": "https://img.onlyimage.org/nzbG52.png",
 }

@@ -53,8 +53,7 @@ async def get_request_results(gazelle_site: "BaseGazelleApi", searchstrs: list[s
 
 
 def print_request_results(gazelle_site, results, searchstr):
-    """Print all the request search results.
-    Could use a table in the future."""
+    """Print all the request search results. Could use a table in the future."""
     if not results:
         click.secho(
             f"\nNo requests were found on {gazelle_site.site_string}",
@@ -86,7 +85,6 @@ def print_request_results(gazelle_site, results, searchstr):
                 click.secho(f"Requirements: {' or '.join(r['bitrateList'])} / ", nl=False)
                 click.secho(f"{' or '.join(r['formatList'])} / ", nl=False)
                 click.secho(f"{' or '.join(r['mediaList'])} / ")
-
             except (KeyError, TypeError):
                 continue
 
@@ -113,12 +111,9 @@ def _print_request_details(gazelle_site, req):
     click.secho(f"Allowed Formats: {' | '.join(req['formatList'])}")
     if "CD" in req["mediaList"]:
         req["mediaList"].remove("CD")
-        req["mediaList"].append(str("CD " + req["logCue"]))
+        req["mediaList"].append(str("CD " + req.get("logCue", "")))
     click.secho(f"Allowed   Media: {' | '.join(req['mediaList'])}")
-    click.secho(
-        "Description:",
-        fg="cyan",
-    )
+    click.secho("Description:", fg="cyan")
     description = req["bbDescription"].splitlines(True)
 
     # Should probably be refactored out and a setting.
