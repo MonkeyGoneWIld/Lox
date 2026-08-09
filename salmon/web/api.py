@@ -1,0 +1,633 @@
+"""JSON API behind the web UI.
+
+Everything the browser does goes through here. The split that matters: search,
+explore, album detail and downloads never touch a tracker, so they are safe to
+call freely. Only ``/api/missing/check`` and the ``/api/requests/*`` endpoints
+spend tracker budget, and each reports what it cost.
+"""
+
+import asyncio
+import os
+import shlex
+import sys
+from typing import Any
+
+import msgspec
+from aiohttp import web
+
+from salmon import cfg
+from salmon.checker.gateway import TrackerGateway
+from salmon.checker.missing import Candidate, MissingScanner
+from salmon.checker.requests_check import RequestChecker
+from salmon.checker.store import CheckerStore
+from salmon.deezer.download import Downloader
+from salmon.deezer.explore import Explorer
+from salmon.deezer.gw import DeezerGW, DeezerGWError
+from salmon.notify.discord import DiscordNotifier
+from salmon.web.jobs import JobRegistry
+
+routes = web.RouteTableDef()
+
+
+def json_response(data: Any, status: int = 200) -> web.Response:
+    """Serialize a payload with msgspec and return it as JSON."""
+    return web.Response(body=msgspec.json.encode(data), status=status, content_type="application/json")
+
+
+def error(message: str, status: int = 400) -> web.Response:
+    """Return a JSON error body."""
+    return json_response({"error": message}, status=status)
+
+
+async def setup_services(app: web.Application) -> None:
+    """Attach the shared service objects to the application."""
+    gw = DeezerGW()
+    gateway = TrackerGateway()
+    store = CheckerStore()
+
+    app["gw"] = gw
+    app["explorer"] = Explorer(gw)
+    app["downloader"] = Downloader(gw)
+    app["gateway"] = gateway
+    app["store"] = store
+    app["scanner"] = MissingScanner(gw, gateway, store)
+    app["request_checker"] = RequestChecker(gw, gateway, store)
+    app["notifier"] = DiscordNotifier()
+    app["jobs"] = JobRegistry()
+
+
+async def teardown_services(app: web.Application) -> None:
+    """Close service objects when the server stops."""
+    downloader: Downloader = app["downloader"]
+    await downloader.stop()
+    gw: DeezerGW = app["gw"]
+    await gw.close()
+
+
+# ----------------------------------------------------------------------
+# Status and config
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/status")
+async def api_status(request: web.Request) -> web.Response:
+    """Report Deezer auth state, tracker budgets and download counts."""
+    gw: DeezerGW = request.app["gw"]
+    gateway: TrackerGateway = request.app["gateway"]
+    downloader: Downloader = request.app["downloader"]
+
+    deezer_state: dict[str, Any] = {"configured": bool(gw.arl), "authenticated": gw.authenticated}
+    if gw.arl and not gw.authenticated:
+        try:
+            await gw.login()
+            deezer_state["authenticated"] = True
+        except DeezerGWError as e:
+            deezer_state["error"] = str(e)
+    if gw.authenticated:
+        deezer_state.update({"user_id": gw.user_id, "country": gw.country, "can_stream": bool(gw.license_token)})
+
+    return json_response(
+        {
+            "deezer": deezer_state,
+            "trackers": gateway.statuses(),
+            "downloads": {
+                "active": sum(1 for j in downloader.jobs.values() if j.status in ("queued", "running")),
+                "total": len(downloader.jobs),
+                "directory": downloader.download_dir,
+                "format": downloader.preferred_format,
+            },
+            "notifications": {"enabled": request.app["notifier"].enabled},
+        }
+    )
+
+
+@routes.get("/api/trackers")
+async def api_trackers(request: web.Request) -> web.Response:
+    """Return per-tracker budget and circuit-breaker state."""
+    return json_response({"trackers": request.app["gateway"].statuses()})
+
+
+@routes.get("/api/config")
+async def api_config(request: web.Request) -> web.Response:
+    """Return the non-secret parts of the config the UI displays."""
+    checker = cfg.checker
+    return json_response(
+        {
+            "download_directory": request.app["downloader"].download_dir,
+            "preferred_format": request.app["downloader"].preferred_format,
+            "trackers": TrackerGateway.configured_trackers(),
+            "checker": {
+                "tracker_budget": checker.tracker_budget,
+                "tracker_budget_window": checker.tracker_budget_window,
+                "min_tracks": checker.min_tracks,
+                "min_date": checker.min_date,
+                "max_date": checker.max_date,
+                "min_confidence": checker.min_confidence,
+            },
+            "arl_set": bool(request.app["gw"].arl),
+            "discogs_set": bool(cfg.metadata.discogs_token),
+        }
+    )
+
+
+# ----------------------------------------------------------------------
+# Search and album detail
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/search")
+async def api_search(request: web.Request) -> web.Response:
+    """Search Deezer for albums, tracks or artists. Costs no tracker budget."""
+    query = (request.query.get("q") or "").strip()
+    if not query:
+        return error("q is required")
+    kind = request.query.get("type", "album")
+    limit = min(int(request.query.get("limit", 30)), 100)
+    gw: DeezerGW = request.app["gw"]
+    explorer: Explorer = request.app["explorer"]
+
+    try:
+        if kind == "track":
+            rows = await gw.search_tracks(query, limit)
+            results = [
+                {
+                    "type": "track",
+                    "id": str(t.get("id")),
+                    "title": t.get("title", ""),
+                    "artist": (t.get("artist") or {}).get("name", ""),
+                    "image": (t.get("album") or {}).get("cover_medium"),
+                    "album_id": str((t.get("album") or {}).get("id") or ""),
+                    "duration": t.get("duration"),
+                }
+                for t in rows
+            ]
+        elif kind == "artist":
+            rows = await gw.search_artists(query, limit)
+            results = [
+                {
+                    "type": "artist",
+                    "id": str(a.get("id")),
+                    "title": a.get("name", ""),
+                    "artist": "",
+                    "image": a.get("picture_medium"),
+                    "albums": a.get("nb_album"),
+                }
+                for a in rows
+            ]
+        else:
+            rows = await gw.search_albums(query, limit)
+            results = [explorer._public_album(a) for a in rows]  # noqa: SLF001 - shared normalizer
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+
+    return json_response({"query": query, "type": kind, "results": results})
+
+
+@routes.get("/api/album/{album_id}")
+async def api_album(request: web.Request) -> web.Response:
+    """Return album detail plus the FLAC/streamability verdict."""
+    album_id = request.match_info["album_id"]
+    gw: DeezerGW = request.app["gw"]
+    try:
+        meta = await gw.album(album_id)
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+
+    availability: dict[str, Any] | None = None
+    availability_error: str | None = None
+    if gw.arl:
+        try:
+            result = await gw.availability(album_id)
+            availability = msgspec.to_builtins(result)
+            availability["uploadable"] = result.uploadable
+            availability["reason"] = result.reason()
+        except DeezerGWError as e:
+            availability_error = str(e)
+
+    return json_response(
+        {
+            "id": str(meta.get("id")),
+            "title": meta.get("title"),
+            "artist": (meta.get("artist") or {}).get("name"),
+            "cover": meta.get("cover_xl") or meta.get("cover_big") or meta.get("cover"),
+            "release_date": meta.get("release_date"),
+            "record_type": meta.get("record_type"),
+            "nb_tracks": meta.get("nb_tracks"),
+            "duration": meta.get("duration"),
+            "label": meta.get("label"),
+            "upc": meta.get("upc"),
+            "explicit": meta.get("explicit_lyrics"),
+            "genres": [g.get("name") for g in (meta.get("genres") or {}).get("data", [])],
+            "url": meta.get("link"),
+            "tracks": [
+                {
+                    "id": str(t.get("id")),
+                    "title": t.get("title"),
+                    "artist": (t.get("artist") or {}).get("name"),
+                    "duration": t.get("duration"),
+                    "number": t.get("track_position"),
+                    "disc": t.get("disk_number"),
+                }
+                for t in (meta.get("tracks") or {}).get("data", [])
+            ],
+            "availability": availability,
+            "availability_error": availability_error,
+        }
+    )
+
+
+@routes.get("/api/artist/{artist_id}/albums")
+async def api_artist_albums(request: web.Request) -> web.Response:
+    """List an artist's discography."""
+    try:
+        albums = await request.app["explorer"].artist_albums(request.match_info["artist_id"])
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+    return json_response({"results": albums})
+
+
+@routes.get("/api/playlist/{playlist_id}/albums")
+async def api_playlist_albums(request: web.Request) -> web.Response:
+    """Collapse a playlist into the distinct albums it references."""
+    try:
+        albums = await request.app["explorer"].playlist_albums(request.match_info["playlist_id"])
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+    return json_response({"results": albums})
+
+
+# ----------------------------------------------------------------------
+# Explore
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/explore/channels")
+async def api_channels(request: web.Request) -> web.Response:
+    """List Deezer's channels. Requires an ARL."""
+    try:
+        return json_response({"channels": await request.app["explorer"].channels()})
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+
+
+@routes.get("/api/explore/channel/{slug}")
+async def api_channel(request: web.Request) -> web.Response:
+    """Fetch one channel and its modules."""
+    try:
+        return json_response(await request.app["explorer"].channel(request.match_info["slug"]))
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+
+
+@routes.get("/api/explore/module/{module_id}")
+async def api_module(request: web.Request) -> web.Response:
+    """Fetch one channel module by ID."""
+    try:
+        return json_response(await request.app["explorer"].module(request.match_info["module_id"]))
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+
+
+@routes.get("/api/explore/genres")
+async def api_genres(request: web.Request) -> web.Response:
+    """List editorial genres."""
+    try:
+        return json_response({"genres": await request.app["explorer"].genres()})
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+
+
+@routes.get("/api/explore/charts")
+async def api_charts(request: web.Request) -> web.Response:
+    """Fetch the chart for a genre (0 for the global chart)."""
+    genre = request.query.get("genre", "0")
+    try:
+        return json_response(await request.app["explorer"].chart(genre))
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+
+
+@routes.get("/api/explore/releases")
+async def api_releases(request: web.Request) -> web.Response:
+    """Fetch editorial new releases for a genre."""
+    genre = request.query.get("genre", "0")
+    try:
+        return json_response({"results": await request.app["explorer"].new_releases(genre)})
+    except DeezerGWError as e:
+        return error(str(e), status=502)
+
+
+# ----------------------------------------------------------------------
+# Downloads
+# ----------------------------------------------------------------------
+
+
+@routes.post("/api/download")
+async def api_download(request: web.Request) -> web.Response:
+    """Queue one or more albums for download."""
+    body = await request.json()
+    album_ids = body.get("album_ids") or ([body["album_id"]] if body.get("album_id") else [])
+    if not album_ids:
+        return error("album_id or album_ids is required")
+
+    downloader: Downloader = request.app["downloader"]
+    queued, failed = [], []
+    for album_id in album_ids:
+        try:
+            job = await downloader.enqueue(album_id)
+            queued.append(job.as_dict())
+        except Exception as e:  # noqa: BLE001 - reported per album
+            failed.append({"album_id": str(album_id), "error": str(e)})
+    return json_response({"queued": queued, "failed": failed})
+
+
+@routes.get("/api/downloads")
+async def api_downloads(request: web.Request) -> web.Response:
+    """List every download job, newest first."""
+    downloader: Downloader = request.app["downloader"]
+    jobs = sorted(downloader.jobs.values(), key=lambda j: j.started or 0, reverse=True)
+    return json_response({"jobs": [j.as_dict() for j in jobs]})
+
+
+@routes.post("/api/downloads/{job_id}/cancel")
+async def api_download_cancel(request: web.Request) -> web.Response:
+    """Withdraw a download that has not started yet."""
+    cancelled = request.app["downloader"].cancel(request.match_info["job_id"])
+    return json_response({"cancelled": cancelled})
+
+
+@routes.post("/api/downloads/clear")
+async def api_downloads_clear(request: web.Request) -> web.Response:
+    """Drop finished download jobs from the list."""
+    return json_response({"cleared": request.app["downloader"].clear_finished()})
+
+
+# ----------------------------------------------------------------------
+# Missing-album scanning
+# ----------------------------------------------------------------------
+
+
+@routes.post("/api/missing/collect")
+async def api_missing_collect(request: web.Request) -> web.Response:
+    """Expand playlists and modules into filtered candidates. No tracker calls."""
+    body = await request.json()
+    sources = [s for s in (body.get("sources") or []) if s.strip()]
+    if not sources:
+        return error("sources is required")
+    skip_known = bool(body.get("skip_known", True))
+
+    scanner: MissingScanner = request.app["scanner"]
+    jobs: JobRegistry = request.app["jobs"]
+
+    async def run(job) -> None:
+        candidates = await scanner.collect(sources, progress=job.emit, skip_known=skip_known)
+        job.results.extend(c.as_dict() for c in candidates)
+
+    job = jobs.spawn("missing_collect", f"Collecting from {len(sources)} source(s)", run)
+    return json_response({"job_id": job.id})
+
+
+@routes.post("/api/missing/check")
+async def api_missing_check(request: web.Request) -> web.Response:
+    """Check collected candidates against the trackers. Spends tracker budget."""
+    body = await request.json()
+    raw_candidates = body.get("candidates") or []
+    trackers = body.get("trackers") or TrackerGateway.configured_trackers()
+    if not raw_candidates:
+        return error("candidates is required")
+
+    gateway: TrackerGateway = request.app["gateway"]
+    unavailable = [t for t in trackers if not gateway.can_check(t)]
+    if unavailable and not body.get("force"):
+        return error(
+            f"No budget available for {', '.join(unavailable)}. Wait for the window to roll over, or pass force.",
+            status=429,
+        )
+
+    try:
+        candidates = [msgspec.convert(c, Candidate) for c in raw_candidates]
+    except msgspec.ValidationError as e:
+        return error(f"bad candidate payload: {e}")
+
+    scanner: MissingScanner = request.app["scanner"]
+    notifier: DiscordNotifier = request.app["notifier"]
+    jobs: JobRegistry = request.app["jobs"]
+    by_id = {c.album_id: c for c in candidates}
+
+    async def run(job) -> None:
+        results = await scanner.check(candidates, trackers, progress=job.emit)
+        if cfg.notifications.notify_missing and notifier.enabled:
+            for result in results:
+                if result.missing_from:
+                    candidate = by_id.get(result.album_id)
+                    if candidate:
+                        await notifier.missing_album(result.as_dict(), candidate.as_dict())
+
+    job = jobs.spawn("missing_check", f"Checking {len(candidates)} album(s) on {', '.join(trackers)}", run)
+    return json_response({"job_id": job.id, "estimated_calls": scanner.estimate(candidates, trackers)})
+
+
+# ----------------------------------------------------------------------
+# Request checking
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/requests/list")
+async def api_requests_list(request: web.Request) -> web.Response:
+    """List open requests on a tracker. Spends one tracker call."""
+    tracker = request.query.get("tracker", "")
+    if not tracker:
+        return error("tracker is required")
+    checker: RequestChecker = request.app["request_checker"]
+    try:
+        rows = await checker.search_requests(
+            tracker, request.query.get("search", ""), int(request.query.get("page", 1))
+        )
+    except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
+        return error(str(e), status=502)
+    return json_response({"requests": rows})
+
+
+@routes.post("/api/requests/check")
+async def api_requests_check(request: web.Request) -> web.Response:
+    """Check requests for a fillable Deezer source. Spends tracker budget."""
+    body = await request.json()
+    tracker = body.get("tracker")
+    request_ids = [str(r).strip() for r in (body.get("request_ids") or []) if str(r).strip()]
+    if not tracker or not request_ids:
+        return error("tracker and request_ids are required")
+
+    gateway: TrackerGateway = request.app["gateway"]
+    if not gateway.can_check(tracker) and not body.get("force"):
+        status = gateway.status(tracker).as_dict()
+        return error(f"No budget available for {tracker} ({status['remaining']} left)", status=429)
+
+    checker: RequestChecker = request.app["request_checker"]
+    notifier: DiscordNotifier = request.app["notifier"]
+    jobs: JobRegistry = request.app["jobs"]
+
+    async def run(job) -> None:
+        matches = await checker.check_many(tracker, request_ids, progress=job.emit)
+        if cfg.notifications.notify_fillable and notifier.enabled:
+            for match in matches:
+                if match.fillable:
+                    await notifier.fillable_request(match.as_dict())
+
+    job = jobs.spawn("requests_check", f"Checking {len(request_ids)} {tracker} request(s)", run)
+    return json_response({"job_id": job.id})
+
+
+# ----------------------------------------------------------------------
+# Uploading
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/folders")
+async def api_folders(request: web.Request) -> web.Response:
+    """List release folders sitting in the download directory."""
+    directory = request.app["downloader"].download_dir
+    if not os.path.isdir(directory):
+        return json_response({"directory": directory, "folders": []})
+
+    folders = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            audio = 0
+            for _root, _dirs, files in os.walk(entry.path):
+                audio += sum(1 for f in files if f.lower().endswith((".flac", ".mp3")))
+            folders.append(
+                {
+                    "name": entry.name,
+                    "path": entry.path,
+                    "tracks": audio,
+                    "modified": entry.stat().st_mtime,
+                }
+            )
+    folders.sort(key=lambda f: f["modified"], reverse=True)
+    return json_response({"directory": directory, "folders": folders})
+
+
+@routes.post("/api/upload")
+async def api_upload(request: web.Request) -> web.Response:
+    """Run the salmon upload flow for a folder as a streamed subprocess.
+
+    The CLI still owns the upload; the browser just gets its stdout and can send
+    answers back through :func:`api_upload_input`. That keeps prompts that must
+    stay interactive — the lossy-master question above all — actually working.
+    """
+    body = await request.json()
+    folder = body.get("folder")
+    if not folder or not os.path.isdir(folder):
+        return error("folder must be an existing directory")
+
+    tracker = body.get("tracker")
+    source = body.get("source", "WEB")
+    extra: list[str] = ["up", folder, "--source", source]
+    if tracker:
+        extra += ["--tracker", tracker]
+    if body.get("auto_rename", True):
+        extra.append("--auto-rename")
+
+    jobs: JobRegistry = request.app["jobs"]
+
+    async def run(job) -> None:
+        job.write_log(f"$ salmon {shlex.join(extra)}")
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-u",
+            "-m",
+            "salmon",
+            *extra,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=os.getcwd(),
+            env={**os.environ, "PYTHONUNBUFFERED": "1", "TERM": "dumb"},
+        )
+        job.stdin = process.stdin
+        assert process.stdout is not None
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            job.write_log(line.decode(errors="replace").rstrip("\n"))
+        code = await process.wait()
+        job.stdin = None
+        job.status = "done" if code == 0 else "failed"
+        if code != 0:
+            job.error = f"salmon exited with code {code}"
+
+    job = jobs.spawn("upload", f"Uploading {os.path.basename(folder)}", run)
+    return json_response({"job_id": job.id})
+
+
+@routes.post("/api/jobs/{job_id}/input")
+async def api_upload_input(request: web.Request) -> web.Response:
+    """Send a line of stdin to a running upload job."""
+    job = request.app["jobs"].get(request.match_info["job_id"])
+    if not job or not job.stdin:
+        return error("job is not accepting input", status=409)
+    body = await request.json()
+    line = (body.get("line") or "") + "\n"
+    job.stdin.write(line.encode())
+    await job.stdin.drain()
+    job.write_log(f"> {body.get('line', '')}")
+    return json_response({"sent": True})
+
+
+# ----------------------------------------------------------------------
+# Jobs
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/jobs")
+async def api_jobs(request: web.Request) -> web.Response:
+    """List background jobs, optionally filtered by kind."""
+    return json_response({"jobs": request.app["jobs"].list(request.query.get("kind"))})
+
+
+@routes.get("/api/jobs/{job_id}")
+async def api_job(request: web.Request) -> web.Response:
+    """Fetch one job, returning only results the client has not seen."""
+    job = request.app["jobs"].get(request.match_info["job_id"])
+    if not job:
+        return error("no such job", status=404)
+    return json_response(job.as_dict(since=int(request.query.get("since", 0))))
+
+
+@routes.post("/api/jobs/{job_id}/cancel")
+async def api_job_cancel(request: web.Request) -> web.Response:
+    """Cancel a running job."""
+    return json_response({"cancelled": request.app["jobs"].cancel(request.match_info["job_id"])})
+
+
+@routes.post("/api/jobs/clear")
+async def api_jobs_clear(request: web.Request) -> web.Response:
+    """Drop finished jobs."""
+    return json_response({"cleared": request.app["jobs"].clear_finished()})
+
+
+# ----------------------------------------------------------------------
+# Stored scan history
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/history/{collection}")
+async def api_history(request: web.Request) -> web.Response:
+    """Return stored results and a status breakdown for a collection."""
+    collection = request.match_info["collection"]
+    if collection not in ("albums", "requests"):
+        return error("collection must be albums or requests", status=404)
+    store: CheckerStore = request.app["store"]
+    return json_response({"summary": store.summary(collection), "entries": store.load(collection)})
+
+
+@routes.post("/api/history/{collection}/clear")
+async def api_history_clear(request: web.Request) -> web.Response:
+    """Empty a stored collection so everything is re-checked next run."""
+    collection = request.match_info["collection"]
+    if collection not in ("albums", "requests"):
+        return error("collection must be albums or requests", status=404)
+    return json_response({"cleared": request.app["store"].clear(collection)})

@@ -10,7 +10,7 @@ from aiohttp_jinja2 import render_template
 from salmon import cfg
 from salmon.common import commandgroup
 from salmon.errors import WebServerIsAlreadyRunning
-from salmon.web import spectrals
+from salmon.web import api, spectrals
 
 web_cfg = cfg.upload.web_interface
 
@@ -30,6 +30,28 @@ async def web_cmd() -> None:
         await runner.cleanup()
 
 
+@commandgroup.command(name="ui")
+async def ui_cmd() -> None:
+    """Start the web UI: Deezer search, explore, download, check and upload."""
+    url = f"http://{web_cfg.host}:{web_cfg.port}/"
+    click.secho(f"deezer-upload UI on {url}", fg="cyan", bold=True)
+    if not cfg.metadata.deezer.arl:
+        click.secho(
+            "No Deezer ARL configured. Search and charts will work; downloads, "
+            "channels and availability checks will not. Set metadata.deezer.arl in your config.",
+            fg="yellow",
+        )
+    click.secho("Trackers are only contacted when you press a check button.", fg="green")
+    runner = await create_app_async()
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await runner.cleanup()
+
+
 async def create_app_async() -> web.AppRunner:
     """Create and start the aiohttp web application.
 
@@ -41,6 +63,8 @@ async def create_app_async() -> web.AppRunner:
     """
     app = web.Application()
     add_routes(app)
+    app.on_startup.append(api.setup_services)
+    app.on_cleanup.append(api.teardown_services)
     aiohttp_jinja2.setup(app, loader=jinja2.FileSystemLoader(join(dirname(__file__), "templates")))
     runner = web.AppRunner(app)
     await runner.setup()
@@ -59,13 +83,27 @@ def add_routes(app: web.Application) -> None:
         app: The aiohttp web application.
     """
     app.router.add_static("/static", join(dirname(__file__), "static"), follow_symlinks=True)
-    app.router.add_route("GET", "/", handle_index)
+    app.router.add_route("GET", "/", handle_app)
+    app.router.add_route("GET", "/legacy", handle_index)
     app.router.add_route("GET", "/spectrals", spectrals.handle_spectrals)
+    app.router.add_routes(api.routes)
     app["static_root_url"] = web_cfg.static_root_url
 
 
+async def handle_app(request: web.Request) -> web.Response:
+    """Serve the single-page UI shell.
+
+    Args:
+        request: The aiohttp request object.
+
+    Returns:
+        The rendered application shell.
+    """
+    return render_template("app.html", request, {"static_root_url": web_cfg.static_root_url})
+
+
 async def handle_index(request: web.Request) -> web.Response:
-    """Handle the index page request.
+    """Handle the original spectrals index page.
 
     Args:
         request: The aiohttp request object.

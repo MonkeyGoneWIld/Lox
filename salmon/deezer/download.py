@@ -1,0 +1,454 @@
+"""Deezer album download engine.
+
+Resolves stream URLs through the private API, streams them to disk while
+decrypting the Blowfish stripes, writes tags from the Deezer metadata and drops
+a cover into the folder. The output is a plain release folder that the existing
+salmon upload pipeline can pick up unchanged.
+"""
+
+import asyncio
+import contextlib
+import os
+import re
+import time
+import uuid
+from collections.abc import Callable
+from typing import Any, Literal
+
+import aiohttp
+import msgspec
+from mutagen.flac import FLAC, Picture
+from mutagen.id3 import APIC, ID3, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TSRC
+
+from salmon import cfg
+from salmon.deezer.crypto import CHUNK_SIZE, blowfish_key, decrypt_stripes
+from salmon.deezer.gw import DeezerGW, DeezerGWError
+
+JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
+
+COVER_SIZE = 1400
+_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_EXTENSIONS = {"FLAC": ".flac", "MP3_320": ".mp3", "MP3_128": ".mp3"}
+
+
+class DownloadError(Exception):
+    """Raised when a download cannot be completed."""
+
+
+def sanitize(name: str, fallback: str = "Unknown") -> str:
+    """Make a string safe to use as a path component.
+
+    Args:
+        name: The raw name.
+        fallback: Value to use when nothing usable is left.
+
+    Returns:
+        A filesystem-safe name, trimmed to 180 characters.
+    """
+    cleaned = _ILLEGAL.sub("_", (name or "").strip()).rstrip(". ")
+    return cleaned[:180] or fallback
+
+
+class TrackDownload(msgspec.Struct):
+    """Per-track progress within a job."""
+
+    id: str
+    title: str
+    artist: str
+    number: int
+    disc: int
+    status: JobStatus = "queued"
+    downloaded: int = 0
+    size: int = 0
+    path: str | None = None
+    error: str | None = None
+
+
+class DownloadJob(msgspec.Struct):
+    """One album download."""
+
+    id: str
+    album_id: str
+    title: str
+    artist: str
+    cover: str | None = None
+    status: JobStatus = "queued"
+    tracks: list[TrackDownload] = msgspec.field(default_factory=list)
+    folder: str | None = None
+    error: str | None = None
+    started: float | None = None
+    finished: float | None = None
+
+    @property
+    def done_count(self) -> int:
+        """Number of tracks that finished successfully."""
+        return sum(1 for t in self.tracks if t.status == "done")
+
+    @property
+    def percent(self) -> float:
+        """Overall completion as a percentage of total bytes."""
+        total = sum(t.size for t in self.tracks)
+        if not total:
+            return 100.0 if self.status == "done" else 0.0
+        return min(100.0, sum(t.downloaded for t in self.tracks) / total * 100)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Serialize for the web API."""
+        return {
+            "id": self.id,
+            "album_id": self.album_id,
+            "title": self.title,
+            "artist": self.artist,
+            "cover": self.cover,
+            "status": self.status,
+            "folder": self.folder,
+            "error": self.error,
+            "percent": round(self.percent, 1),
+            "done": self.done_count,
+            "total": len(self.tracks),
+            "started": self.started,
+            "finished": self.finished,
+            "tracks": [
+                {
+                    "title": t.title,
+                    "artist": t.artist,
+                    "number": t.number,
+                    "status": t.status,
+                    "percent": round(t.downloaded / t.size * 100, 1) if t.size else 0.0,
+                    "error": t.error,
+                }
+                for t in self.tracks
+            ],
+        }
+
+
+class Downloader:
+    """Queue of album downloads served by a pool of workers.
+
+    Jobs are retained after completion so the UI can show history; call
+    :meth:`clear_finished` to prune them.
+    """
+
+    def __init__(self, gw: DeezerGW, concurrency: int | None = None) -> None:
+        """Initialize the downloader.
+
+        Args:
+            gw: An authenticated (or authenticatable) private API client.
+            concurrency: Simultaneous track downloads. Defaults to config.
+        """
+        self.gw = gw
+        deezer_cfg = getattr(cfg.metadata, "deezer", None)
+        self.concurrency = concurrency or getattr(deezer_cfg, "concurrent_downloads", 2) or 2
+        self.preferred_format = getattr(deezer_cfg, "preferred_format", "FLAC") or "FLAC"
+        self.allow_fallback = bool(getattr(deezer_cfg, "format_fallback", True))
+        self.jobs: dict[str, DownloadJob] = {}
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._workers: list[asyncio.Task] = []
+        self._listeners: list[Callable[[DownloadJob], None]] = []
+
+    @property
+    def download_dir(self) -> str:
+        """Directory that finished releases are written into."""
+        deezer_cfg = getattr(cfg.metadata, "deezer", None)
+        configured = getattr(deezer_cfg, "download_dir", None) if deezer_cfg else None
+        return configured or cfg.directory.download_directory
+
+    def formats(self) -> tuple[str, ...]:
+        """Stream qualities to request, honouring the fallback setting."""
+        order = ("FLAC", "MP3_320", "MP3_128")
+        if not self.allow_fallback:
+            return (self.preferred_format,)
+        start = order.index(self.preferred_format) if self.preferred_format in order else 0
+        return order[start:]
+
+    def on_update(self, callback: Callable[[DownloadJob], None]) -> None:
+        """Register a callback fired whenever a job changes state."""
+        self._listeners.append(callback)
+
+    def _notify(self, job: DownloadJob) -> None:
+        """Fire update callbacks, ignoring listener failures."""
+        for listener in self._listeners:
+            with contextlib.suppress(Exception):
+                listener(job)
+
+    async def start(self) -> None:
+        """Spin up the worker pool if it is not already running."""
+        if self._workers:
+            return
+        self._workers = [asyncio.create_task(self._worker()) for _ in range(max(1, self.concurrency))]
+
+    async def stop(self) -> None:
+        """Cancel all workers and wait for them to unwind."""
+        for task in self._workers:
+            task.cancel()
+        if self._workers:
+            await asyncio.gather(*self._workers, return_exceptions=True)
+        self._workers = []
+
+    async def enqueue(self, album_id: str | int) -> DownloadJob:
+        """Queue an album for download.
+
+        Args:
+            album_id: Deezer album ID.
+
+        Returns:
+            The created job, already visible in :attr:`jobs`.
+
+        Raises:
+            DownloadError: If the album metadata cannot be read.
+        """
+        try:
+            meta = await self.gw.album(album_id)
+        except DeezerGWError as e:
+            raise DownloadError(f"Could not read album {album_id}: {e}") from e
+
+        job = DownloadJob(
+            id=uuid.uuid4().hex[:12],
+            album_id=str(album_id),
+            title=meta.get("title") or f"Album {album_id}",
+            artist=(meta.get("artist") or {}).get("name") or "Unknown Artist",
+            cover=meta.get("cover_xl") or meta.get("cover_big") or meta.get("cover"),
+        )
+        self.jobs[job.id] = job
+        await self.start()
+        await self._queue.put(job.id)
+        self._notify(job)
+        return job
+
+    def cancel(self, job_id: str) -> bool:
+        """Mark a queued job as cancelled.
+
+        Running jobs are left alone; only jobs that have not started yet can be
+        withdrawn.
+
+        Args:
+            job_id: The job to cancel.
+
+        Returns:
+            True if the job was cancelled.
+        """
+        job = self.jobs.get(job_id)
+        if not job or job.status != "queued":
+            return False
+        job.status = "cancelled"
+        self._notify(job)
+        return True
+
+    def clear_finished(self) -> int:
+        """Drop completed, failed and cancelled jobs. Returns how many went."""
+        finished = [k for k, v in self.jobs.items() if v.status in ("done", "failed", "cancelled")]
+        for key in finished:
+            del self.jobs[key]
+        return len(finished)
+
+    async def _worker(self) -> None:
+        """Pull job IDs off the queue until cancelled."""
+        while True:
+            job_id = await self._queue.get()
+            try:
+                job = self.jobs.get(job_id)
+                if job and job.status == "queued":
+                    await self._run_job(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 - a bad job must not kill the worker
+                job = self.jobs.get(job_id)
+                if job:
+                    job.status = "failed"
+                    job.error = str(e)
+                    self._notify(job)
+            finally:
+                self._queue.task_done()
+
+    async def _run_job(self, job: DownloadJob) -> None:
+        """Download every track of one album."""
+        job.status = "running"
+        job.started = time.time()
+        self._notify(job)
+
+        try:
+            songs = await self.gw.album_tracks(job.album_id)
+            if not songs:
+                raise DownloadError("Album returned no tracks")
+
+            # song.getListData carries TRACK_TOKEN; the album page often does not.
+            ids = [str(s.get("SNG_ID") or s.get("id")) for s in songs if s.get("SNG_ID") or s.get("id")]
+            detailed = await self.gw.track_data(ids)
+            by_id = {str(t.get("SNG_ID")): t for t in detailed}
+            songs = [by_id.get(str(s.get("SNG_ID") or s.get("id")), s) for s in songs]
+
+            meta = await self.gw.album(job.album_id)
+            job.folder = self._prepare_folder(meta)
+            job.tracks = [self._make_track(song, i) for i, song in enumerate(songs, 1)]
+            self._notify(job)
+
+            await self._fetch_cover(job, meta)
+
+            semaphore = asyncio.Semaphore(self.concurrency)
+            await asyncio.gather(
+                *(self._download_track(job, song, track, meta, semaphore) for song, track in zip(songs, job.tracks))
+            )
+
+            failures = [t for t in job.tracks if t.status != "done"]
+            if failures:
+                job.status = "failed"
+                job.error = f"{len(failures)} of {len(job.tracks)} track(s) failed"
+            else:
+                job.status = "done"
+        except Exception as e:  # noqa: BLE001 - surfaced to the UI via job.error
+            job.status = "failed"
+            job.error = str(e)
+        finally:
+            job.finished = time.time()
+            self._notify(job)
+
+    @staticmethod
+    def _make_track(song: dict, index: int) -> TrackDownload:
+        """Build the progress record for one song."""
+        return TrackDownload(
+            id=str(song.get("SNG_ID") or song.get("id") or index),
+            title=song.get("SNG_TITLE") or song.get("title") or f"Track {index}",
+            artist=song.get("ART_NAME") or song.get("artist", {}).get("name") or "",
+            number=int(song.get("TRACK_NUMBER") or index),
+            disc=int(song.get("DISK_NUMBER") or 1),
+        )
+
+    def _prepare_folder(self, meta: dict) -> str:
+        """Create and return the release folder for an album."""
+        artist = sanitize((meta.get("artist") or {}).get("name", ""), "Unknown Artist")
+        title = sanitize(meta.get("title", ""), "Unknown Album")
+        year = (meta.get("release_date") or "")[:4] or "0000"
+        folder = os.path.join(self.download_dir, f"{artist} - {title} ({year}) [WEB FLAC]")
+        os.makedirs(folder, exist_ok=True)
+        return folder
+
+    async def _fetch_cover(self, job: DownloadJob, meta: dict) -> None:
+        """Download cover.jpg into the release folder, if one exists."""
+        url = meta.get("cover_xl") or meta.get("cover_big") or meta.get("cover")
+        if not url or not job.folder:
+            return
+        session = await self.gw._ensure_session()  # noqa: SLF001 - one shared session by design
+        with contextlib.suppress(aiohttp.ClientError, OSError):
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    with open(os.path.join(job.folder, "cover.jpg"), "wb") as f:
+                        f.write(data)
+
+    async def _download_track(
+        self,
+        job: DownloadJob,
+        song: dict,
+        track: TrackDownload,
+        meta: dict,
+        semaphore: asyncio.Semaphore,
+    ) -> None:
+        """Resolve, stream, decrypt and tag a single track."""
+        async with semaphore:
+            track.status = "running"
+            self._notify(job)
+            try:
+                url, fmt = await self.gw.stream_url(song, self.formats())
+                extension = _EXTENSIONS.get(fmt, ".flac")
+                filename = f"{track.number:02d}. {sanitize(track.title, 'Track')}{extension}"
+                path = os.path.join(job.folder or self.download_dir, filename)
+
+                await self._stream_to_disk(job, track, song, url, path)
+                self._tag(path, fmt, song, meta, track, job)
+
+                track.path = path
+                track.status = "done"
+            except (DeezerGWError, DownloadError, aiohttp.ClientError, OSError) as e:
+                track.status = "failed"
+                track.error = str(e)
+            finally:
+                self._notify(job)
+
+    async def _stream_to_disk(
+        self,
+        job: DownloadJob,
+        track: TrackDownload,
+        song: dict,
+        url: str,
+        path: str,
+    ) -> None:
+        """Stream an encrypted track to disk, decrypting stripe by stripe."""
+        key = blowfish_key(track.id)
+        session = await self.gw._ensure_session()  # noqa: SLF001 - one shared session by design
+
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                raise DownloadError(f"stream returned HTTP {resp.status}")
+            track.size = int(resp.headers.get("Content-Length") or 0)
+
+            buffer = bytearray()
+            stripe_index = 0
+            last_notify = 0.0
+            with open(path, "wb") as out:
+                async for chunk in resp.content.iter_chunked(CHUNK_SIZE * 16):
+                    buffer += chunk
+                    track.downloaded += len(chunk)
+                    aligned = len(buffer) - (len(buffer) % CHUNK_SIZE)
+                    if aligned:
+                        plaintext, stripe_index = decrypt_stripes(bytes(buffer[:aligned]), key, stripe_index)
+                        out.write(plaintext)
+                        del buffer[:aligned]
+                    now = time.monotonic()
+                    if now - last_notify > 0.5:
+                        last_notify = now
+                        self._notify(job)
+                if buffer:
+                    plaintext, _ = decrypt_stripes(bytes(buffer), key, stripe_index)
+                    out.write(plaintext)
+
+    @staticmethod
+    def _tag(path: str, fmt: str, song: dict, meta: dict, track: TrackDownload, job: DownloadJob) -> None:
+        """Write tags from the Deezer metadata onto a downloaded file."""
+        album_artist = (meta.get("artist") or {}).get("name") or job.artist
+        genres = [g.get("name") for g in (meta.get("genres") or {}).get("data", []) if g.get("name")]
+        date = meta.get("release_date") or ""
+        total_tracks = str(meta.get("nb_tracks") or len(job.tracks))
+        cover_path = os.path.join(job.folder or "", "cover.jpg")
+        cover = None
+        if os.path.exists(cover_path):
+            with open(cover_path, "rb") as f:
+                cover = f.read()
+
+        if fmt == "FLAC":
+            audio = FLAC(path)
+            audio["title"] = track.title
+            audio["artist"] = song.get("ART_NAME") or album_artist
+            audio["albumartist"] = album_artist
+            audio["album"] = meta.get("title") or job.title
+            audio["tracknumber"] = f"{track.number}/{total_tracks}"
+            audio["discnumber"] = str(track.disc)
+            audio["date"] = date
+            if genres:
+                audio["genre"] = genres
+            if song.get("ISRC"):
+                audio["isrc"] = song["ISRC"]
+            if cover:
+                picture = Picture()
+                picture.type = 3
+                picture.mime = "image/jpeg"
+                picture.data = cover
+                audio.add_picture(picture)
+            audio.save()
+            return
+
+        audio_id3 = ID3()
+        audio_id3.add(TIT2(encoding=3, text=track.title))
+        audio_id3.add(TPE1(encoding=3, text=song.get("ART_NAME") or album_artist))
+        audio_id3.add(TPE2(encoding=3, text=album_artist))
+        audio_id3.add(TALB(encoding=3, text=meta.get("title") or job.title))
+        audio_id3.add(TRCK(encoding=3, text=f"{track.number}/{total_tracks}"))
+        audio_id3.add(TPOS(encoding=3, text=str(track.disc)))
+        if date:
+            audio_id3.add(TDRC(encoding=3, text=date))
+        if genres:
+            audio_id3.add(TCON(encoding=3, text=genres))
+        if song.get("ISRC"):
+            audio_id3.add(TSRC(encoding=3, text=song["ISRC"]))
+        if cover:
+            audio_id3.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover))
+        audio_id3.save(path)
