@@ -477,7 +477,7 @@ async def prompt_spectrals(spectral_ids, lossy_master, check_lma, force_prompt_l
                     '(space-separated list of IDs, "0" for none, "*" for all, or "+" for a randomized selection)',
                     fg="magenta",
                 ),
-                default="*" if lossy_master else "+",
+                default="*",
             )
         )
         if ids.strip() == "+":
@@ -508,20 +508,16 @@ async def prompt_lossy_master(force_prompt_lossy_master=False):
     while True:
         flush_stdin()
         r = (
-            "n"
-            if cfg.upload.yes_all and not force_prompt_lossy_master
-            else (
-                await click.prompt(
-                    click.style(
-                        "\nIs this release lossy mastered? "
-                        "[y]es, [N]o, [r]eopen spectrals, [a]bort, [d]elete music folder",
-                        fg="magenta",
-                    ),
-                    type=click.STRING,
-                    default="n",
-                )
-            )[0].lower()
-        )
+            await click.prompt(
+                click.style(
+                    "\nIs this release lossy mastered? "
+                    "[y]es, [N]o, [r]eopen spectrals, [a]bort, [d]elete music folder",
+                    fg="magenta",
+                ),
+                type=click.STRING,
+                default="n",
+            )
+        )[0].lower()
         if r == "y":
             return True
         elif r == "n":
@@ -564,19 +560,15 @@ async def report_lossy_master(
 
 async def generate_lossy_approval_comment(source_url, filenames, force_prompt_lossy_master=False):
     while True:
-        comment = (
-            ""
-            if cfg.upload.yes_all and not force_prompt_lossy_master
-            else await click.prompt(
-                click.style(
-                    "Do you have a comment for the lossy approval report? It is appropriate to "
-                    "make a note about the source here. Source information from go, gos, and the "
-                    "queue will be included automatically.",
-                    fg="cyan",
-                    bold=True,
-                ),
-                default="",
-            )
+        comment = await click.prompt(
+            click.style(
+                "Do you have a comment for the lossy approval report? It is appropriate to "
+                "make a note about the source here. Source information from go, gos, and the "
+                "queue will be included automatically.",
+                fg="cyan",
+                bold=True,
+            ),
+            default="",
         )
         if comment or source_url:
             return comment

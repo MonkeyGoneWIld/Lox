@@ -24,7 +24,7 @@ class Directory(BaseStruct):
             raise ValueError("tmp_dir is not a valid directory")
 
 
-ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox"]
+ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbox", "imgbox"]
 
 
 class ImageUploader(BaseStruct):
@@ -45,7 +45,7 @@ class ImageUploader(BaseStruct):
         if "ptscreens" in uploader_selections and self.ptscreens_key is None:
             raise ValueError("PTScreens key not specified")
         if "oeimg" in uploader_selections and self.oeimg_key is None:
-            raise ValueError("oeimage key not specified")
+            raise ValueError("OEImage key not specified")
         if "imgbb" in uploader_selections and self.imgbb_key is None:
             raise ValueError("imgbb key not specified")
 
@@ -63,10 +63,15 @@ class QobuzSettings(BaseStruct):
     no_genres_from_qobuz: bool = False
 
 
+class DeezerSettings(BaseStruct):
+    arl: str | None = None
+
+
 class Metadata(BaseStruct):
     discogs_token: str | None = None
     qobuz: QobuzSettings = msgspec.field(default_factory=QobuzSettings)
     tidal: TidalSettings = msgspec.field(default_factory=TidalSettings)
+    deezer: DeezerSettings = msgspec.field(default_factory=DeezerSettings)
 
 
 class GazelleTrackerSettings(BaseStruct):

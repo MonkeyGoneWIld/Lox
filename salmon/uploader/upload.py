@@ -39,7 +39,6 @@ async def prepare_and_upload(
     override_description: str | None = None,
 ) -> tuple[int, int, str, Torrent]:
     """Compile data and upload torrent to tracker.
-
     Args:
         gazelle_site: The tracker API instance.
         path: Path to the album folder.
@@ -55,10 +54,8 @@ async def prepare_and_upload(
         request_id: Request ID to fill.
         source_url: Source URL.
         override_description: Override torrent description.
-
     Returns:
         Tuple of (torrent_id, group_id, torrent_path, torrent_content).
-
     Raises:
         SystemExit: If upload fails.
     """
@@ -91,6 +88,10 @@ async def prepare_and_upload(
             source_url=source_url,
             override_description=override_description,
         )
+
+    # THE FIX: Ensure authentication before torrent generation
+    await gazelle_site.ensure_authenticated()
+
     torrent_path, torrent_content = generate_torrent(gazelle_site, path)
     files = await compile_files(path, torrent_path, metadata)
 
@@ -320,6 +321,7 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, To
         gazelle_site.dot_torrents_dir,
         f"{os.path.basename(path)} - {gazelle_site.site_string}.torrent",
     )
+    os.makedirs(os.path.dirname(tpath), exist_ok=True)
     t.write(tpath, overwrite=True)
     click.secho(" done!", fg="yellow")
     return tpath, t
@@ -401,7 +403,7 @@ def generate_t_description(
         track = next(iter(track_data.values()))
         sample_rate = track["sample rate"] / 1000
         if track["precision"]:
-            icon_url = "https://ptpimg.me/67vp4c.png" if track["precision"] == 16 else "https://ptpimg.me/c1osdy.png"
+            icon_url = "https://img.onlyimage.org/nzVvCN.png" if track["precision"] == 16 else "https://img.onlyimage.org/nzb4F8.png"
             prefix = f"[img]{icon_url}[/img]" if cfg.upload.description.icons_in_descriptions else "Encode Specifics:"
             encode_specifics = (
                 f"{prefix} [b]{track['precision']} bit [color=#2E86C1]{sample_rate:.01f}[/color] kHz[/b]\n"
@@ -445,12 +447,7 @@ def generate_t_description(
 
     more_info = f"[b]More info:[/b] {generate_source_links(metadata_urls, source_url)}\n" if metadata_urls else ""
 
-    footer = (
-        f"[hr]Uploaded with [url=https://github.com/smokin-salmon/smoked-salmon]"
-        f"[b]smoked-salmon[/b] v{get_version()}[/url]"
-    )
-
-    return f"{spectrals}{encode_specifics}{release_date}{tracklist}{lossy_notes}{source}{more_info}{footer}"
+    return f"{spectrals}{encode_specifics}{release_date}{tracklist}{lossy_notes}{source}{more_info}"
 
 
 def generate_source_links(metadata_urls: list[str], source_url: str | None = None) -> str:

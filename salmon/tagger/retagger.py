@@ -36,11 +36,12 @@ def tag_files(path, tags, metadata, auto_rename):
     album_changes = collect_album_data(metadata)
     track_changes = create_track_changes(tags, metadata)
     print_changes(album_changes, track_changes, next(iter(tags.values())))
-    if auto_rename or click.confirm(
+    if auto_rename or cfg.upload.yes_all or click.confirm(
         click.style("\nWould you like to auto-tag the files with the updated metadata?", fg="magenta"),
         default=True,
     ):
         retag_files(path, album_changes, track_changes)
+
 
 
 def check_whether_to_tag(tags, metadata):
@@ -250,7 +251,7 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
 
     if to_rename:
         print_filenames(to_rename)
-        if auto_rename or click.confirm(
+        if auto_rename or cfg.upload.yes_all or click.confirm(
             click.style("\nWould you like to rename the files?", fg="magenta"),
             default=True,
         ):

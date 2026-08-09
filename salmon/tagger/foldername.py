@@ -36,16 +36,19 @@ def rename_folder(path, metadata, auto_rename, check=True):
         click.echo(f"New pending folder name: {new_base}")
 
         user_rename_choice = cfg.upload.yes_all or click.confirm(
-            click.style("\nWould you like to replace the original folder name?", fg="magenta"), default=True
+            click.style("\nWould you like to replace the original folder name?",
+                        fg="magenta"),
+            default=True,
         )
 
         new_base = _edit_folder_interactive(new_base, auto_rename) if auto_rename or user_rename_choice else old_base
 
     new_path = os.path.join(cfg.directory.download_directory, new_base)
     if os.path.isdir(new_path) and not os.path.samefile(path, new_path):
-        if not check or click.confirm(
+        if not check or cfg.upload.yes_all or click.confirm(
             click.style(
-                f"A folder already exists with the new folder name '{new_path}', would you like to replace it?",
+                f"A folder already exists with the new folder name '{new_path}', "
+                "would you like to replace it?",
                 fg="magenta",
                 bold=True,
             ),
@@ -58,27 +61,17 @@ def rename_folder(path, metadata, auto_rename, check=True):
     if not os.path.exists(new_path_dirname):
         os.makedirs(new_path_dirname)
 
-    # Check if hardlinks can be used
-    same_volume = os.stat(path).st_dev == os.stat(cfg.directory.download_directory).st_dev
-    use_hardlinks = same_volume and cfg.directory.hardlinks
-
     if os.path.exists(path) and os.path.exists(new_path) and os.path.samefile(path, new_path):
-        click.secho(f"Skipping copy, same location already for '{new_path}'", fg="yellow")
+        click.secho(f"Skipping move, same location already for '{new_path}'", fg="yellow")
     else:
-        if use_hardlinks:
-            try:
-                shutil.copytree(path, new_path, copy_function=os.link, dirs_exist_ok=True)
-                click.secho(f"Hardlinked folder to '{new_path}'.", fg="yellow")
-            except shutil.Error as _:
-                click.secho("Hardlinking didn't work, falling back to non-hardlink copy...", fg="red")
-                shutil.copytree(path, new_path, dirs_exist_ok=True)
-                click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
-        else:
-            shutil.copytree(path, new_path, dirs_exist_ok=True)
-            click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
+        shutil.move(path, new_path)
+        click.secho(f"Moved folder to '{new_path}'.", fg="yellow")
 
-        if cfg.upload.formatting.remove_source_dir:
-            shutil.rmtree(path)
+        # Remove the source parent directory if it is now empty
+        source_parent = os.path.dirname(path)
+        if os.path.isdir(source_parent) and not os.listdir(source_parent):
+            os.rmdir(source_parent)
+            click.secho(f"Removed empty source parent directory '{source_parent}'.", fg="yellow")
 
     # Also rename spectrals folder in TMP_DIR if it exists
     if cfg.directory.tmp_dir and os.path.exists(cfg.directory.tmp_dir):
@@ -88,22 +81,10 @@ def rename_folder(path, metadata, auto_rename, check=True):
         if not os.path.exists(tmp_old_specs_path):
             pass  # No spectrals folder exists, nothing to rename
         elif os.path.exists(tmp_new_specs_path) and os.path.samefile(tmp_old_specs_path, tmp_new_specs_path):
-            click.secho(f"Skipping copy, same location already for '{tmp_new_specs_path}'", fg="yellow")
+            click.secho(f"Skipping move, same location already for '{tmp_new_specs_path}'", fg="yellow")
         else:
-            if use_hardlinks:
-                try:
-                    shutil.copytree(tmp_old_specs_path, tmp_new_specs_path, copy_function=os.link, dirs_exist_ok=True)
-                    click.secho(f"Hardlinked temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
-                except shutil.Error as _:
-                    click.secho("Hardlinking didn't work, falling back to non-hardlink copy...", fg="red")
-                    shutil.copytree(tmp_old_specs_path, tmp_new_specs_path, dirs_exist_ok=True)
-                    click.secho(f"Copied temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
-            else:
-                shutil.copytree(tmp_old_specs_path, tmp_new_specs_path, dirs_exist_ok=True)
-                click.secho(f"Copied temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
-
-            if cfg.upload.formatting.remove_source_dir:
-                shutil.rmtree(tmp_old_specs_path)
+            shutil.move(tmp_old_specs_path, tmp_new_specs_path)
+            click.secho(f"Moved temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
 
     return new_path
 
@@ -145,7 +126,8 @@ def _fix_format(metadata, keys):
     Add abbreviated encoding to format key when the format is not 'FLAC'.
     Helpful for 24 bit FLAC and MP3 320/V0 stuff.
 
-    So far only 24 bit FLAC is supported, when I fix the script for MP3 i will add MP3 encodings.
+    So far only 24 bit FLAC is supported, when I fix the script for MP3 i will
+    add MP3 encodings.
     """
     sub_metadata = copy(metadata)
     if "format" in keys:
@@ -168,7 +150,7 @@ def _edit_folder_interactive(foldername, auto_rename):
     """Allow the user to edit the pending folder name in a text editor."""
     if auto_rename:
         return foldername
-    if not click.confirm(
+    if not cfg.upload.yes_all and not click.confirm(
         click.style("Is the new folder name acceptable? ([n] to edit)", fg="magenta"),
         default=True,
     ):

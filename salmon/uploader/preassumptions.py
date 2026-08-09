@@ -60,7 +60,8 @@ def print_preassumptions(
         raise UploadError("\nYou cannot report a torrent for lossy master without spectrals.")
 
 
-async def confirm_group_upload(gazelle_site: "BaseGazelleApi", group_id: int, source: str | None) -> None:
+async def confirm_group_upload(gazelle_site: "BaseGazelleApi", group_id: int, 
+source: str | None) -> None:
     """Confirm upload to existing group.
 
     Args:
@@ -69,11 +70,13 @@ async def confirm_group_upload(gazelle_site: "BaseGazelleApi", group_id: int, so
         source: Media source filter.
     """
     await print_group_info(gazelle_site, group_id, source)
-    click.confirm(
-        click.style("\nWould you like to continue to upload to this group?", fg="magenta"),
+    if not cfg.upload.yes_all and not click.confirm(
+        click.style("\nWould you like to continue to upload to this group?", 
+fg="magenta"),
         default=True,
         abort=True,
-    )
+    ):
+        pass
 
 
 async def print_group_info(gazelle_site: "BaseGazelleApi", group_id: int, source: str | None) -> None:
