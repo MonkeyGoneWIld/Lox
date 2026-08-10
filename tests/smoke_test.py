@@ -154,6 +154,31 @@ async def main() -> int:
                   list(data.get("sections", {})) == ["artist"] and len(data["results"]) == 1,
                   str(list(data.get("sections", {}))))
 
+            # --- deleting a release folder ------------------------------
+            import os
+
+            import lox
+            root = lox.cfg.directory.download_directory
+            victim = os.path.join(root, "Deletable - Release (2026) [WEB FLAC]")
+            os.makedirs(victim, exist_ok=True)
+            with open(os.path.join(victim, "01.flac"), "wb") as f:
+                f.write(b"x")
+
+            # The download directory itself must never be removable in one call.
+            async with s.post(f"{BASE}/api/folders/delete", headers=h, json={"folder": root}) as r:
+                body = await r.json()
+                check("refuses to delete the download directory itself",
+                      r.status == 400 and "itself" in body.get("error", ""), str(body))
+
+            # Nor anything outside the directories lox manages.
+            async with s.post(f"{BASE}/api/folders/delete", headers=h,
+                              json={"folder": os.path.dirname(root)}) as r:
+                check("refuses a path outside the managed roots", r.status == 400, f"got {r.status}")
+
+            async with s.post(f"{BASE}/api/folders/delete", headers=h, json={"folder": victim}) as r:
+                check("deletes a release folder", r.status == 200, f"got {r.status}")
+            check("the files are gone", not os.path.exists(victim))
+
             async with s.get(f"{BASE}/api/settings", headers=h) as r:
                 data = await r.json()
                 check("setting persisted and read back",

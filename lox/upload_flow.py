@@ -16,15 +16,19 @@ labelled buttons rather than a box you have to type a letter into.
 """
 
 import asyncio
+import contextlib
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import asyncclick as click
 
 from lox import debug
 from lox.flow import Flow
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # Upstream writes choices as "[y]es, [N]o, [a]bort". The capitalised initial is
@@ -590,10 +594,69 @@ async def run_uploads(
     was_multi = cfg.upload.multi_tracker_upload
     cfg.upload.multi_tracker_upload = False
     try:
-        return await _upload_each(flow, folder, trackers, source=source, auto_rename=auto_rename)
+        with _record_transcodes() as transcoded:
+            try:
+                return await _upload_each(flow, folder, trackers, source=source, auto_rename=auto_rename)
+            finally:
+                if _dry_run():
+                    _discard_transcodes(flow, transcoded)
     finally:
         cfg.upload.multi_tracker_upload = was_multi
         _discard_spectrals(flow, folder)
+
+
+@contextlib.contextmanager
+def _record_transcodes() -> "Iterator[list[str]]":
+    """Collect the transcode folders an upload creates.
+
+    A downconversion writes a new release folder beside the source -- ``[WEB
+    MP3 V0]`` next to ``[WEB FLAC]`` -- which in a real run is uploaded and
+    seeded in its own right. The uploader binds ``transcode_folder`` by name at
+    import, so the recording wrapper has to replace it there rather than on the
+    module it came from.
+
+    A folder that already existed is never recorded: it belongs to an earlier
+    run, and that run may well have been a real one.
+    """
+    import lox.uploader as uploader
+    from lox.converter import transcoding
+
+    created: list[str] = []
+    original = uploader.transcode_folder
+
+    async def recording(path: str, bitrate: Any) -> str:
+        try:
+            existed = os.path.isdir(transcoding._build_output_path(path, bitrate))  # noqa: SLF001
+        except Exception:  # noqa: BLE001 - if we cannot tell, assume it was already there
+            existed = True
+        result = await original(path, bitrate)
+        if not existed and result:
+            created.append(result)
+        return result
+
+    uploader.transcode_folder = recording
+    try:
+        yield created
+    finally:
+        uploader.transcode_folder = original
+
+
+def _discard_transcodes(flow: Flow, folders: list[str]) -> None:
+    """Delete transcodes produced by a dry run.
+
+    A dry run posts nothing and hands nothing to the download client, so the
+    folders it transcoded have no owner: they are not seeding, nothing links to
+    them, and they sit in the download directory looking like releases waiting
+    to be uploaded. Only folders this run created are touched.
+    """
+    import shutil
+
+    for folder in folders:
+        try:
+            shutil.rmtree(folder)
+            flow.note(f"Dry run: removed transcode {os.path.basename(folder)}")
+        except OSError as e:
+            flow.note(f"Could not remove {folder}: {e}", "warning")
 
 
 def _discard_spectrals(flow: Flow, folder: str) -> None:
