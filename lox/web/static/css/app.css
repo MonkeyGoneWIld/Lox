@@ -561,7 +561,17 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .inspected summary { cursor: pointer; color: var(--text-dim); }
 .inspected .hitlist { padding-top: 8px; }
 
-.theme-row { justify-content: space-between; margin-bottom: 10px; }
-.theme-row .segmented button { padding: 4px 9px; font-size: 12px; }
+.theme-toggle {
+  background: none;
+  border: 0;
+  padding: 4px 6px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-dim);
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.theme-toggle:hover { color: var(--text); }
 
 .icon-btn.upload { background: var(--ok); margin-left: 6px; }

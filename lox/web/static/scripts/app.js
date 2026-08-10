@@ -1237,6 +1237,7 @@
     const notes = flow.events.slice(-8);
 
     card.replaceChildren(
+      ...[
       el(
         'div',
         { class: 'row' },
@@ -1252,14 +1253,18 @@
         : null,
       flow.step ? flowStep(flow) : null,
       flow.error ? el('p', { class: 'test-result warn' }, flow.error) : null,
-      notes.length
+      // Notes are what the pipeline is telling you -- duplicate groups it
+      // found, what it is checking. Hiding them behind a disclosure was why
+      // the page looked empty. Show them, newest last, and keep them open.
+      flow.events.length
         ? el(
-            'details',
+            'div',
             { class: 'flow-notes' },
-            el('summary', {}, `Details (${flow.events.length})`),
-            el('ul', { class: 'notelist' }, ...notes.map((n) => el('li', { class: n.level }, n.message))),
+            el('ul', { class: 'notelist' }, ...flow.events.slice(-25).map((n) =>
+              el('li', { class: n.level }, n.message))),
           )
         : null,
+      ].filter((n) => n !== null && n !== undefined),
     );
   }
 
@@ -1288,6 +1293,7 @@
       state.settings = data;
       state.pending = {};
       renderSettings();
+      applyTheme();
       loadDebug();
     } catch (e) {
       body.replaceChildren(empty(e.message));
@@ -1403,6 +1409,19 @@
       el(
         'section',
         { class: 'panel' },
+        el('h2', {}, 'Appearance'),
+        el(
+          'div',
+          { class: 'row' },
+          el(
+            'div',
+            { class: 'segmented', id: 'theme-picker' },
+            ...[['dark', 'Dark'], ['light', 'Light'], ['system', 'Auto']].map(([value, label]) =>
+              el('button', { type: 'button', 'data-theme': value, onclick: () => applyTheme(value) }, label),
+            ),
+          ),
+        ),
+        el('p', { class: 'hint' }, 'Auto follows your operating system. The sidebar icon flips between dark and light.'),
         el('h2', {}, 'Scan history'),
         el(
           'div',
@@ -1535,17 +1554,36 @@
 
   // ---------------------------------------------------------------- wiring
 
+  const THEME_ICON = { dark: '☽', light: '☀', system: '◑' };
+
+  function resolvedTheme(theme) {
+    if (theme !== 'system') return theme;
+    return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+
   function applyTheme(choice) {
     const theme = choice || localStorage.getItem('lox-theme') || 'system';
     localStorage.setItem('lox-theme', theme);
     if (theme === 'system') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', theme);
+
+    const toggle = $('#theme-toggle');
+    if (toggle) {
+      toggle.textContent = THEME_ICON[resolvedTheme(theme)];
+      toggle.title = `Theme: ${theme}. Click to switch.`;
+    }
     $$('#theme-picker button').forEach((b) => b.classList.toggle('active', b.dataset.theme === theme));
+  }
+
+  // The sidebar icon flips between the two you actually use; the three-way
+  // choice including Auto lives in Settings.
+  function toggleTheme() {
+    applyTheme(resolvedTheme(localStorage.getItem('lox-theme') || 'system') === 'dark' ? 'light' : 'dark');
   }
 
   function init() {
     applyTheme();
-    $$('#theme-picker button').forEach((b) => b.addEventListener('click', () => applyTheme(b.dataset.theme)));
+    $('#theme-toggle')?.addEventListener('click', toggleTheme);
 
     $$('.nav-item').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
     $('#search-form').addEventListener('submit', runSearch);
