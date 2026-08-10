@@ -30,6 +30,11 @@ _PATTERNS = (
     re.compile(r"(session=)([^;\s&\"']{16,})", re.IGNORECASE),
     re.compile(r"((?:api[_-]?key|token|authorization|auth_token|webhook)\W{1,4})([A-Za-z0-9+/=._~-]{12,})",
                re.IGNORECASE),
+    # Gazelle hands both of these back from ajax.php?action=index, and neither
+    # is caught by the rule above -- "authkey" is not "api_key". The passkey is
+    # the announce credential and the authkey signs site actions, so a log
+    # holding them is as good as the session cookie.
+    re.compile(r"((?:auth|pass)key\W{1,4})([A-Za-z0-9+/=._~-]{12,})", re.IGNORECASE),
     re.compile(r"(https://discord\.com/api/webhooks/)(\S+)", re.IGNORECASE),
 )
 

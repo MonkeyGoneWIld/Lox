@@ -102,11 +102,14 @@ def add_routes(app: web.Application) -> None:
     Args:
         app: The aiohttp web application.
     """
-    app.router.add_static("/static", join(dirname(__file__), "static"), follow_symlinks=True)
+    # follow_symlinks is no longer needed here: spectrals used to be symlinked
+    # into this directory, which the package cannot write to in a container.
+    app.router.add_static("/static", join(dirname(__file__), "static"))
     app.router.add_route("GET", "/", handle_app)
     app.router.add_route("GET", "/login", handle_login)
     app.router.add_route("GET", "/legacy", handle_index)
     app.router.add_route("GET", "/spectrals", spectrals.handle_spectrals)
+    app.router.add_route("GET", "/spectral-file/{name}", spectrals.handle_spectral_file)
     app.router.add_routes(api.routes)
     app.router.add_routes(settings_api.routes)
     app["static_root_url"] = web_cfg.static_root_url

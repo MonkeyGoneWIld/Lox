@@ -1459,7 +1459,33 @@
     tick();
   }
 
+  // What is already in the group you are about to upload into. The question is
+  // "does my release duplicate one of these", which is a comparison across
+  // media, format and encoding -- so those are columns, sortable by eye,
+  // rather than forty lines of slash-separated prose in a scroll box.
+  function torrentTable(table) {
+    const head = el('tr', {},
+      ...['Year', 'Edition', 'Media', 'Format', 'Encoding'].map((h) => el('th', {}, h)));
+    const rows = table.rows.map((r) =>
+      el('tr', {},
+        el('td', {}, r.year || ''),
+        el('td', { class: 'torrent-edition' }, r.edition || '—'),
+        el('td', {}, r.media || ''),
+        el('td', {}, r.format || ''),
+        el('td', {}, r.encoding || '')),
+    );
+    return el(
+      'details',
+      { class: 'diff', open: table.rows.length <= 12 },
+      el('summary', {}, table.title,
+        el('span', { class: 'card-sub' }, ` — ${table.rows.length} existing torrent${table.rows.length === 1 ? '' : 's'}`)),
+      el('div', { class: 'table-scroll' },
+        el('table', { class: 'table torrent-table' }, el('thead', {}, head), el('tbody', {}, ...rows))),
+    );
+  }
+
   function stepTable(table) {
+    if (table.kind === 'torrents') return torrentTable(table);
     // Rows can be grouped -- by filename for a tag diff, by field for a
     // metadata list -- so a group header is emitted whenever it changes.
     const rows = [];
@@ -1510,13 +1536,38 @@
     };
 
     const controls = [];
+    // Matches found on the tracker are the substance of the question, not one
+    // more button. They get full-width cards above the actions, untruncated,
+    // each with a link out so the group can be checked on the tracker itself.
+    const matches = [];
     if (step.kind === 'confirm') {
       controls.push(
         el('button', { class: 'primary', onclick: () => send(true) }, 'Yes'),
         el('button', { onclick: () => send(false) }, 'No'),
       );
     } else if (step.kind === 'choice') {
-      step.options.forEach((o) =>
+      step.options.forEach((o) => {
+        if (o.kind === 'group') {
+          matches.push(
+            el(
+              'div',
+              { class: 'match' },
+              el('div', { class: 'match-body' },
+                el('div', { class: 'match-title' }, o.label),
+                el('div', { class: 'match-sub' }, o.detail || '')),
+              el(
+                'div',
+                { class: 'match-actions' },
+                o.url
+                  ? el('a', { class: 'filebtn', href: o.url, target: '_blank', rel: 'noopener noreferrer' },
+                      'Open on tracker ↗')
+                  : null,
+                el('button', { class: 'primary', onclick: () => send(o.value) }, 'Use this group'),
+              ),
+            ),
+          );
+          return;
+        }
         controls.push(
           el(
             'button',
@@ -1527,8 +1578,8 @@
             },
             o.label,
           ),
-        ),
-      );
+        );
+      });
     } else if (step.kind === 'multi') {
       const picked = new Set(step.default || []);
       step.options.forEach((o) =>
@@ -1565,6 +1616,7 @@
       ...[
       el('div', { class: 'step-prompt' }, step.prompt),
       step.detail ? el('p', { class: 'hint' }, step.detail) : null,
+      matches.length ? el('div', { class: 'matches' }, ...matches) : null,
       // The tag diff and metadata comparison are evidence for the answer, so
       // they are tables next to the question rather than prose above it.
       ...(step.tables || []).map(stepTable),

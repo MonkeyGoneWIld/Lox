@@ -215,6 +215,98 @@ async def main() -> int:
     flow8.answer(step8.id, "n")
     await asyncio.wait_for(task8, timeout=2)
 
+    # --- the group's existing torrents become a table ------------------
+    flow9 = Flow("upload", "group")
+    p9 = FlowPrompts(flow9)
+
+    async def group_contents():
+        p9._echo("Selected ID: 2617840 | Taylor Swift - The Life of a Showgirl (2025)")
+        p9._echo("Torrents in this group:")
+        p9._echo("> 2025 / 602478372049.1 / CD / FLAC / Lossless")
+        p9._echo("> 2025 / 602488067102 /  602488067126 / WEB / FLAC / 24bit Lossless")
+        p9._echo("> 2025 / Deluxe / So Punk on the Internet Version / WEB / MP3 / 320")
+        p9._echo("> 2025 / Instrumentals / WEB / MP3 / V0 (VBR)")
+        p9._echo("")
+        return await p9._confirm("Are you sure you would you like to upload this torrent to this group?")
+
+    task9 = asyncio.create_task(group_contents())
+    step9 = await wait_for_step(flow9)
+    listing = next((tb for tb in step9.tables if tb["kind"] == "torrents"), None)
+    check("existing torrents captured as a table", listing is not None)
+    rows9 = (listing or {}).get("rows", [])
+    check("every torrent line is a row", len(rows9) == 4, str(len(rows9)))
+    check("media, format and encoding are separate columns",
+          rows9[0] == {"year": "2025", "edition": "602478372049.1", "media": "CD", "format": "FLAC",
+                       "encoding": "Lossless"}, str(rows9[0]))
+    check("a multi-part catalogue number stays in the edition",
+          rows9[1]["edition"] == "602488067102 / 602488067126" and rows9[1]["encoding"] == "24bit Lossless",
+          str(rows9[1]))
+    check("an edition with a name keeps it",
+          rows9[2]["edition"] == "Deluxe / So Punk on the Internet Version", str(rows9[2]))
+    check("torrent lines are not also loose notes",
+          not any(e["message"].startswith("> 2025 /") for e in flow9.events))
+    flow9.answer(step9.id, True)
+    await asyncio.wait_for(task9, timeout=2)
+
+    # --- a found group is offered in full, with its link ---------------
+    flow10 = Flow("upload", "match")
+    p10 = FlowPrompts(flow10)
+    long_label = ("Taylor Swift - The Life of a Showgirl (2025) [Album] "
+                  "[Tags: pop, pop.rock, female.vocalist, synthpop, singer.songwriter, country]")
+
+    async def match():
+        p10._echo("Results matching this release were found on RED:")
+        p10._echo(f" 01 >> 2617840 | {long_label} | https://redacted.sh/torrents.php?id=2617840")
+        return await p10._prompt(
+            "Would you like to upload to an existing group? Paste a URL, pick from groups found or "
+            "[N]ew group / [a]bort / [d]elete music folder"
+        )
+
+    task10 = asyncio.create_task(match())
+    step10 = await wait_for_step(flow10)
+    group_option = step10.options[0]
+    check("the group is marked as a match rather than a plain option", group_option.get("kind") == "group")
+    check("the label is not truncated", group_option["label"] == long_label, group_option["label"][-40:])
+    check("the tracker link is carried separately",
+          group_option["url"] == "https://redacted.sh/torrents.php?id=2617840", group_option["url"])
+    check("the bracket options are still plain buttons",
+          [o["value"] for o in step10.options[1:]] == ["n", "a", "d"],
+          str([o.get("kind") for o in step10.options[1:]]))
+    flow10.answer(step10.id, group_option["value"])
+    await asyncio.wait_for(task10, timeout=2)
+
+    # --- the spectral viewer must not touch the package directory -------
+    # The pipeline's own viewer symlinks into the installed package and starts a
+    # second web server, which in a container is PermissionError [Errno 1] and
+    # killed every upload right after the spectrals were compressed. A stand-in
+    # is installed for the duration of the flow. The real module needs the audio
+    # stack, so this uses a stub when those wheels are absent.
+    import sys
+    import types
+
+    stub = types.ModuleType("lox.uploader.spectrals")
+
+    async def real_viewer(_path, _ids):
+        raise PermissionError(1, "Operation not permitted")
+
+    stub.view_spectrals = real_viewer
+    installed = "lox.uploader.spectrals" not in sys.modules
+    if installed:
+        sys.modules["lox.uploader.spectrals"] = stub
+        sys.modules.setdefault("lox.uploader", types.ModuleType("lox.uploader"))
+    spectrals_module = sys.modules["lox.uploader.spectrals"]
+
+    flow11 = Flow("upload", "specs")
+    p11 = FlowPrompts(flow11, folder="/data/media/deemix/Some Release")
+    original_viewer = spectrals_module.view_spectrals
+    with p11:
+        check("the terminal spectral viewer is replaced while a flow runs",
+              spectrals_module.view_spectrals is not original_viewer)
+        await spectrals_module.view_spectrals("/config/spectrals/spectrals_Some Release", {1: "01.flac"})
+        check("the stand-in does not raise where the real one would", True)
+    check("the original viewer is restored afterwards",
+          spectrals_module.view_spectrals is original_viewer)
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

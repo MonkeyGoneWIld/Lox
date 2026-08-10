@@ -12,7 +12,7 @@ from aiolimiter import AsyncLimiter
 from bs4 import BeautifulSoup
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
-from lox import cfg
+from lox import cfg, debug
 from lox.constants import RELEASE_TYPES
 from lox.errors import (
     LoginError,
@@ -187,18 +187,17 @@ class BaseGazelleApi:
                 aiohttp.ClientSession(timeout=timeout, cookies=self._get_cookies()) as session,
                 session.get(url, params=params, headers=self.headers, allow_redirects=False) as resp,
             ):
+                # To the log, never to the screen. These responses carry the
+                # account's authkey and passkey, and click.secho here reaches
+                # whatever is watching -- in the web UI that means printing live
+                # credentials into the browser and keeping them in the flow's
+                # event list. The log redacts them; a page does not.
                 if cfg.upload.debug_tracker_connection:
-                    click.secho("URL: ", fg="cyan", nl=False)
-                    click.secho(url, fg="yellow")
-                    click.secho("Params: ", fg="cyan", nl=False)
-                    click.secho(str(params), fg="yellow")
-                    click.secho("Response: ", fg="cyan", nl=False)
-                    click.secho(str(resp.status), fg="yellow")
+                    debug.log("tracker %s %s -> %s", url, params, resp.status)
 
                 resp_text = await resp.text()
                 if cfg.upload.debug_tracker_connection:
-                    click.secho("Response Text: ", fg="cyan", nl=False)
-                    click.secho(resp_text, fg="green")
+                    debug.log("tracker %s response: %s", action, resp_text)
 
                 try:
                     resp_json = msgspec.json.decode(resp_text)

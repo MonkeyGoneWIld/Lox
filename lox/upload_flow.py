@@ -57,8 +57,28 @@ _BLOCK_HEADS = {
     "album tags (applied to all)": ("album_tags", "Album tags, applied to every file"),
     "previous metadata": ("previous", "Previous metadata"),
     "pending metadata": ("pending", "Pending metadata"),
+    "torrents in this group": ("torrents", "Torrents already in this group"),
 }
+# "> 2025 / Deluxe / 602488195980 / WEB / AAC / 256" -- year, then any number of
+# edition and catalogue-number parts, then media, format and encoding. The three
+# that matter for deciding whether your upload duplicates one of these are the
+# last three, so they are pulled out as columns rather than left in a sentence.
+_TORRENT_LINE = re.compile(r"^>\s*(\d{4})\s*/\s*(.+)$")
+# The pipeline announces the group it is about to use before listing its
+# contents: "Selected ID: 2617840 | Taylor Swift - The Life of a Showgirl (2025)".
+_SELECTED_GROUP = re.compile(r"^Selected ID:\s*(\d+)\s*\|\s*(.+?)\s*$", re.IGNORECASE)
 _SPECTRAL_EXT = (".png", ".jpg", ".jpeg")
+
+
+def _spectrals_module() -> Any:
+    """The pipeline's spectral module, imported on demand.
+
+    It drags in the audio stack, so importing it at module scope would make the
+    web app unimportable anywhere those wheels are missing.
+    """
+    import lox.uploader.spectrals as module
+
+    return module
 
 
 def strip_ansi(text: str) -> str:
@@ -136,6 +156,7 @@ class FlowPrompts:
         self.flow = flow
         self.folder = folder
         self._saved: dict[str, Any] = {}
+        self._saved_viewer: Any = None
         # Group candidates printed since the last question, so the next prompt
         # can offer them instead of asking for a pasted URL.
         self._candidates: list[dict[str, Any]] = []
@@ -234,8 +255,18 @@ class FlowPrompts:
         group = _GROUP_LINE.match(text)
         if group:
             group_id, description, url = group[1], group[2].strip(), group[3]
+            # Not truncated: this is the line you decide on, and the edition and
+            # tags that distinguish one group from another live at the end of
+            # it. `url` lets the page link straight to the group so the check
+            # can be made against the tracker rather than against a summary.
             self._candidates.append(
-                {"value": url or group_id, "label": description[:90], "detail": url or f"group {group_id}"}
+                {
+                    "value": url or group_id,
+                    "label": description,
+                    "detail": f"group {group_id}",
+                    "url": url or "",
+                    "kind": "group",
+                }
             )
         else:
             # Metadata results and numbered menus are offered the same way: the
@@ -278,6 +309,26 @@ class FlowPrompts:
         if not text:
             self._block = None
             return False
+
+        if self._block["kind"] == "torrents":
+            torrent = _TORRENT_LINE.match(text)
+            if not torrent:
+                return False
+            parts = [p.strip() for p in torrent[2].split("/") if p.strip()]
+            # The last three are media, format and encoding; whatever precedes
+            # them is the edition and its catalogue numbers, which vary in
+            # count and are only worth reading as one piece of text.
+            media, fmt, encoding = (parts[-3:] + ["", "", ""])[:3] if len(parts) >= 3 else ("", "", "")
+            self._block["rows"].append(
+                {
+                    "year": torrent[1],
+                    "edition": " / ".join(parts[:-3]) if len(parts) > 3 else "",
+                    "media": media,
+                    "format": fmt,
+                    "encoding": encoding,
+                }
+            )
+            return True
 
         if self._block["kind"] in ("tags", "album_tags"):
             header = _FILE_HEADER.match(text)
@@ -325,8 +376,26 @@ class FlowPrompts:
         names = sorted(f for f in os.listdir(directory) if f.lower().endswith(_SPECTRAL_EXT))
         return [f"/spectral-image/{quote(os.path.basename(directory))}/{quote(n)}" for n in names]
 
+    async def _view_spectrals(self, spectrals_path: str, _all_spectral_ids: dict[int, str]) -> None:
+        """Stand in for the pipeline's spectral viewer.
+
+        The pipeline's own viewer symlinks the spectral directory into the
+        installed package's static folder and starts a second web server to
+        serve it. In a container that first step is a
+        ``PermissionError: [Errno 1] Operation not permitted`` -- the package
+        directory belongs to the image, and the process runs as PUID -- which
+        killed every upload immediately after spectrals were compressed.
+
+        None of it is needed here. The images are attached to the questions
+        they inform, so they appear on the page you are already looking at
+        rather than behind a link to a second server. Marking them ready is the
+        whole job.
+        """
+        self._spectrals_ready = True
+        self.flow.note(f"Spectrals ready: {os.path.basename(spectrals_path)}")
+
     def __enter__(self) -> "FlowPrompts":
-        """Patch click's prompt functions."""
+        """Patch click's prompt functions, and the terminal-era spectral viewer."""
         for name, replacement in (
             ("confirm", self._confirm),
             ("prompt", self._prompt),
@@ -335,13 +404,22 @@ class FlowPrompts:
         ):
             self._saved[name] = getattr(click, name)
             setattr(click, name, replacement)
+
+        # Imported here rather than at module scope: the uploader pulls in the
+        # whole audio stack, and the web app has to be importable without it.
+        spectrals = _spectrals_module()
+        self._saved_viewer = spectrals.view_spectrals
+        spectrals.view_spectrals = self._view_spectrals
         return self
 
     def __exit__(self, *_exc: object) -> None:
-        """Restore click's prompt functions."""
+        """Restore click's prompt functions and the spectral viewer."""
         for name, original in self._saved.items():
             setattr(click, name, original)
         self._saved.clear()
+        if self._saved_viewer is not None:
+            _spectrals_module().view_spectrals = self._saved_viewer
+            self._saved_viewer = None
 
 
 async def run_upload(
