@@ -116,6 +116,16 @@ session = 'get-from-site-cookie'
 # type = "local" # "local" or "rclone"
 # flac_only = false # if true, only upload FLAC files
 # extra_args = [ "--checksum", "-P", "--sftp-path-override", "@/volume3" ] # pass these arguments to rclone
+#
+# # Restrict this entry to one tracker. Unset means it handles every tracker.
+# tracker = "RED"
+#
+# # directory and label both accept {tracker}, which expands to RED / OPS / DIC.
+# # With [linking] per_tracker_dirs on, the content lives in a per-tracker
+# # folder, so the save path has to match or the client will not find the files:
+# #   directory = "/data/torrents/upload-music/{tracker}"
+# #   label     = "upload-music-{tracker}"
+# # Leaving directory empty derives it from linking.link_dir automatically.
 
 # # transmission+http://username:password@127.0.0.1:9091
 # # rutorrent+http://RUTORRENT_ADDRESS:9380/plugins/rpc/rpc.php
