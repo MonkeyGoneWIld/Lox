@@ -1,4 +1,4 @@
-name: Lint
+name: Checks
 
 on:
   push:
@@ -42,3 +42,20 @@ jobs:
 
       - name: Run Pyright Type Check
         run: uv run basedpyright
+
+      - name: Smoke test the web app
+        # Starts the real aiohttp app and exercises auth, settings read/write,
+        # validation and the no-network tests. This is the layer that keeps
+        # breaking in deployment and that ruff and pyright cannot see.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5015"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+          LOX_TMP_DIR: /tmp/lox/spectrals
+          LOX_STATE_DIR: /tmp/lox/state
+          LOX_SETTINGS_DIR: /tmp/lox/config
+        run: |
+          mkdir -p /tmp/lox/downloads
+          uv run python tests/smoke_test.py

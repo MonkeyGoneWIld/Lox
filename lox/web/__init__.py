@@ -110,7 +110,12 @@ def add_routes(app: web.Application) -> None:
     app.router.add_routes(api.routes)
     app.router.add_routes(settings_api.routes)
     app["static_root_url"] = web_cfg.static_root_url
-    app["config_path"] = find_config_path()
+    # There may be no config file at all when the bootstrap came from the
+    # environment; the settings page only shows this as provenance.
+    try:
+        app["config_path"] = find_config_path()
+    except FileNotFoundError:
+        app["config_path"] = "environment (LOX_* variables)"
 
 
 async def handle_app(request: web.Request) -> web.Response:
