@@ -4,7 +4,10 @@
 the method, which fails at class-creation time with "'function' object is not
 subscriptable". compileall does not catch it; this does.
 """
-import ast, builtins, os, sys
+import ast
+import builtins
+import os
+import sys
 
 BUILTINS = set(dir(builtins))
 problems = []
@@ -14,7 +17,8 @@ for dirpath, _dirs, files in os.walk("lox"):
         continue
     for name in sorted(f for f in files if f.endswith(".py")):
         path = os.path.join(dirpath, name)
-        tree = ast.parse(open(path, encoding="utf-8").read(), path)
+        with open(path, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read(), path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue

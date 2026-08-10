@@ -8,6 +8,7 @@ and the ``license_token`` needed to resolve stream URLs) is derived from
 import asyncio
 import random
 import re
+from collections.abc import Sequence
 from typing import Any
 
 import aiohttp
@@ -251,7 +252,7 @@ class DeezerGW:
         """Fetch the private artist page for an artist ID."""
         return await self.call("deezer.pageArtist", {"art_id": int(artist_id), "lang": "en"})
 
-    async def track_data(self, track_ids: list[str | int]) -> list[dict]:
+    async def track_data(self, track_ids: Sequence[str | int]) -> list[dict]:
         """Fetch full song records, including the track tokens needed to stream.
 
         Args:

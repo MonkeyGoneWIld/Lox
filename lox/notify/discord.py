@@ -40,12 +40,13 @@ class DiscordNotifier:
 
     async def _post(self, payload: dict[str, Any], retries: int = 3) -> bool:
         """POST a payload, retrying while Discord rate limits us."""
-        if not self.enabled:
+        webhook = self.webhook_url
+        if not self.enabled or not webhook:
             return False
         async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
             for attempt in range(retries):
                 try:
-                    async with session.post(self.webhook_url, json=payload) as resp:
+                    async with session.post(webhook, json=payload) as resp:
                         if resp.status == 429:
                             retry_after = float(resp.headers.get("Retry-After", 5))
                             await asyncio.sleep(min(retry_after, 30))

@@ -8,7 +8,6 @@ from platformdirs import user_data_dir
 from lox.common import commandgroup
 from lox.config import APPNAME, LEGACY_APPNAME
 
-
 DB_FILENAME = "lox.db"
 LEGACY_DB_FILENAME = "smoked.db"
 

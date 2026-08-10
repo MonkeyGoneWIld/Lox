@@ -22,9 +22,9 @@ import msgspec
 from aiohttp import web
 
 from lox import cfg, debug
+from lox.checker.deezer_requests import DeezerRequestChecker
 from lox.checker.gateway import TrackerGateway
 from lox.checker.missing import Candidate, MissingScanner
-from lox.checker.deezer_requests import DeezerRequestChecker
 from lox.checker.store import CheckerStore
 from lox.checker.watchlists import WatchlistManager
 from lox.deezer.download import Downloader
@@ -384,9 +384,10 @@ async def api_album(request: web.Request) -> web.Response:
     if gw.arl:
         try:
             result = await gw.availability(album_id)
-            availability = msgspec.to_builtins(result)
-            availability["uploadable"] = result.uploadable
-            availability["reason"] = result.reason()
+            detail: dict[str, Any] = msgspec.to_builtins(result)
+            detail["uploadable"] = result.uploadable
+            detail["reason"] = result.reason()
+            availability = detail
         except DeezerGWError as e:
             availability_error = str(e)
 
