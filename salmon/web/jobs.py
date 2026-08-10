@@ -107,7 +107,7 @@ class JobRegistry:
         """Look up a job by ID."""
         return self.jobs.get(job_id)
 
-    def list(self, kind: str | None = None) -> list[dict[str, Any]]:
+    def summaries(self, kind: str | None = None) -> list[dict[str, Any]]:
         """Summarize jobs, newest first, optionally filtered by kind."""
         jobs = [j for j in self.jobs.values() if kind is None or j.kind == kind]
         jobs.sort(key=lambda j: j.created, reverse=True)

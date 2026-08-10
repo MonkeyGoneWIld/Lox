@@ -110,6 +110,46 @@ def get_current_version():
         return cursor.fetchone()[0]
 
 
+def migration_pending() -> bool:
+    """True when the newest migration is ahead of the database."""
+    try:
+        newest = sorted(f for f in listdir(MIG_DIR) if f.endswith(".sql"))[-1]
+        return int(newest[:4]) > get_current_version()
+    except (IndexError, ValueError, OSError):
+        return False
+
+
+def run_migrations() -> bool:
+    """Apply any outstanding migrations without prompting.
+
+    Called at web-UI startup: a container has no shell to run `lox migrate` in,
+    and the database holds only lox's own bookkeeping.
+
+    Returns:
+        True if anything was applied.
+    """
+    if not migration_pending():
+        return False
+    current_version = get_current_version()
+    makedirs(DB_DIR, exist_ok=True)
+    if path.exists(OLD_DB_PATH):
+        shutil.move(OLD_DB_PATH, DB_PATH)
+    applied = False
+    with sqlite3.connect(DB_PATH) as conn:
+        for migration in sorted(f for f in listdir(MIG_DIR) if f.endswith(".sql")):
+            mig_version = int(migration[:4])
+            if mig_version <= current_version:
+                continue
+            cursor = conn.cursor()
+            with open(path.join(MIG_DIR, migration)) as mig_file:
+                cursor.executescript(mig_file.read())
+                cursor.execute("INSERT INTO version (id) VALUES (?)", (mig_version,))
+            conn.commit()
+            cursor.close()
+            applied = True
+    return applied
+
+
 def check_if_migration_is_needed():
     current_version = get_current_version()
     most_recent_mig = sorted(f for f in listdir(MIG_DIR) if f.endswith(".sql"))[-1:][0]

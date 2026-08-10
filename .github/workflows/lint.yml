@@ -18,6 +18,12 @@ jobs:
       - name: Run Ruff
         uses: astral-sh/ruff-action@v3
 
+      - name: Check for builtins shadowed in annotations
+        # Ruff and compileall both miss this: a method named `list` makes a
+        # later `-> list[X]` annotation resolve to the method, which only fails
+        # when the class body executes at import time.
+        run: python .github/scripts/check_builtin_shadowing.py
+
   pyright:
     runs-on: ubuntu-latest
     permissions:

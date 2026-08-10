@@ -10,6 +10,7 @@ from aiohttp_jinja2 import render_template
 from salmon import cfg
 from salmon.config import find_config_path
 from salmon.common import commandgroup
+from salmon.database import run_migrations
 from salmon.errors import WebServerIsAlreadyRunning
 from salmon.web import api, settings_api, spectrals
 
@@ -36,6 +37,11 @@ async def ui_cmd() -> None:
     """Start the web UI: Deezer search, explore, download, check and upload."""
     url = f"http://{web_cfg.host}:{web_cfg.port}/"
     click.secho(f"lox UI on {url}", fg="cyan", bold=True)
+
+    # No shell in a container to run `lox migrate` in, and the database is only
+    # lox's own bookkeeping.
+    if run_migrations():
+        click.secho("Applied pending database migrations.", fg="green")
 
     if api.binds_publicly(web_cfg.host) and not api.auth_required():
         click.secho(
