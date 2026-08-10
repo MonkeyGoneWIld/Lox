@@ -763,7 +763,9 @@ async def api_requests_list(request: web.Request) -> web.Response:
             media=labels("media"),
             encodings=labels("encoding"),
             release_types=labels("release_type"),
-            strict=flag("strict"),
+            strict_formats=flag("strict_format"),
+            strict_media=flag("strict_media"),
+            strict_encodings=flag("strict_encoding"),
             bounty_min=request.query.get("bounty_min", ""),
             bounty_max=request.query.get("bounty_max", ""),
         )

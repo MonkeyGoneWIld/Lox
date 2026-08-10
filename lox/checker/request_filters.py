@@ -160,7 +160,9 @@ def build_params(
     media: list[str] | None = None,
     encodings: list[str] | None = None,
     release_types: list[str] | None = None,
-    strict: bool = True,
+    strict_formats: bool = False,
+    strict_media: bool = False,
+    strict_encodings: bool = False,
     bounty_min: str = "",
     bounty_max: str = "",
     music_only: bool = True,
@@ -169,6 +171,12 @@ def build_params(
 
     Selections are given by label. A label this tracker does not have is
     dropped rather than translated to a number that means something else there.
+
+    "Only specified" is per group on the tracker and off by default, and it has
+    to stay that way here. A request states what the requester will accept, so a
+    request that accepts *any* media carries no media at all -- turning strict on
+    for media hides every one of those. On a real OPS search the same ticks
+    return 48 requests with it on and 413 with it off.
 
     Args:
         tracker: Tracker code.
@@ -183,7 +191,9 @@ def build_params(
         media: Media labels, e.g. ``["WEB"]``.
         encodings: Encoding labels, e.g. ``["Lossless"]``.
         release_types: Release type labels.
-        strict: Return only the selected values rather than preferring them.
+        strict_formats: Exclude requests that name no format at all.
+        strict_media: Exclude requests that name no media at all.
+        strict_encodings: Exclude requests that name no encoding at all.
         bounty_min: Minimum bounty, in GiB, with an optional M or T suffix. OPS only.
         bounty_max: Maximum bounty. OPS only.
         music_only: Restrict to the music category.
@@ -213,16 +223,16 @@ def build_params(
     def selected(labels: list[str] | None, table: dict[str, int]) -> list[int]:
         return [table[label] for label in (labels or []) if label in table]
 
-    for values, table, key, strict_param in (
-        (formats, spec.formats, "formats[]", spec.formats_strict_param),
-        (media, spec.media, "media[]", spec.media_strict_param),
-        (encodings, spec.encodings, "encodings", spec.encodings_strict_param),
-        (release_types, spec.release_types, "releases[]", ""),
+    for values, table, key, strict_param, strict in (
+        (formats, spec.formats, "formats[]", spec.formats_strict_param, strict_formats),
+        (media, spec.media, "media[]", spec.media_strict_param, strict_media),
+        (encodings, spec.encodings, "bitrates[]", spec.encodings_strict_param, strict_encodings),
+        (release_types, spec.release_types, "releases[]", "", False),
     ):
         ids = selected(values, table)
         if not ids:
             continue
-        params["bitrates[]" if key == "encodings" else key] = ids
+        params[key] = ids
         if strict_param and strict:
             params[strict_param] = "on"
 

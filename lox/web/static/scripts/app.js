@@ -341,13 +341,24 @@
     container.replaceChildren(...(items.length ? items.map(card) : [empty(emptyMessage)]));
   }
 
+  // The search pane is shared by the results grid and the artist page, which
+  // want different layouts. Each caller states the one it needs, rather than
+  // one of them clearing the class and the next inheriting whatever was left:
+  // viewing an artist used to strip `grid` and never put it back, so every
+  // later search rendered its covers as full-width squares.
+  function searchPane(layout) {
+    const pane = $('#search-results');
+    pane.className = layout;
+    return pane;
+  }
+
   // ---------------------------------------------------------------- search
 
   async function runSearch(event) {
     event?.preventDefault();
     const query = $('#search-input').value.trim();
     if (!query) return;
-    const results = $('#search-results');
+    const results = searchPane('grid');
     results.replaceChildren(spinner('Searching Deezer'));
     try {
       const data = await api(`/api/search?q=${encodeURIComponent(query)}&type=${state.searchType}`);
@@ -479,13 +490,14 @@
 
   async function openArtist(artistId) {
     setView('search');
-    const results = $('#search-results');
+    // Its own sections, each with an inner grid, so the pane itself is a plain
+    // block here.
+    const results = searchPane('artist-page');
     results.replaceChildren(spinner('Loading artist'));
     try {
       const artist = await api(`/api/artist/${artistId}`);
       const total = artist.groups.reduce((n, g) => n + g.albums.length, 0);
 
-      results.className = '';
       results.replaceChildren(
         el(
           'div',
@@ -520,7 +532,6 @@
         ]),
       );
     } catch (e) {
-      results.className = 'grid';
       results.replaceChildren(empty(e.message));
     }
   }
@@ -1077,9 +1088,11 @@
     );
   }
 
-  // A short list becomes checkboxes you can see; a long one becomes a
-  // multi-select. Either way the options come from the tracker, not from us.
-  function filterChoices(id, label, options, help) {
+  // The options come from the tracker, not from us. `strictId` adds that
+  // group's own "Only specified", which the tracker keeps per group and off by
+  // default -- a request that accepts any media names no media at all, so
+  // turning it on hides every one of those rather than narrowing the list.
+  function filterChoices(id, label, options, strictId) {
     const box = el(
       'div',
       { class: 'checkgroup', id },
@@ -1087,7 +1100,20 @@
         el('label', { class: 'check' }, el('input', { type: 'checkbox', value: name, onchange: requestsCost }), name),
       ),
     );
-    return filterField(id, label, box, help);
+    return el(
+      'div',
+      { class: 'setting' },
+      el('label', { for: id }, label),
+      box,
+      strictId
+        ? el(
+            'label',
+            { class: 'check strict-check', title: 'Exclude requests that leave this open to anything' },
+            el('input', { type: 'checkbox', id: strictId }),
+            'Only these',
+          )
+        : null,
+    );
   }
 
   const chosen = (id) => [...$$(`#${id} input:checked`)].map((i) => i.value);
@@ -1135,11 +1161,17 @@
       ),
     ];
 
-    if (spec.formats.length) fields.push(filterChoices('requests-format', 'Format', spec.formats));
-    if (spec.media.length) fields.push(filterChoices('requests-media', 'Media', spec.media));
-    if (spec.encodings.length) fields.push(filterChoices('requests-encoding', 'Encoding', spec.encodings));
+    if (spec.formats.length) {
+      fields.push(filterChoices('requests-format', 'Format', spec.formats, 'requests-strict-format'));
+    }
+    if (spec.media.length) {
+      fields.push(filterChoices('requests-media', 'Media', spec.media, 'requests-strict-media'));
+    }
+    if (spec.encodings.length) {
+      fields.push(filterChoices('requests-encoding', 'Encoding', spec.encodings, 'requests-strict-encoding'));
+    }
     if (spec.release_types.length) {
-      fields.push(filterChoices('requests-release-type', 'Release type', spec.release_types));
+      fields.push(filterChoices('requests-release-type', 'Release type', spec.release_types, ''));
     }
     if (spec.bounty) {
       fields.push(
@@ -1178,12 +1210,6 @@
 
     const toggles = [
       el('label', { class: 'check' }, el('input', { type: 'checkbox', id: 'requests-show-filled' }), 'Include filled'),
-      el(
-        'label',
-        { class: 'check', title: 'Return only what is ticked, rather than merely preferring it' },
-        el('input', { type: 'checkbox', id: 'requests-strict', checked: true }),
-        'Only the ticked values',
-      ),
     ];
     if (spec.include_old) {
       toggles.push(
@@ -1238,7 +1264,9 @@
         tags: $('#requests-tags').value,
         tags_all: $('#requests-tags-mode').value === 'all' ? '1' : '0',
         show_filled: ticked('requests-show-filled') ? '1' : '0',
-        strict: ticked('requests-strict') ? '1' : '0',
+        strict_format: ticked('requests-strict-format') ? '1' : '0',
+        strict_media: ticked('requests-strict-media') ? '1' : '0',
+        strict_encoding: ticked('requests-strict-encoding') ? '1' : '0',
         include_old: ticked('requests-include-old') ? '1' : '0',
         descriptions: ticked('requests-descriptions') ? '1' : '0',
         bounty_min: $('#requests-bounty-min')?.value || '',

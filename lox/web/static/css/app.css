@@ -56,6 +56,18 @@
    announcing a dry run whether or not one was configured. */
 [hidden] { display: none !important; }
 
+/* There was no rule for links at all, so every bare <a> fell back to the
+   browser default -- #0000EE and an underline -- which on this background is
+   close to unreadable. Links read as text and announce themselves by being
+   clickable, not by being blue and underlined. */
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -261,6 +273,12 @@ button.ghost { background: none; }
   gap: 16px;
   margin-bottom: 28px;
 }
+
+/* The search pane laid out as an artist page: sections that each hold their own
+   grid, so the pane itself stacks. Named rather than left classless, because a
+   pane with no class is how the covers ended up 977px wide -- .card-art is
+   width:100%, which only means "one grid cell" while the grid is there. */
+.artist-page { display: block; }
 
 .card { position: relative; cursor: pointer; }
 
@@ -617,6 +635,11 @@ select {
 }
 
 .checkgroup .check { font-size: 12.5px; }
+
+/* Each group's own "Only specified", sitting under the list it applies to
+   rather than as one switch for all three -- which is what the tracker does,
+   and what stops it silently hiding every request that left the choice open. */
+.strict-check { font-size: 11.5px; color: var(--text-dim); margin-top: 5px; }
 .filter-toggles { grid-column: 1 / -1; }
 .filter-note { grid-column: 1 / -1; color: var(--warn); }
 

@@ -137,8 +137,25 @@ async def main() -> int:
     check("Lossless is 0 on OPS", ops.get("bitrates[]") == [0], str(ops.get("bitrates[]")))
     check("FLAC happens to agree at 1", red.get("formats[]") == [1] and ops.get("formats[]") == [1])
 
-    check("RED spells the strict flag bitrate_strict", "bitrate_strict" in red, str(sorted(red)))
-    check("OPS spells it bitrates_strict", "bitrates_strict" in ops, str(sorted(ops)))
+    # "Only specified" is per group and off by default, exactly as the tracker
+    # has it. A request states what its author will accept, so one that accepts
+    # any media names no media at all -- switching this on hides all of those
+    # rather than narrowing the list. On a real OPS search the same ticks return
+    # 48 requests with it on and 413 with it off, which is the whole bug.
+    check("strict is off unless asked for",
+          not any(k.endswith("_strict") for k in red) and not any(k.endswith("_strict") for k in ops),
+          str([k for k in list(red) + list(ops) if k.endswith("_strict")]))
+
+    strict_red = build_params("RED", media=["WEB"], encodings=["Lossless"], formats=["FLAC"],
+                              strict_media=True)
+    check("RED spells the strict flag bitrate_strict",
+          "bitrate_strict" in build_params("RED", encodings=["Lossless"], strict_encodings=True))
+    check("OPS spells it bitrates_strict",
+          "bitrates_strict" in build_params("OPS", encodings=["Lossless"], strict_encodings=True))
+    check("each group's strict flag is independent",
+          "media_strict" in strict_red and "formats_strict" not in strict_red
+          and "bitrate_strict" not in strict_red,
+          str(sorted(k for k in strict_red if "strict" in k)))
 
     check("RED indexes the music category", red.get("filter_cat[1]") == 1, str(red.get("filter_cat[1]")))
     check("OPS lists it", ops.get("filter_cat[]") == 0, str(ops.get("filter_cat[]")))
