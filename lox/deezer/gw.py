@@ -6,6 +6,7 @@ and the ``license_token`` needed to resolve stream URLs) is derived from
 """
 
 import asyncio
+import logging
 import random
 import re
 from collections.abc import Sequence
@@ -14,7 +15,7 @@ from typing import Any
 import aiohttp
 import msgspec
 
-from lox import cfg
+from lox import cfg, debug
 
 GW_URL = "https://www.deezer.com/ajax/gw-light.php"
 MEDIA_URL = "https://media.deezer.com/v1/get_url"
@@ -177,6 +178,10 @@ class DeezerGW:
             self.api_token = results.get("checkForm") or None
             self.country = results.get("COUNTRY")
             self.license_token = ((user.get("OPTIONS") or {}).get("license_token")) or None
+            debug.log(
+                "deezer login ok user=%s country=%s can_stream=%s",
+                self.user_id, self.country, bool(self.license_token), level=logging.INFO,
+            )
 
     async def _call_raw(self, method: str, payload: dict) -> dict:
         """POST to gw-light without requiring a prior login."""
@@ -188,6 +193,7 @@ class DeezerGW:
             "api_token": "" if method in _TOKENLESS_METHODS else (self.api_token or ""),
             "cid": str(random.randint(0, 1_000_000_000)),
         }
+        debug.event("deezer.gw", method=method)
         try:
             async with session.post(GW_URL, params=params, json=payload) as resp:
                 if resp.status != 200:

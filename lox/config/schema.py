@@ -35,6 +35,7 @@ BOOTSTRAP_ENV: dict[str, str] = {
     "LOX_STATE_DIR": "checker.state_dir",
     "LOX_DEBUG": "upload.debug",
     "LOX_LOG_DIR": "logging.directory",
+    "LOX_DISPLAY_HOST": "upload.web_interface.display_host",
 }
 """Environment variables that supply bootstrap settings, so a container can be
 configured entirely from compose with no config file. The environment wins over
@@ -210,6 +211,9 @@ FIELDS: tuple[Field, ...] = (
     Field("upload.debug", "Debug mode", "bool", "debug",
           "Verbose logging, shown below. Credentials are redacted before anything is written."),
     Field("upload.debug_tracker_connection", "Also log tracker requests and responses", "bool", "debug", "Noisy."),
+    Field("upload.web_interface.display_host", "Address you reach the UI on", "text", "upload",
+          "Used in links like the spectral viewer. Leave blank unless the bind address is 0.0.0.0.",
+          placeholder="192.168.1.25"),
     Field("logging.directory", "Log directory", "path", "debug",
           "Defaults to a logs folder beside settings.toml."),
     Field("logging.max_file_bytes", "Maximum size per log file (bytes)", "int", "debug",

@@ -841,7 +841,9 @@ async def api_upload(request: web.Request) -> web.Response:
 
     source = body.get("source", "WEB")
     auto_rename = bool(body.get("auto_rename", True))
-    dry_run = bool(body.get("dry_run", False))
+    # One source of truth: the setting. The Uploads tab reflects it rather than
+    # carrying a second, unsynchronised switch.
+    dry_run = bool(body["dry_run"]) if "dry_run" in body else cfg.upload.dry_run
     jobs: JobRegistry = request.app["jobs"]
 
     async def run(job) -> None:

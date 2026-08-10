@@ -13,6 +13,7 @@ Search, Explore and download never reach a tracker. Only an explicit check does.
 """
 
 import asyncio
+import logging
 import time
 from collections import deque
 from typing import Any
@@ -20,7 +21,7 @@ from urllib.parse import quote
 
 import msgspec
 
-from lox import cfg
+from lox import cfg, debug
 from lox.errors import RequestError
 from lox.trackers import get_class, tracker_list
 from lox.trackers.base import RetryableError
@@ -228,8 +229,10 @@ class TrackerGateway:
                 result = await coro_factory()
             except TRACKER_ERRORS as e:
                 state.record_failure(str(e))
+                debug.log("tracker %s call failed: %s", code, e, level=logging.WARNING)
                 raise
             state.record_success()
+            debug.event("tracker.call", tracker=code, remaining=state.remaining, budget=state.budget)
             return result
 
     async def call_action(self, code: str, action: str, params: dict[str, Any] | None = None) -> dict:
