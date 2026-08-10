@@ -801,19 +801,48 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .track-main { display: flex; flex-direction: column; min-width: 0; }
 .track-main > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.step-images {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 8px;
-  margin: 12px 0;
-  max-height: 420px;
-  overflow-y: auto;
+/* One track per row: the full spectral at a width you can actually read, the
+   zoom beside it. Not scroll-boxed -- the question is "is this lossy", and
+   answering it means looking at all of them, not peering through a 420px
+   window at twenty-four thumbnails. */
+.spectrals { margin: 14px 0; }
+
+.spectral-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
 }
 
-.step-images img { width: 100%; border-radius: 6px; display: block; background: var(--bg); }
+.spectral-num {
+  flex: none;
+  width: 26px;
+  padding-top: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.spectral-pair { display: flex; gap: 8px; flex: 1; min-width: 0; }
+.spectral-full { flex: 1 1 auto; min-width: 0; }
+.spectral-zoom { flex: 0 0 22%; min-width: 0; }
+.spectral-pair img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+  background: var(--bg);
+}
 .step-controls button { margin-bottom: 4px; }
 
 /* ---------- tag diff and metadata tables ---------- */
+
+.meta-table { font-size: 12.5px; }
+.meta-table td { padding: 6px 12px; }
+.meta-field { width: 190px; color: var(--text-dim); text-transform: capitalize; }
+.meta-value { overflow-wrap: anywhere; }
+.meta-empty .meta-value { color: var(--text-dim); }
 
 .diff { margin: 12px 0; }
 .diff summary { cursor: pointer; font-weight: 600; font-size: 13px; }

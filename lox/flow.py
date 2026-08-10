@@ -54,7 +54,7 @@ class Step:
         options: list[dict[str, Any]] | None = None,
         default: Any = None,
         danger: bool = False,
-        images: list[str] | None = None,
+        images: list[dict[str, Any]] | None = None,
         tables: list[dict[str, Any]] | None = None,
     ) -> None:
         """Initialize a step."""
@@ -67,7 +67,8 @@ class Step:
         self.danger = danger
         # Pictures the answer depends on -- spectrals, above all. Deciding
         # whether a release is lossy mastered by reading a filename is not a
-        # decision; you have to see them.
+        # decision; you have to see them. Each entry pairs a track's full
+        # view with its zoom, because they are read together.
         self.images = images or []
         # Structured evidence the answer depends on: the tag diff, the metadata
         # comparison. Prose is fine to read and terrible to check.
@@ -165,7 +166,7 @@ class Flow:
         *,
         detail: str = "",
         default: Any = None,
-        images: list[str] | None = None,
+        images: list[dict[str, Any]] | None = None,
         tables: list[dict[str, Any]] | None = None,
     ) -> Any:
         """Ask the user to pick one of a named set.
@@ -202,7 +203,7 @@ class Flow:
         *,
         detail: str = "",
         default: str = "",
-        images: list[str] | None = None,
+        images: list[dict[str, Any]] | None = None,
         tables: list[dict[str, Any]] | None = None,
     ) -> str:
         """Ask for free text, where free text is genuinely what is wanted."""

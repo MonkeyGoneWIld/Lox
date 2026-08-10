@@ -45,6 +45,14 @@ _CHOICES_ARE = re.compile(r"choices are\s+([A-Za-z0-9]+(?:\s*(?:,|or)\s*[A-Za-z0
 _PRESS_ENTER = re.compile(r"press enter|once you are finished", re.IGNORECASE)
 # Space-separated id lists, which are a multi-select wearing a text box.
 _ID_LIST = re.compile(r"space-separated list of IDs", re.IGNORECASE)
+_SPECTRAL_IDS = re.compile(r"spectral IDs would you like to upload", re.IGNORECASE)
+_OPTION_TAIL = re.compile(r"((?: [a-z][a-z'-]*)+)")
+"""The rest of a multi-word option label, e.g. the " type" of "[r]elease type"."""
+
+_BARE_LETTERS = {"a": "Abort", "n": "No", "y": "Yes", "d": "Delete music folder", "m": "Manual"}
+"""What the pipeline means by a bracket with no word after it. Without these the
+button is labelled with the bare letter, which tells you nothing."""
+_DOWNCONVERT = re.compile(r"select formats to convert", re.IGNORECASE)
 # Tag diffs print as "  tracknumber          ••• 1/14 >>> 1", album tags as
 # "> album         ••• Jiggy Buckaroo" with the arrow only when it changes.
 _TAG_CHANGE = re.compile(r"^>?\s*(\S[^•]*?)\s+•{3}\s+(.*?)(?:\s+>>>\s+(.*))?$")
@@ -125,11 +133,24 @@ def parse_options(text: str) -> list[dict[str, Any]]:
     for match in _BRACKET.finditer(text):
         letter, rest = match[1], match[2]
         label = (letter + rest).strip()
+
+        # The word after the bracket is often only the first of several --
+        # "[r]elease type", "[d]elete music folder" -- and the rest of it sits
+        # after the match, up to the comma or slash that ends the option.
+        tail = _OPTION_TAIL.match(text, match.end())
+        if tail and label:
+            label = f"{label}{tail[1].rstrip()}"
+
+        # A bare "[a]" carries no word at all. Left as-is it becomes a button
+        # labelled "A", which says nothing about what pressing it does.
+        if not rest:
+            label = _BARE_LETTERS.get(letter.lower(), label)
+
         options.append(
             {
                 "value": letter.lower(),
                 "label": label[:1].upper() + label[1:] if label else letter,
-                "danger": label.lower() in ("abort", "delete", "delete music folder"),
+                "danger": any(word in label.lower() for word in ("abort", "delete")),
             }
         )
     return options
@@ -206,6 +227,41 @@ class FlowPrompts:
                 images=self._spectral_images(),
             )
             return default if default is not None else ""
+
+        # Downconversion is one decision, so it is one click. Rendering the menu
+        # as checkboxes -- and then adding "none" and "all" from the prompt text
+        # as two more checkboxes, every one of them pre-ticked -- offered
+        # combinations that contradict each other and matched nothing anyone
+        # would type at the real prompt.
+        if _DOWNCONVERT.search(prompt):
+            formats = [o for o in found if o["value"].isdigit()]
+            return await self.flow.choose(
+                prompt.split("(")[0].strip().rstrip("?:,") or "Convert to another format?",
+                [
+                    *formats,
+                    {"value": "*", "label": "Every format"},
+                    {"value": "0", "label": "Do not convert"},
+                ],
+                detail=prompt,
+                default="0",
+            )
+
+        # "Which spectrals shall I upload" has three answers worth offering and
+        # a fourth nobody uses. None, all, or let it pick -- as buttons, beside
+        # the spectrals themselves.
+        if _SPECTRAL_IDS.search(prompt):
+            question = prompt.split("(")[0].strip().rstrip("?:,")
+            return await self.flow.choose(
+                question,
+                [
+                    {"value": "*", "label": "All of them"},
+                    {"value": "+", "label": "Pick a few for me", "detail": "A randomised selection"},
+                    {"value": "0", "label": "None"},
+                ],
+                detail=prompt,
+                default="*",
+                images=self._spectral_images(),
+            )
 
         # A space-separated list of IDs is a multi-select wearing a text box.
         if _ID_LIST.search(prompt) and found:
@@ -345,27 +401,52 @@ class FlowPrompts:
                 return True
             return False
 
+        # Metadata is a field-and-value list, not a diff. A field either carries
+        # its value inline ("> TITLE : ...") or introduces a list of them on the
+        # following ">>>" lines; in the second case the field row is written
+        # when the first item arrives, so an empty row is never emitted for it.
         field = _META_FIELD.match(text)
         if field:
             self._file = field[1].strip()
             value = field[2].strip()
-            self._block["rows"].append({"group": "", "label": self._file, "before": value, "after": "",
-                                        "changed": False})
+            if value:
+                self._block["rows"].append({"group": "", "label": self._file, "before": value,
+                                            "after": "", "changed": False})
+                self._file = ""
             return True
         item = _META_ITEM.match(text)
         if item:
-            self._block["rows"].append({"group": self._file, "label": "", "before": item[1].strip(),
-                                        "after": "", "changed": False})
+            rows = self._block["rows"]
+            # Extra values join the field they belong to rather than each
+            # becoming a headerless row of their own.
+            if self._file and rows and rows[-1]["label"] == self._file:
+                rows[-1]["before"] = f"{rows[-1]['before']}, {item[1].strip()}"
+            else:
+                rows.append({"group": "", "label": self._file, "before": item[1].strip(),
+                             "after": "", "changed": False})
             return True
         return False
 
     def _wants_images(self, prompt: str) -> bool:
-        """Whether this question is one the spectrals inform."""
-        lowered = prompt.lower()
-        return "spectral" in lowered or "lossy master" in lowered or self._spectrals_ready
+        """Whether this question is one the spectrals inform.
 
-    def _spectral_images(self) -> list[str]:
-        """URLs for the spectrals generated for this release, if any."""
+        Only questions actually about the spectrals. This used to also return
+        True for anything asked after they were generated, which meant every
+        later question -- metadata, downconversion, the description -- carried
+        a wall of spectrograms it had nothing to do with, and they never went
+        away for the rest of the upload.
+        """
+        lowered = prompt.lower()
+        return "spectral" in lowered or "lossy master" in lowered
+
+    def _spectral_images(self) -> list[dict[str, str]]:
+        """The spectrals for this release, paired per track.
+
+        The pipeline writes two images per track, ``NN Full.png`` and
+        ``NN Zoom.png``. They belong side by side -- the full view to see the
+        shelf, the zoom to see whether it is real -- so they are returned
+        grouped rather than as one long list of unlabelled thumbnails.
+        """
         if not self.folder:
             return []
         from lox.uploader.spectrals import get_spectrals_path
@@ -373,8 +454,17 @@ class FlowPrompts:
         directory = get_spectrals_path(self.folder)
         if not os.path.isdir(directory):
             return []
-        names = sorted(f for f in os.listdir(directory) if f.lower().endswith(_SPECTRAL_EXT))
-        return [f"/spectral-image/{quote(os.path.basename(directory))}/{quote(n)}" for n in names]
+
+        base = quote(os.path.basename(directory))
+        grouped: dict[str, dict[str, str]] = {}
+        for name in sorted(f for f in os.listdir(directory) if f.lower().endswith(_SPECTRAL_EXT)):
+            stem = os.path.splitext(name)[0]
+            track, _, kind = stem.partition(" ")
+            entry = grouped.setdefault(track, {"track": track, "full": "", "zoom": ""})
+            entry["zoom" if kind.strip().lower() == "zoom" else "full"] = (
+                f"/spectral-image/{base}/{quote(name)}"
+            )
+        return list(grouped.values())
 
     async def _view_spectrals(self, spectrals_path: str, _all_spectral_ids: dict[int, str]) -> None:
         """Stand in for the pipeline's spectral viewer.
@@ -428,7 +518,7 @@ async def run_upload(
     tracker: str,
     *,
     source: str = "WEB",
-    auto_rename: bool = True,
+    auto_rename: bool = False,
 ) -> dict[str, Any]:
     """Upload one folder to one tracker, asking the browser as it goes.
 
@@ -476,7 +566,7 @@ async def run_uploads(
     trackers: list[str],
     *,
     source: str = "WEB",
-    auto_rename: bool = True,
+    auto_rename: bool = False,
 ) -> dict[str, Any]:
     """Upload one folder to several trackers, hardlinking per tracker first.
 
@@ -490,6 +580,52 @@ async def run_uploads(
     Returns:
         Per-tracker outcomes.
     """
+    from lox import cfg
+
+    # The pipeline has its own multi-tracker loop: at the end of a release it
+    # offers whatever other trackers are configured. Here that is both redundant
+    # and wrong -- this function is already looping over exactly the trackers
+    # picked in the UI, so the offer names ones that were deliberately not
+    # picked, and taking it would upload twice.
+    was_multi = cfg.upload.multi_tracker_upload
+    cfg.upload.multi_tracker_upload = False
+    try:
+        return await _upload_each(flow, folder, trackers, source=source, auto_rename=auto_rename)
+    finally:
+        cfg.upload.multi_tracker_upload = was_multi
+        _discard_spectrals(flow, folder)
+
+
+def _discard_spectrals(flow: Flow, folder: str) -> None:
+    """Delete the spectral scratch folder once the upload is over.
+
+    They are regenerated per run and only exist to be looked at during it, so
+    leaving them behind fills the scratch directory with images nothing will
+    read again. Cleanup failing is never worth failing an upload over.
+    """
+    import shutil
+
+    from lox.uploader.spectrals import get_spectrals_path
+
+    path = get_spectrals_path(folder)
+    if not os.path.isdir(path):
+        return
+    try:
+        shutil.rmtree(path)
+        flow.note(f"Removed spectral scratch: {os.path.basename(path)}")
+    except OSError as e:
+        flow.note(f"Could not remove {path}: {e}", "warning")
+
+
+async def _upload_each(
+    flow: Flow,
+    folder: str,
+    trackers: list[str],
+    *,
+    source: str,
+    auto_rename: bool,
+) -> dict[str, Any]:
+    """Upload to each tracker in turn. See :func:`run_uploads`."""
     from lox import cfg
     from lox.seeding.links import LinkError, link_release
 

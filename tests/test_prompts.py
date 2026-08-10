@@ -132,7 +132,10 @@ async def main() -> int:
     flow5.answer(step5.id, "")
     await asyncio.wait_for(task5, timeout=2)
 
-    # --- downconversion menu becomes a multi-select -------------------
+    # --- downconversion is one decision, so one click -----------------
+    # It used to render as checkboxes, with the prompt's own "none" and "all"
+    # added as two more, every one pre-ticked -- combinations that contradict
+    # each other and that nobody could type at the real prompt.
     flow6 = Flow("upload", "downconv")
     p6 = FlowPrompts(flow6)
 
@@ -145,11 +148,33 @@ async def main() -> int:
 
     task6 = asyncio.create_task(downconv())
     step6 = await wait_for_step(flow6)
-    check("downconversion is a multi-select",
-          step6.kind == "multi" and [o["label"] for o in step6.options] == ["MP3 320", "MP3 V0"],
+    check("downconversion offers one button per answer",
+          step6.kind == "choice"
+          and [o["label"] for o in step6.options] == ["MP3 320", "MP3 V0", "Every format", "Do not convert"],
           str([o["label"] for o in step6.options]))
-    flow6.answer(step6.id, ["1", "2"])
-    check("selection returned space-separated", await asyncio.wait_for(task6, timeout=2) == "1 2")
+    check("not converting is the default", step6.default == "0", str(step6.default))
+    flow6.answer(step6.id, "1")
+    check("the chosen format is returned", await asyncio.wait_for(task6, timeout=2) == "1")
+
+    # --- picking spectrals is three buttons, not a typed list ----------
+    flow9 = Flow("upload", "specids")
+    p9 = FlowPrompts(flow9)
+    task9 = asyncio.create_task(p9._prompt(
+        'What spectral IDs would you like to upload to ptpimg? '
+        '(space-separated list of IDs, "0" for none, "*" for all, or "+" for a randomized selection)'
+    ))
+    step9 = await wait_for_step(flow9)
+    check("spectral IDs offer all, some, none",
+          [o["value"] for o in step9.options] == ["*", "+", "0"], str([o["value"] for o in step9.options]))
+    flow9.answer(step9.id, "*")
+    check("the spectral choice is returned", await asyncio.wait_for(task9, timeout=2) == "*")
+
+    # --- option labels say what the button does ------------------------
+    labels = {o["value"]: o["label"] for o in parse_options(
+        "Are there any metadata fields you would like to edit? [t]itle, [r]elease type, [n]othing")}
+    check("a multi-word option keeps the whole label", labels.get("r") == "Release type", str(labels))
+    bare = {o["value"]: o["label"] for o in parse_options("Other options: paste URLs, [m]anual, [a], prefix")}
+    check("a bare letter is named, not left as a letter", bare.get("a") == "Abort", str(bare))
 
     # --- tag diff becomes a table -------------------------------------
     flow7 = Flow("upload", "retag")
@@ -210,8 +235,16 @@ async def main() -> int:
     check("metadata comparison captured", meta is not None)
     labels = [r["label"] for r in (meta or {}).get("rows", []) if r["label"]]
     check("metadata fields captured", "TRACK COUNT" in labels and "TITLE" in labels, str(labels))
-    check("list items attach to their field",
-          any(r["group"] == "ARTISTS" and "Ryan Charles" in r["before"] for r in meta["rows"]))
+    # A field whose values arrive on following lines gets one row carrying all
+    # of them, not an empty row plus a header plus a row per value.
+    artists = [r for r in meta["rows"] if r["label"] == "ARTISTS"]
+    check("a multi-value field is one row", len(artists) == 1, str(artists))
+    check("every value is on it",
+          "Ryan Charles [main]" in artists[0]["before"] and "Ian Munsick [guest]" in artists[0]["before"],
+          artists[0]["before"])
+    check("no empty rows are left behind",
+          not any(r["label"] and not r["before"] for r in meta["rows"]),
+          str([r["label"] for r in meta["rows"] if not r["before"]]))
     flow8.answer(step8.id, "n")
     await asyncio.wait_for(task8, timeout=2)
 
