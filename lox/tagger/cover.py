@@ -80,7 +80,7 @@ async def _download_cover(path: str, cover_url: str) -> str | None:
     """
     ext = os.path.splitext(cover_url)[1]
     c = "c" if cfg.upload.formatting.lowercase_cover else "C"
-    headers = {"User-Agent": "smoked-salmon-v1"}
+    headers = {"User-Agent": "lox/1.0"}
     cover_image_filename = c + "over" + ext
     cover_path = os.path.join(path, cover_image_filename)
 
