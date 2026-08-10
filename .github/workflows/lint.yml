@@ -62,6 +62,9 @@ jobs:
           uv run python tests/test_prompts.py
           uv run python tests/smoke_test.py
 
+      - name: Request collection and filters
+        run: uv run python tests/test_requests.py
+
       - name: Start with a broken download directory
         # Sets its own LOX_* environment, deliberately pointing at a path that
         # does not exist. Guards the restart loop this caused in deployment.

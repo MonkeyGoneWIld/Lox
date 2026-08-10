@@ -119,10 +119,48 @@
           <h2>Find requests</h2>
           <div class="row">
             <div class="segmented" id="requests-tracker"></div>
-            <input type="search" id="requests-search" placeholder="Filter open requests (optional)">
-            <button id="requests-fetch">Fetch open requests</button>
           </div>
-          <p class="hint">Fetching a page costs one tracker call. Checking each request costs one more.</p>
+
+          <!-- Named fields rather than one box you have to know the syntax for.
+               These are the filters the tracker's requests endpoint actually
+               takes; anything not here is not supported by it. -->
+          <div class="filters">
+            <div class="setting">
+              <label for="requests-search">Search</label>
+              <input type="search" id="requests-search" placeholder="Artist, album or both">
+              <p class="hint setting-help">Matched against the artist and title. Blank lists everything open.</p>
+            </div>
+            <div class="setting">
+              <label for="requests-tags">Tags</label>
+              <input type="search" id="requests-tags" placeholder="hip.hop, jazz">
+              <p class="hint setting-help">Comma separated, in the tracker's own spelling (dots, not spaces).</p>
+            </div>
+            <div class="setting">
+              <label for="requests-tags-mode">Tag match</label>
+              <select id="requests-tags-mode">
+                <option value="any">Any of these tags</option>
+                <option value="all">All of these tags</option>
+              </select>
+            </div>
+            <div class="setting">
+              <label for="requests-limit">How many to fetch</label>
+              <select id="requests-limit">
+                <option value="25">25 — 1 page</option>
+                <option value="50">50 — 2 pages</option>
+                <option value="100" selected>100 — 4 pages</option>
+                <option value="200">200 — 8 pages</option>
+                <option value="500">500 — 20 pages</option>
+              </select>
+              <p class="hint setting-help">The tracker serves 25 per page, and each page is one call.</p>
+            </div>
+          </div>
+
+          <div class="row">
+            <button id="requests-fetch">Fetch open requests</button>
+            <label class="check"><input type="checkbox" id="requests-show-filled"> Include already-filled</label>
+            <span class="hint" id="requests-cost"></span>
+          </div>
+          <p class="hint">Checking each request costs one more call on top of the fetch.</p>
           <textarea id="requests-ids" rows="3" placeholder="Or paste request IDs / URLs, one per line"></textarea>
           <div class="row">
             <label class="check filebtn">
