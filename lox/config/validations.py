@@ -36,12 +36,72 @@ def problems() -> list[dict[str, str]]:
     return [{"key": key, "message": message} for key, message in sorted(PROBLEMS.items())]
 
 
-def ensure_dir(path: str, label: str) -> str | None:
-    """Create a working directory lox owns, if it is not already there.
+def _identity() -> str:
+    """The uid/gid this process runs as, when the platform has them."""
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if not getuid or not getgid:
+        return ""
+    return f" (running as uid {getuid()}:{getgid()})"
 
-    Used for scratch and output directories only. Demanding the operator
-    pre-create these defeats a zero-config container deploy, and getting them
-    wrong is cheap — they hold artefacts lox regenerates.
+
+def diagnose(path: str) -> str:
+    """Explain why a directory is unusable, not merely that it is.
+
+    Inside a container three very different situations look identical from
+    isdir(), which answers False to all of them: the volume is mounted from a
+    different host path than you think, the volume is mounted but empty, or the
+    directory is right there and this uid cannot traverse into it. Reporting
+    "does not exist" for the third is actively misleading — you go and check,
+    find it exists, and now distrust the message.
+
+    So walk up to the nearest ancestor that does exist and describe what is
+    actually there.
+
+    Args:
+        path: The directory that could not be used.
+
+    Returns:
+        A sentence of context, or an empty string if nothing useful was found.
+    """
+    # A symlink is followed inside the container, where its target may not be
+    # mounted. The link is plainly there when you look on the host, which makes
+    # "does not exist" read as a lie.
+    if os.path.islink(path) and not os.path.exists(path):
+        try:
+            target = os.readlink(path)
+        except OSError:
+            target = "somewhere"
+        return (
+            f" {path} is a symlink to {target}, which does not exist in this container — "
+            f"the target has to be mounted too."
+        )
+
+    current = os.path.abspath(path)
+    while True:
+        parent = os.path.dirname(current)
+        if parent == current:
+            return ""
+        if os.path.exists(parent):
+            break
+        current = parent
+
+    if not os.path.isdir(parent):
+        return f" {parent} is in the way — it exists, but as a file rather than a directory."
+    if not os.access(parent, os.X_OK):
+        return f" {parent} exists but this process cannot look inside it{_identity()} — check ownership on the volume."
+    try:
+        entries = sorted(os.listdir(parent))
+    except OSError as e:
+        return f" {parent} exists but could not be read: {e}."
+    if not entries:
+        return f" {parent} exists but is empty — the volume is probably mounted from the wrong host path."
+    shown = ", ".join(entries[:6]) + ("…" if len(entries) > 6 else "")
+    return f" {parent} exists and contains: {shown}."
+
+
+def ensure_dir(path: str, label: str) -> str | None:
+    """Make a directory usable, creating it if it is not there.
 
     Args:
         path: Directory to create.
@@ -50,32 +110,19 @@ def ensure_dir(path: str, label: str) -> str | None:
     Returns:
         A description of what is wrong, or None if the directory is usable.
     """
-    if os.path.isdir(path):
-        return None
-    if os.path.exists(path):
-        return f"{label} is not a directory: {path}"
-    try:
-        os.makedirs(path, exist_ok=True)
-    except OSError as e:
-        return f"{label} could not be created at {path}: {e}"
+    if not os.path.isdir(path):
+        if os.path.exists(path):
+            return f"{label} is not a directory: {path}"
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as e:
+            return f"{label} could not be created at {path}: {e}.{diagnose(path)}"
+
+    # Existing but unwritable is the failure mode of a mounted volume owned by
+    # another uid, and it will otherwise surface much later as a failed write.
+    if not os.access(path, os.W_OK | os.X_OK):
+        return f"{label} is not writable: {path}{_identity()}."
     return None
-
-
-def require_dir(path: str, label: str) -> str | None:
-    """Check a directory lox must not create.
-
-    Args:
-        path: Directory that has to already exist.
-        label: Human-readable name of the setting, for the message.
-
-    Returns:
-        A description of what is wrong, or None if the directory is usable.
-    """
-    if os.path.isdir(path):
-        return None
-    if os.path.exists(path):
-        return f"{label} is not a directory: {path}"
-    return f"{label} does not exist: {path}. lox will not create it — check the volume mount, or set another path."
 
 
 class Directory(BaseStruct):
@@ -88,15 +135,9 @@ class Directory(BaseStruct):
         self.check()
 
     def check(self) -> None:
-        # Created on demand: these hold .torrent files and spectral scratch,
-        # both of which lox produces itself.
         _note("directory.dottorrents_dir", ensure_dir(self.dottorrents_dir, "Torrent output directory"))
         _note("directory.tmp_dir", ensure_dir(self.tmp_dir, "Spectral scratch directory") if self.tmp_dir else None)
-
-        # Never created. This is your music library; if it is missing, a volume
-        # mount is wrong, and silently making an empty directory inside the
-        # container would send downloads somewhere that vanishes on restart.
-        _note("directory.download_directory", require_dir(self.download_directory, "Download directory"))
+        _note("directory.download_directory", ensure_dir(self.download_directory, "Download directory"))
 
 
 ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox"]

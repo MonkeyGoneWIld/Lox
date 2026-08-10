@@ -17,10 +17,11 @@
 #
 # LOX_DOWNLOAD_DIR is a path *inside* the container, so it has to sit under a
 # volume you actually mounted — with the mounts below, /data/media/deemix means
-# ${NAS}/data/media/deemix on the host. If it does not exist lox still starts and
-# says so in a banner, and you can correct it under Settings → Paths without
-# touching this file. It is never created for you: an empty directory invented
-# inside the container would swallow your downloads on the next restart.
+# ${NAS}/data/media/deemix on the host. It is created if missing, but only the
+# part below the mount point: if the volume itself is wrong, the directory gets
+# made inside the container and vanishes on the next restart. lox reports what
+# it found at the nearest existing parent so you can tell the two apart, and any
+# path here can be corrected under Settings → Paths without touching this file.
 
 services:
   lox:

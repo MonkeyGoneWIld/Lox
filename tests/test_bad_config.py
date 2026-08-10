@@ -1,4 +1,4 @@
-"""Start the app with a broken download directory and prove it still comes up.
+"""Start the app with an unusable download directory and prove it still comes up.
 
 This is the deploy failure this test exists for: LOX_DOWNLOAD_DIR pointed at a
 path the volume mount did not provide, config validation raised, the process
@@ -9,6 +9,11 @@ A wrong path is now a reported problem rather than a refusal to start, so the
 sequence a user actually needs works: the server comes up, says what is wrong,
 declines the operations that need the directory with a message naming the
 setting, and clears the problem when the path is corrected — no restart.
+
+Missing directories are simply created, so to reach the failure at all this
+points the download directory at a path *under a regular file*, which no amount
+of creating can fix. That stands in for the cases a container really hits: a
+volume mounted from the wrong host path, or one owned by another uid.
 
 Run it directly. It sets its own environment before importing lox, because the
 config is read at import time:
@@ -29,8 +34,15 @@ BASE = f"http://127.0.0.1:{PORT}"
 TOKEN = "0123456789abcdef0123456789abcdef"
 
 ROOT = tempfile.mkdtemp(prefix="lox-badconfig-")
-BROKEN = os.path.join(ROOT, "never-mounted", "deemix")
+
+# A file, not a directory. makedirs cannot climb through it.
+BLOCKER = os.path.join(ROOT, "not-a-directory")
+with open(BLOCKER, "w", encoding="utf-8") as handle:
+    handle.write("stands in for a volume that is not mounted\n")
+
+BROKEN = os.path.join(BLOCKER, "media", "deemix")
 WORKING = os.path.join(ROOT, "media")
+CREATED = os.path.join(ROOT, "made-on-demand", "deemix")
 os.makedirs(WORKING, exist_ok=True)
 
 # Must happen before lox is imported: setup_config() runs at import.
@@ -68,13 +80,60 @@ async def main() -> int:
     from lox.config.validations import problems
     from lox.web import create_app_async
 
-    check("import survives a missing download directory", True)
+    check("import survives an unusable download directory", True)
     check("the bad path is kept, not silently replaced", lox.cfg.directory.download_directory == BROKEN)
     check("the problem is recorded", any(p["key"] == "directory.download_directory" for p in problems()))
+    # "Does not exist" would be true and useless. The message has to say what is
+    # actually there, because that is what tells a mount problem apart from a
+    # permissions problem.
     check(
-        "the message says the directory is not created for you",
-        any("will not create it" in p["message"] for p in problems()),
+        "the message names what is standing in the way",
+        any(BLOCKER in p["message"] and "in the way" in p["message"] for p in problems()),
+        next((p["message"] for p in problems() if p["key"] == "directory.download_directory"), ""),
     )
+
+    # The other shape of the same failure, and the more common one: the volume
+    # is mounted, but from a host path that has nothing in it. Creating the
+    # directory then "succeeds" inside the container and the downloads vanish on
+    # the next restart, so an empty parent is worth saying out loud.
+    from lox.config.validations import diagnose
+
+    empty = os.path.join(ROOT, "empty-mount")
+    os.makedirs(empty, exist_ok=True)
+    check("an empty parent is called out as a probable wrong mount",
+          "empty" in diagnose(os.path.join(empty, "media", "deemix")),
+          diagnose(os.path.join(empty, "media", "deemix")).strip())
+
+    # The case a container hits when the volume is owned by another uid and it
+    # runs as PUID:PGID. isdir() says False for a directory that is plainly
+    # there, so the message has to talk about ownership, not existence.
+    locked = os.path.join(ROOT, "locked")
+    os.makedirs(locked, exist_ok=True)
+
+    # Verified everywhere by denying the traverse check directly: this asserts
+    # the branch is wired to the right message, which is the part that can be
+    # wrong in the source.
+    real_access = os.access
+    os.access = lambda path, mode, **kw: False if os.path.abspath(path) == locked else real_access(path, mode, **kw)
+    try:
+        said = diagnose(os.path.join(locked, "deemix"))
+    finally:
+        os.access = real_access
+    check("an unreadable parent is reported as ownership, not absence",
+          "cannot look inside" in said, said.strip())
+
+    # And for real where the OS can do it. Root ignores the permission bits,
+    # which would make this vacuous.
+    if os.name == "posix" and os.getuid() != 0:
+        os.chmod(locked, 0o000)
+        try:
+            said = diagnose(os.path.join(locked, "deemix"))
+            check("real unreadable directory says the same, and names the uid",
+                  "cannot look inside" in said and "uid" in said, said.strip())
+        finally:
+            os.chmod(locked, 0o700)
+    else:
+        check("real chmod case skipped (needs a non-root posix host)", True)
 
     runner = await create_app_async()
     check("the server starts anyway", True)
@@ -120,6 +179,14 @@ async def main() -> int:
             async with s.get(f"{BASE}/api/folders") as r:
                 folders = await r.json()
             check("the folder list works once corrected", not folders.get("error"), str(folders.get("error", "")))
+
+            # A path that is merely absent is not a problem at all: make it.
+            async with s.put(
+                f"{BASE}/api/settings", json={"changes": {"directory.download_directory": CREATED}}
+            ) as r:
+                saved = await r.json()
+            check("a missing directory is created rather than reported",
+                  not has_path_problem(saved) and os.path.isdir(CREATED), str(saved.get("problems")))
     finally:
         await runner.cleanup()
         shutil.rmtree(ROOT, ignore_errors=True)

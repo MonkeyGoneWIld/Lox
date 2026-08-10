@@ -27,6 +27,7 @@ from lox.checker.gateway import TrackerGateway
 from lox.checker.missing import Candidate, MissingScanner
 from lox.checker.store import CheckerStore
 from lox.checker.watchlists import WatchlistManager
+from lox.config.validations import ensure_dir
 from lox.config.validations import problems as config_problems
 from lox.deezer.download import Downloader
 from lox.deezer.explore import Explorer
@@ -611,13 +612,12 @@ async def api_download(request: web.Request) -> web.Response:
         return error("album_id or album_ids is required")
 
     downloader: Downloader = request.app["downloader"]
-    if not os.path.isdir(downloader.download_dir):
-        # Every track would otherwise fail one at a time with an errno, which
-        # says nothing about which setting is wrong.
-        return error(
-            f"Download directory {downloader.download_dir} does not exist. "
-            f"Fix it under Settings → Paths, or check the volume mount."
-        )
+    # Recreated here as well as at startup, so a volume that came back after a
+    # remount does not need a restart. Every track would otherwise fail one at a
+    # time with an errno that says nothing about which setting is wrong.
+    problem = ensure_dir(downloader.download_dir, "Download directory")
+    if problem:
+        return error(f"{problem} Fix it under Settings → Paths, or check the volume mount.")
 
     queued, failed = [], []
     for album_id in album_ids:
@@ -794,14 +794,15 @@ async def api_spectral_image(request: web.Request) -> web.StreamResponse:
 async def api_folders(request: web.Request) -> web.Response:
     """List release folders sitting in the download directory."""
     directory = request.app["downloader"].download_dir
-    if not os.path.isdir(directory):
+    problem = ensure_dir(directory, "Download directory")
+    if problem:
         # An empty list here would read as "nothing to upload" when the truth is
         # "lox cannot see your library".
         return json_response(
             {
                 "directory": directory,
                 "folders": [],
-                "error": f"{directory} does not exist. Set the download directory under Settings → Paths.",
+                "error": f"{problem} Check it under Settings → Paths.",
             }
         )
 
