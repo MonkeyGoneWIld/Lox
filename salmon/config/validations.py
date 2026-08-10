@@ -85,28 +85,31 @@ class Metadata(BaseStruct):
 
 
 class GazelleTrackerSettings(BaseStruct):
-    session: str
+    # Empty means "not configured yet" rather than an error, so the UI can add
+    # a tracker after first boot.
+    session: str = ""
     api_key: str | None = None
     # TODO: validate this
     dottorrents_dir: str | None = None
 
 
 class Tracker(BaseStruct):
-    red: GazelleTrackerSettings | None = None
-    ops: GazelleTrackerSettings | None = None
-    dic: GazelleTrackerSettings | None = None
+    # Each tracker section exists as soon as it is declared, even empty, so the
+    # settings page has somewhere to write a session cookie into. Having no
+    # tracker configured is allowed: you are expected to add one through the UI
+    # on first run, and everything Deezer-side works without one.
+    red: GazelleTrackerSettings = msgspec.field(default_factory=lambda: GazelleTrackerSettings(session=""))
+    ops: GazelleTrackerSettings = msgspec.field(default_factory=lambda: GazelleTrackerSettings(session=""))
+    dic: GazelleTrackerSettings = msgspec.field(default_factory=lambda: GazelleTrackerSettings(session=""))
     default_tracker: Literal["RED", "OPS", "DIC"] | None = None
 
-    def __post_init__(self):
-        if (self.red is None) and (self.ops is None) and (self.dic is None):
-            raise ValueError("You need a tracker session cookie in your config!")
-
-        if self.ops is None and self.default_tracker == "OPS":
-            raise ValueError("Default tracker is invalid!")
-        if self.red is None and self.default_tracker == "RED":
-            raise ValueError("Default tracker is invalid!")
-        if self.dic is None and self.default_tracker == "DIC":
-            raise ValueError("Default tracker is invalid!")
+    def configured(self) -> list[str]:
+        """Tracker codes that have a session cookie or an API key."""
+        return [
+            code
+            for code, settings in (("RED", self.red), ("OPS", self.ops), ("DIC", self.dic))
+            if settings and (settings.session or settings.api_key)
+        ]
 
 
 class Seedbox(BaseStruct):

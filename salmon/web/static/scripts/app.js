@@ -1,4 +1,4 @@
-/* deezer-upload web UI.
+/* lox web UI.
  *
  * No build step and no framework on purpose: this ships inside a Python package
  * and has to stay editable without a Node toolchain.
@@ -20,6 +20,8 @@
     exploreTab: 'channels',
     exploreGenre: '0',
     candidates: [],
+    settings: null,
+    pending: {},
     selectedCandidates: new Set(),
     missingTrackers: new Set(),
     requestsTracker: null,
@@ -1127,45 +1129,196 @@
 
   // ---------------------------------------------------------------- settings
 
+  // ---------------------------------------------------------------- settings
+
   async function loadSettings() {
     const body = $('#settings-body');
-    body.replaceChildren(spinner('Loading'));
+    body.replaceChildren(spinner('Loading settings'));
     try {
-      const config = await api('/api/config');
-      body.replaceChildren(
-        el('h2', {}, 'Configuration'),
-        el('p', { class: 'hint' }, 'Read-only. Everything here comes from your config.toml, which is gitignored and never leaves this machine.'),
+      const data = await api('/api/settings');
+      state.settings = data;
+      state.pending = {};
+      renderSettings();
+    } catch (e) {
+      body.replaceChildren(empty(e.message));
+    }
+  }
+
+  function settingField(field, values, secretsSet) {
+    const value = values[field.key];
+    const isSecret = field.kind === 'secret';
+    const configured = secretsSet.includes(field.key);
+
+    const onInput = (e) => {
+      const target = e.target;
+      state.pending[field.key] = target.type === 'checkbox' ? target.checked : target.value;
+      $('#settings-save').disabled = false;
+      $('#settings-dirty').textContent = `${Object.keys(state.pending).length} unsaved change(s)`;
+    };
+
+    let input;
+    if (field.kind === 'bool') {
+      input = el('input', { type: 'checkbox', checked: !!value, onchange: onInput });
+      return el(
+        'div',
+        { class: 'setting' },
+        el('label', { class: 'check' }, input, field.label),
+        field.help ? el('p', { class: 'hint setting-help' }, field.help) : null,
+      );
+    }
+
+    if (field.kind === 'choice') {
+      input = el(
+        'select',
+        { onchange: onInput },
+        ...field.choices.map((c) => el('option', { value: c, selected: c === value }, c)),
+      );
+    } else if (isSecret) {
+      input = el('input', {
+        type: 'password',
+        autocomplete: 'new-password',
+        placeholder: configured ? '•••••••• (saved — type to replace)' : 'Not set',
+        oninput: onInput,
+      });
+    } else {
+      input = el('input', {
+        type: field.kind === 'int' || field.kind === 'float' ? 'number' : 'text',
+        step: field.kind === 'float' ? '0.01' : '1',
+        min: field.min ?? null,
+        max: field.max ?? null,
+        value: value ?? '',
+        placeholder: field.placeholder || '',
+        oninput: onInput,
+      });
+    }
+
+    return el(
+      'div',
+      { class: 'setting' },
+      el('label', {}, field.label, configured ? el('span', { class: 'tag ok saved-tag' }, 'saved') : null),
+      input,
+      field.help ? el('p', { class: 'hint setting-help' }, field.help) : null,
+    );
+  }
+
+  function renderSettings() {
+    const { sections, values, secrets_set: secretsSet, bootstrap, config_path: configPath } = state.settings;
+    const body = $('#settings-body');
+
+    body.replaceChildren(
+      el(
+        'div',
+        { class: 'row settings-bar' },
+        el('button', { class: 'primary', id: 'settings-save', disabled: true, onclick: saveSettings }, 'Save changes'),
+        el('span', { class: 'hint', id: 'settings-dirty' }, 'No unsaved changes'),
+      ),
+      el(
+        'p',
+        { class: 'hint' },
+        'Changes apply immediately, no restart. Save before running a test — tests read what is stored, not what is typed.',
+      ),
+      ...sections.map((section) =>
         el(
-          'dl',
-          { class: 'meta' },
-          el('dt', {}, 'Download directory'), el('dd', {}, config.download_directory),
-          el('dt', {}, 'Preferred format'), el('dd', {}, config.preferred_format),
-          el('dt', {}, 'Trackers'), el('dd', {}, config.trackers.join(', ') || 'none configured'),
-          el('dt', {}, 'Deezer ARL'), el('dd', {}, config.arl_set ? 'set' : 'not set'),
-          el('dt', {}, 'Discogs token'), el('dd', {}, config.discogs_set ? 'set' : 'not set'),
-          el('dt', {}, 'Tracker budget'), el('dd', {}, `${config.checker.tracker_budget} calls per ${config.checker.tracker_budget_window}s`),
-          el('dt', {}, 'Minimum tracks'), el('dd', {}, String(config.checker.min_tracks || 'no minimum')),
-          el('dt', {}, 'Date range'), el('dd', {}, `${config.checker.min_date || 'any'} to ${config.checker.max_date || 'any'}`),
-          el('dt', {}, 'Match confidence'), el('dd', {}, String(config.checker.min_confidence)),
+          'section',
+          { class: 'panel settings-section' },
+          el(
+            'div',
+            { class: 'row' },
+            el('h2', {}, section.title),
+            section.test
+              ? el(
+                  'button',
+                  { class: 'test-btn', onclick: (e) => runTest(section.test, e.target) },
+                  'Test connection',
+                )
+              : null,
+          ),
+          section.blurb ? el('p', { class: 'hint' }, section.blurb) : null,
+          el('div', { class: 'test-result', id: `test-${section.test || section.id}`, hidden: true }),
+          el('div', { class: 'settings-grid' }, ...section.fields.map((f) => settingField(f, values, secretsSet))),
         ),
+      ),
+      el(
+        'section',
+        { class: 'panel' },
+        el('h2', {}, 'Set in config.toml'),
+        el(
+          'p',
+          { class: 'hint' },
+          `These are read before this page exists, so they cannot be edited here. From ${configPath || 'your config file'}.`,
+        ),
+        el('ul', { class: 'bootstrap-list' }, ...bootstrap.map((k) => el('li', {}, el('code', {}, k)))),
+      ),
+      el(
+        'section',
+        { class: 'panel' },
         el('h2', {}, 'Scan history'),
         el(
           'div',
           { class: 'row' },
           el('button', { onclick: () => clearHistory('albums') }, 'Clear album history'),
           el('button', { onclick: () => clearHistory('requests') }, 'Clear request history'),
-        ),
-        el('p', { class: 'hint' }, 'Clearing history makes the next scan re-check everything, which costs tracker budget again.'),
-        el('h2', {}, 'Session'),
-        el(
-          'div',
-          { class: 'row' },
           el('button', { onclick: signOut }, 'Sign out of this browser'),
         ),
-        el('p', { class: 'hint' }, 'Clears the session cookie. You will be asked for the access token again.'),
+        el('p', { class: 'hint' }, 'Clearing history makes the next scan re-check everything, costing tracker budget again.'),
+      ),
+    );
+  }
+
+  async function saveSettings() {
+    const changes = state.pending;
+    if (!Object.keys(changes).length) return;
+    const button = $('#settings-save');
+    button.disabled = true;
+    button.textContent = 'Saving…';
+    try {
+      const result = await api('/api/settings', { method: 'PUT', body: { changes } });
+      toast(`Saved ${result.saved.length} setting(s)`, 'ok');
+      if (result.unapplied?.length) toast(`Could not apply: ${result.unapplied.join(', ')}`, 'bad');
+      state.pending = {};
+      await refreshStatus();
+      await loadSettings();
+    } catch (e) {
+      toast(e.message, 'bad');
+      button.disabled = false;
+    } finally {
+      button.textContent = 'Save changes';
+    }
+  }
+
+  async function runTest(target, button) {
+    const box = $(`#test-${target}`);
+    if (!box) return;
+    button.disabled = true;
+    button.textContent = 'Testing…';
+    box.hidden = false;
+    box.className = 'test-result';
+    box.replaceChildren(el('span', { class: 'spinner' }), ' Contacting…');
+
+    try {
+      const result = await api(`/api/settings/test/${target}`, { method: 'POST' });
+      box.className = `test-result ${result.ok ? 'pass' : 'warn'}`;
+      const detail = result.detail && Object.keys(result.detail).length
+        ? el(
+            'dl',
+            { class: 'meta test-detail' },
+            ...Object.entries(result.detail).flatMap(([k, v]) => [
+              el('dt', {}, k),
+              el('dd', {}, typeof v === 'object' ? JSON.stringify(v) : String(v)),
+            ]),
+          )
+        : null;
+      // replaceChildren stringifies non-Node arguments, so a null detail
+      // would literally render the word "null".
+      box.replaceChildren(
+        ...[el('strong', {}, result.ok ? '✓ ' : '✕ '), result.message, detail].filter((n) => n !== null),
       );
     } catch (e) {
-      body.replaceChildren(empty(e.message));
+      box.className = 'test-result warn';
+      box.textContent = `✕ ${e.message}`;
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Test connection';
     }
   }
 

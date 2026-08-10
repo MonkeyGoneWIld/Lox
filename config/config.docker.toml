@@ -1,101 +1,23 @@
-# lox configuration for the Docker Compose deployment.
+# lox bootstrap configuration
 #
-# Copy this to config/config.toml and fill in your credentials. The paths match
-# the volume mounts in docker-compose.yml; change them only if you change those.
+# Only what the server needs BEFORE it can serve the settings page. Everything
+# else — Deezer ARL, tracker credentials, image hosts, seeding layout, budgets,
+# notifications — is configured in the UI under Settings, with a Test button per
+# section, and is stored separately in settings.toml beside this file.
 #
-# This file holds every secret lox uses. It is gitignored. Do not commit it,
-# do not paste it into an issue, and rotate anything that leaks.
+# lox never rewrites this file.
 
 [directory]
+# Where releases live. In Docker these are fixed by the volume mounts.
 download_directory = '/downloads'
 dottorrents_dir = '/torrents'
-tmp_dir = '/tmp/lox'
-clean_tmp_dir = true
 
-# ===============================
-# WEB UI
-# ===============================
 [upload.web_interface]
-# 0.0.0.0 is required inside a container so the port publish works. The auth
-# token below is what actually protects it.
+# 0.0.0.0 inside a container so the published port works.
 host = '0.0.0.0'
+# Keep below 32768: ports in the ephemeral range can be transiently taken by an
+# outbound connection, which makes the container port bind fail at random.
 port = 5015
-# Must match LOX_AUTH_TOKEN in your .env. Minimum 16 characters.
+# REQUIRED. Minimum 16 characters: openssl rand -hex 32
 # The UI asks for this on first load and remembers it in a cookie for 30 days.
 auth_token = 'CHANGE-ME-openssl-rand-hex-32'
-
-# ===============================
-# DEEZER
-# ===============================
-[metadata.deezer]
-# Required for downloads, channel browsing and FLAC availability checks.
-arl = 'your-deezer-arl-cookie'
-download_dir = '/downloads'
-preferred_format = 'FLAC'
-format_fallback = true
-concurrent_downloads = 2
-
-[metadata]
-# Used to verify request track counts. Optional but strongly recommended:
-# without it the request checker has fewer ways to reject a wrong edition.
-discogs_token = ''
-# apple_music_token = ''
-
-# ===============================
-# HARDLINKED SEEDING
-# ===============================
-# Creates /links/RED/<release> and /links/OPS/<release> as hardlinks of the
-# release in /downloads, so both trackers seed the same bytes from their own
-# paths. /links and /downloads MUST be on the same filesystem.
-[linking]
-enabled = true
-link_dir = '/links'
-method = 'hardlink'
-per_tracker_dirs = true
-# Leave false so a cross-filesystem mistake fails loudly instead of silently
-# doubling your disk usage.
-fallback_to_copy = false
-
-# ===============================
-# TRACKERS
-# ===============================
-[tracker]
-default_tracker = 'RED'
-
-[tracker.red]
-session = 'your-red-session-cookie'
-# api_key = 'red-api-key'
-
-[tracker.ops]
-session = 'your-ops-session-cookie'
-# api_key = 'ops-api-key'
-
-# ===============================
-# TRACKER BUDGET
-# ===============================
-[checker]
-tracker_budget = 120
-tracker_budget_window = 600
-tracker_call_delay = 2.0
-failure_threshold = 3
-cooldown_seconds = 300
-min_tracks = 0
-min_confidence = 0.70
-state_dir = '/config/state'
-
-# ===============================
-# IMAGE HOSTING
-# ===============================
-[image]
-image_uploader = 'catbox'
-cover_uploader = 'catbox'
-specs_uploader = 'catbox'
-
-# ===============================
-# NOTIFICATIONS
-# ===============================
-# [notifications]
-# enabled = true
-# discord_webhook = 'https://discord.com/api/webhooks/...'
-# notify_missing = false
-# notify_fillable = false

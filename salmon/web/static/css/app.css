@@ -1,4 +1,4 @@
-/* deezer-upload web UI
+/* lox web UI
    Layout follows deemix's shape - fixed sidebar, scrolling main, slide-in detail
    panel - without reusing any of its code. */
 
@@ -477,3 +477,39 @@ select {
   .nav li { flex: none; }
   #detail { width: 100vw; }
 }
+
+/* ---------- settings ---------- */
+
+.settings-bar { position: sticky; top: 58px; background: var(--bg); padding: 10px 0; z-index: 4; }
+
+.settings-section h2 { flex: 1; }
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.setting { display: flex; flex-direction: column; gap: 5px; }
+.setting > label { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.setting-help { margin: 0; font-size: 11.5px; }
+.saved-tag { font-weight: 500; }
+
+.test-btn { font-size: 12.5px; padding: 6px 13px; }
+
+.test-result {
+  border-radius: 8px;
+  padding: 10px 13px;
+  font-size: 13px;
+  margin-top: 10px;
+  background: var(--bg-input);
+  border-left: 3px solid var(--border);
+}
+
+.test-result.pass { border-left-color: var(--ok); }
+.test-result.warn { border-left-color: var(--bad); }
+.test-detail { margin: 8px 0 0; font-size: 12px; }
+
+.bootstrap-list { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--text-dim); }
+.bootstrap-list code { background: var(--bg-input); border-radius: 4px; padding: 1px 5px; }
