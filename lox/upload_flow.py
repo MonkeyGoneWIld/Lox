@@ -45,6 +45,19 @@ _CHOICES_ARE = re.compile(r"choices are\s+([A-Za-z0-9]+(?:\s*(?:,|or)\s*[A-Za-z0
 _PRESS_ENTER = re.compile(r"press enter|once you are finished", re.IGNORECASE)
 # Space-separated id lists, which are a multi-select wearing a text box.
 _ID_LIST = re.compile(r"space-separated list of IDs", re.IGNORECASE)
+# Tag diffs print as "  tracknumber          ••• 1/14 >>> 1", album tags as
+# "> album         ••• Jiggy Buckaroo" with the arrow only when it changes.
+_TAG_CHANGE = re.compile(r"^>?\s*(\S[^•]*?)\s+•{3}\s+(.*?)(?:\s+>>>\s+(.*))?$")
+_FILE_HEADER = re.compile(r"^>\s*(\d{1,3}[.\-]?\s.*\.(?:flac|mp3|m4a|ogg))\s*$", re.IGNORECASE)
+# Metadata blocks: "> TITLE         : Jiggy Buckaroo" and ">>>  Artist [main]".
+_META_FIELD = re.compile(r"^>\s+([A-Z][A-Z /]*[A-Z])\s*:\s*(.*)$")
+_META_ITEM = re.compile(r"^>>>\s+(\S.*)$")
+_BLOCK_HEADS = {
+    "proposed tag changes": ("tags", "Proposed tag changes"),
+    "album tags (applied to all)": ("album_tags", "Album tags, applied to every file"),
+    "previous metadata": ("previous", "Previous metadata"),
+    "pending metadata": ("pending", "Pending metadata"),
+}
 _SPECTRAL_EXT = (".png", ".jpg", ".jpeg")
 
 
@@ -128,12 +141,19 @@ class FlowPrompts:
         self._candidates: list[dict[str, Any]] = []
         self._line = ""
         self._spectrals_ready = False
+        # Structured blocks captured since the last question. The pipeline
+        # prints a tag diff and a metadata comparison as prose; both are tables
+        # and are far easier to check as tables.
+        self._tables: list[dict[str, Any]] = []
+        self._block: dict[str, Any] | None = None
+        self._file = ""
 
     async def _confirm(self, text: str, default: bool = True, abort: bool = False, **_: Any) -> bool:
         """Stand-in for click.confirm."""
         prompt = strip_ansi(text).strip()
         debug.event("upload.prompt", kind="confirm", prompt=prompt[:80])
-        answer = await self.flow.confirm(prompt, default=bool(default))
+        tables, self._tables, self._block = self._tables, [], None
+        answer = await self.flow.confirm(prompt, default=bool(default), tables=tables)
         if abort and not answer:
             raise click.Abort
         return answer
@@ -152,6 +172,7 @@ class FlowPrompts:
         # option, so a found duplicate group is a button rather than a URL you
         # have to copy out of the log.
         found, self._candidates = self._candidates, []
+        tables, self._tables, self._block = self._tables, [], None
         options = options or parse_extra_options(prompt)
 
         # "Press enter once you are finished viewing" wants acknowledgement,
@@ -183,6 +204,7 @@ class FlowPrompts:
                 detail=prompt if prompt != question else "",
                 default=default_letter(prompt) or (str(default).lower() if default else None),
                 images=self._spectral_images() if self._wants_images(prompt) else [],
+                tables=tables,
             )
             return chosen
 
@@ -190,6 +212,7 @@ class FlowPrompts:
             prompt,
             default="" if default is None else str(default),
             images=self._spectral_images() if self._wants_images(prompt) else [],
+            tables=tables,
         )
         return answer if answer != "" else default
 
@@ -229,7 +252,61 @@ class FlowPrompts:
 
         if "spectrals are available" in text.lower():
             self._spectrals_ready = True
+
+        if self._capture_block(text):
+            return
         self.flow.note(text)
+
+    def _capture_block(self, text: str) -> bool:
+        """Fold tag diffs and metadata listings into structured tables.
+
+        Returns:
+            True when the line belonged to a block and should not also be shown
+            as a loose note.
+        """
+        head = _BLOCK_HEADS.get(text.rstrip(":").strip().lower())
+        if head:
+            kind, title = head
+            self._block = {"kind": kind, "title": title, "rows": []}
+            self._tables.append(self._block)
+            self._file = ""
+            return True
+
+        if self._block is None:
+            return False
+
+        if not text:
+            self._block = None
+            return False
+
+        if self._block["kind"] in ("tags", "album_tags"):
+            header = _FILE_HEADER.match(text)
+            if header:
+                self._file = header[1].strip()
+                return True
+            change = _TAG_CHANGE.match(text)
+            if change:
+                field, before, after = change[1].strip(), change[2].strip(), change[3]
+                self._block["rows"].append(
+                    {"group": self._file, "label": field, "before": before,
+                     "after": (after or "").strip(), "changed": after is not None}
+                )
+                return True
+            return False
+
+        field = _META_FIELD.match(text)
+        if field:
+            self._file = field[1].strip()
+            value = field[2].strip()
+            self._block["rows"].append({"group": "", "label": self._file, "before": value, "after": "",
+                                        "changed": False})
+            return True
+        item = _META_ITEM.match(text)
+        if item:
+            self._block["rows"].append({"group": self._file, "label": "", "before": item[1].strip(),
+                                        "after": "", "changed": False})
+            return True
+        return False
 
     def _wants_images(self, prompt: str) -> bool:
         """Whether this question is one the spectrals inform."""

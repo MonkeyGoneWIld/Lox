@@ -151,6 +151,70 @@ async def main() -> int:
     flow6.answer(step6.id, ["1", "2"])
     check("selection returned space-separated", await asyncio.wait_for(task6, timeout=2) == "1 2")
 
+    # --- tag diff becomes a table -------------------------------------
+    flow7 = Flow("upload", "retag")
+    p7 = FlowPrompts(flow7)
+
+    async def retag():
+        p7._echo("Proposed tag changes:")
+        p7._echo("> 01. Prairie Rose.flac")
+        p7._echo("  tracknumber          ••• 1/14 >>> 1")
+        p7._echo("  tracktotal           ••• None >>> 14")
+        p7._echo("> 04. Stay Twangin'.flac")
+        p7._echo("  artist               ••• Ryan Charles >>> Ryan Charles (feat. Ian Munsick)")
+        p7._echo("")
+        p7._echo("Album tags (applied to all):")
+        p7._echo("> album         ••• Jiggy Buckaroo")
+        p7._echo("> date          ••• 2025-12-05 >>> 2025")
+        p7._echo("")
+        return await p7._confirm("Would you like to auto-tag the files with the updated metadata?", default=True)
+
+    task7 = asyncio.create_task(retag())
+    step7 = await wait_for_step(flow7)
+    tables = {tb["kind"]: tb for tb in step7.tables}
+    check("tag diff captured as a table", "tags" in tables, str(list(tables)))
+    rows = tables.get("tags", {}).get("rows", [])
+    check("diff rows grouped by file",
+          rows[0]["group"] == "01. Prairie Rose.flac" and rows[-1]["group"] == "04. Stay Twangin'.flac",
+          f"{len(rows)} rows")
+    check("before and after split out",
+          rows[0]["before"] == "1/14" and rows[0]["after"] == "1" and rows[0]["changed"], str(rows[0]))
+    album = tables.get("album_tags", {}).get("rows", [])
+    check("album tags captured", len(album) == 2, str(len(album)))
+    check("unchanged album tag not marked changed",
+          album[0]["label"] == "album" and album[0]["changed"] is False, str(album[0]))
+    check("changed album tag keeps both values",
+          album[1]["before"] == "2025-12-05" and album[1]["after"] == "2025", str(album[1]))
+    check("diff lines are not also loose notes",
+          not any("•••" in e["message"] for e in flow7.events))
+    flow7.answer(step7.id, True)
+    await asyncio.wait_for(task7, timeout=2)
+
+    # --- metadata comparison becomes a table --------------------------
+    flow8 = Flow("upload", "meta2")
+    p8 = FlowPrompts(flow8)
+
+    async def compare():
+        p8._echo("Pending metadata:")
+        p8._echo("> TRACK COUNT   : 14")
+        p8._echo("> ARTISTS:")
+        p8._echo(">>>  Ryan Charles [main]")
+        p8._echo(">>>  Ian Munsick [guest]")
+        p8._echo("> TITLE         : Jiggy Buckaroo")
+        p8._echo("")
+        return await p8._prompt("Are there any metadata fields you would like to edit? [a]rtists, [n]othing")
+
+    task8 = asyncio.create_task(compare())
+    step8 = await wait_for_step(flow8)
+    meta = next((tb for tb in step8.tables if tb["kind"] == "pending"), None)
+    check("metadata comparison captured", meta is not None)
+    labels = [r["label"] for r in (meta or {}).get("rows", []) if r["label"]]
+    check("metadata fields captured", "TRACK COUNT" in labels and "TITLE" in labels, str(labels))
+    check("list items attach to their field",
+          any(r["group"] == "ARTISTS" and "Ryan Charles" in r["before"] for r in meta["rows"]))
+    flow8.answer(step8.id, "n")
+    await asyncio.wait_for(task8, timeout=2)
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

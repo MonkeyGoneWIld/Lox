@@ -1221,6 +1221,43 @@
     tick();
   }
 
+  function stepTable(table) {
+    // Rows can be grouped -- by filename for a tag diff, by field for a
+    // metadata list -- so a group header is emitted whenever it changes.
+    const rows = [];
+    let group = null;
+    const changed = table.rows.filter((r) => r.changed).length;
+
+    table.rows.forEach((row) => {
+      if (row.group && row.group !== group) {
+        group = row.group;
+        rows.push(el('tr', { class: 'diff-group' }, el('td', { colspan: '3' }, group)));
+      }
+      rows.push(
+        el(
+          'tr',
+          { class: row.changed ? 'diff-changed' : '' },
+          el('td', { class: 'diff-field' }, row.label || ''),
+          el('td', { class: 'diff-before' }, row.before || ''),
+          el('td', { class: 'diff-after' }, row.changed ? row.after : ''),
+        ),
+      );
+    });
+
+    return el(
+      'details',
+      { class: 'diff', open: table.rows.length <= 40 },
+      el(
+        'summary',
+        {},
+        table.title,
+        el('span', { class: 'card-sub' },
+          changed ? ` — ${changed} change${changed === 1 ? '' : 's'}` : ` — ${table.rows.length} rows`),
+      ),
+      el('table', { class: 'table diff-table' }, el('tbody', {}, ...rows)),
+    );
+  }
+
   function flowStep(flow) {
     const step = flow.step;
     const send = async (value) => {
@@ -1290,6 +1327,9 @@
       ...[
       el('div', { class: 'step-prompt' }, step.prompt),
       step.detail ? el('p', { class: 'hint' }, step.detail) : null,
+      // The tag diff and metadata comparison are evidence for the answer, so
+      // they are tables next to the question rather than prose above it.
+      ...(step.tables || []).map(stepTable),
       // Spectrals ride along with the question they inform, so the lossy-master
       // call is made by looking rather than by trusting a filename.
       step.images && step.images.length
