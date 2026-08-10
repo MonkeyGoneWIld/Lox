@@ -8,7 +8,7 @@ from packaging.version import Version
 from salmon import cfg
 
 LOCAL_VERSION_FILE = path.abspath(path.join(path.dirname(path.dirname(__file__)), "data", "version.toml"))
-REMOTE_VERSION_URL = "https://raw.githubusercontent.com/smokin-salmon/smoked-salmon/refs/heads/master/data/version.toml"
+REMOTE_VERSION_URL = "https://raw.githubusercontent.com/MonkeyGoneWIld/lox/refs/heads/main/data/version.toml"
 
 _cached_version: str | None = None
 
