@@ -572,6 +572,36 @@ select {
   margin: 12px 0 14px;
 }
 
+/* A release found on the tracker: the thing the question is about, so it gets
+   room to say what it is instead of being squeezed onto the button row and cut
+   off halfway through the tags. */
+.matches { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px; }
+
+.match {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.match-body { min-width: 0; flex: 1 1 340px; }
+.match-title { font-size: 13.5px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.match-sub { color: var(--text-dim); font-size: 11.5px; margin-top: 3px; }
+.match-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.match-actions .filebtn { font-size: 12.5px; padding: 7px 12px; text-decoration: none; color: var(--text); }
+.match-actions .filebtn:hover { border-color: var(--accent); }
+
+/* Wide tables scroll inside their own box; the page never scrolls sideways. */
+.table-scroll { overflow-x: auto; }
+.torrent-table { font-size: 12px; width: 100%; }
+.torrent-table th { text-align: left; color: var(--text-dim); font-weight: 600; }
+.torrent-edition { color: var(--text-dim); max-width: 340px; overflow-wrap: anywhere; }
+
 /* Tick lists inside a filter field: scrollable so a 16-entry encoding list does
    not push everything else off the panel. */
 .checkgroup {

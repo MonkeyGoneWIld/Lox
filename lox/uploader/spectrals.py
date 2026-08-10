@@ -6,7 +6,6 @@ import re
 import shutil
 import time
 from functools import partial
-from os.path import dirname, join
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -395,16 +394,15 @@ def _open_specs_in_windows(spectrals_path):
 
 
 async def _open_specs_in_web_server(specs_path, all_spectral_ids):
-    spectrals.set_active_spectrals(all_spectral_ids)
-    symlink_path = join(dirname(dirname(__file__)), "web", "static", "specs")
+    # Served straight from where they were generated. This used to symlink the
+    # directory into the package's own static folder, which needs write access
+    # to the installed package -- in a container that is the image, owned by
+    # root, while the process runs as PUID, so it raised
+    # PermissionError: [Errno 1] and took the upload down with it.
+    spectrals.set_active_spectrals(all_spectral_ids, specs_path)
 
     runner = None
     try:
-        try:
-            os.symlink(specs_path, symlink_path)
-        except FileExistsError:
-            os.unlink(symlink_path)
-            os.symlink(specs_path, symlink_path)
         with contextlib.suppress(WebServerIsAlreadyRunning):
             runner = await create_app_async()
         # host is the bind address; 0.0.0.0 and :: are not reachable addresses.
@@ -428,10 +426,9 @@ async def _open_specs_in_web_server(specs_path, all_spectral_ids):
             end=" ",
             flush=True,
         )
+    finally:
         if runner is not None:
             await runner.cleanup()
-    finally:
-        os.unlink(symlink_path)
 
 
 async def upload_spectrals(
