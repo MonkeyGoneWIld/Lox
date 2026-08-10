@@ -29,6 +29,14 @@
       </ul>
 
       <div class="sidebar-foot">
+        <div class="row theme-row">
+          <span class="hint">Theme</span>
+          <div class="segmented" id="theme-picker">
+            <button type="button" data-theme="dark">Dark</button>
+            <button type="button" data-theme="light">Light</button>
+            <button type="button" data-theme="system">Auto</button>
+          </div>
+        </div>
         <div class="status-line" id="deezer-status">
           <span class="dot" data-state="unknown"></span><span class="status-text">Deezer</span>
         </div>
@@ -146,22 +154,12 @@
           <button id="folders-refresh">Refresh folders</button>
           <span class="hint">Upload to:</span>
           <div class="segmented" id="upload-tracker"></div>
-          <label class="check" title="Runs everything except posting to the tracker and adding to the download client">
-            <input type="checkbox" id="upload-dry-run"> Dry run
-          </label>
+          <span class="tag dim" id="upload-dry-tag" hidden>dry run</span>
           <span class="hint" id="uploads-dir"></span>
         </div>
         <p class="hint" id="linking-note"></p>
         <div id="folders-list"></div>
-        <div class="panel" id="upload-console-panel" hidden>
-          <h2>Upload console</h2>
-          <p class="hint">lox still drives the upload. Prompts appear here &mdash; the lossy-master question always asks, by design.</p>
-          <pre class="console" id="upload-console"></pre>
-          <form class="row" id="upload-input-form">
-            <input type="text" id="upload-input" placeholder="Answer a prompt and press enter" autocomplete="off">
-            <button type="submit">Send</button>
-          </form>
-        </div>
+        <div id="upload-flows"></div>
       </section>
 
       <section class="view" id="view-settings">

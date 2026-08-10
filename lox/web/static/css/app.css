@@ -19,8 +19,26 @@
   --detail: 420px;
 }
 
+:root[data-theme="light"] {
+  --bg: #f4f4f8;
+  --bg-raised: #ffffff;
+  --bg-input: #ececf3;
+  --border: #d9d9e3;
+  --text: #1b1b22;
+  --text-dim: #6a6a7a;
+}
+
+:root[data-theme="dark"] {
+  --bg: #16161d;
+  --bg-raised: #1e1e27;
+  --bg-input: #26262f;
+  --border: #33333f;
+  --text: #e9e9ef;
+  --text-dim: #9a9aab;
+}
+
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #f4f4f8;
     --bg-raised: #ffffff;
     --bg-input: #ececf3;
@@ -513,3 +531,37 @@ select {
 
 .bootstrap-list { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--text-dim); }
 .bootstrap-list code { background: var(--bg-input); border-radius: 4px; padding: 1px 5px; }
+
+/* ---------- flows: an upload you can actually click ---------- */
+
+.flow-card { border-left: 3px solid var(--accent); }
+.flow-card h2 { flex: 1; }
+
+.step {
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 12px;
+}
+
+.step-prompt { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.step-controls { margin-top: 12px; }
+
+button.danger { border-color: var(--bad); color: var(--bad); }
+button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
+
+.flow-notes { margin-top: 12px; font-size: 12.5px; }
+.flow-notes summary { cursor: pointer; color: var(--text-dim); }
+.notelist { list-style: none; padding: 8px 0 0; margin: 0; max-height: 220px; overflow-y: auto; }
+.notelist li { padding: 2px 0; color: var(--text-dim); }
+.notelist li.error { color: var(--bad); }
+.notelist li.warning { color: var(--warn); }
+
+.inspected { margin-top: 6px; font-size: 12.5px; }
+.inspected summary { cursor: pointer; color: var(--text-dim); }
+.inspected .hitlist { padding-top: 8px; }
+
+.theme-row { justify-content: space-between; margin-bottom: 10px; }
+.theme-row .segmented button { padding: 4px 9px; font-size: 12px; }
+
+.icon-btn.upload { background: var(--ok); margin-left: 6px; }
