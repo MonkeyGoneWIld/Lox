@@ -14,10 +14,10 @@
 services:
   lox:
     # Built and pushed by .github/workflows/build-alpha.yml on every push to
-    # main. Enable Actions on the fork once for this to exist.
-    image: ghcr.io/monkeygonewild/deezer-upload:alpha
+    # main, and on demand via workflow_dispatch.
+    image: ghcr.io/monkeygonewild/lox:alpha
     # Or build from source instead:
-    # build: https://github.com/MonkeyGoneWIld/deezer-upload.git#main
+    # build: https://github.com/MonkeyGoneWIld/lox.git#main
     container_name: lox
     restart: unless-stopped
     command: ["ui"]
