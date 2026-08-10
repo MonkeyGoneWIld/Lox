@@ -55,6 +55,7 @@ class Step:
         default: Any = None,
         danger: bool = False,
         images: list[str] | None = None,
+        tables: list[dict[str, Any]] | None = None,
     ) -> None:
         """Initialize a step."""
         self.id = uuid.uuid4().hex[:8]
@@ -68,6 +69,9 @@ class Step:
         # whether a release is lossy mastered by reading a filename is not a
         # decision; you have to see them.
         self.images = images or []
+        # Structured evidence the answer depends on: the tag diff, the metadata
+        # comparison. Prose is fine to read and terrible to check.
+        self.tables = tables or []
         self.asked = time.time()
 
     def as_dict(self) -> dict[str, Any]:
@@ -81,6 +85,7 @@ class Step:
             "default": self.default,
             "danger": self.danger,
             "images": self.images,
+            "tables": self.tables,
         }
 
 
@@ -140,9 +145,18 @@ class Flow:
             if self.state == "waiting":
                 self.state = "running"
 
-    async def confirm(self, prompt: str, *, detail: str = "", default: bool = True, danger: bool = False) -> bool:
+    async def confirm(
+        self,
+        prompt: str,
+        *,
+        detail: str = "",
+        default: bool = True,
+        danger: bool = False,
+        tables: list[dict[str, Any]] | None = None,
+    ) -> bool:
         """Ask a yes/no question."""
-        return bool(await self.ask(Step("confirm", prompt, detail=detail, default=default, danger=danger)))
+        step = Step("confirm", prompt, detail=detail, default=default, danger=danger, tables=tables)
+        return bool(await self.ask(step))
 
     async def choose(
         self,
@@ -152,6 +166,7 @@ class Flow:
         detail: str = "",
         default: Any = None,
         images: list[str] | None = None,
+        tables: list[dict[str, Any]] | None = None,
     ) -> Any:
         """Ask the user to pick one of a named set.
 
@@ -166,7 +181,7 @@ class Flow:
             The chosen ``value``.
         """
         return await self.ask(
-            Step("choice", prompt, detail=detail, options=options, default=default, images=images)
+            Step("choice", prompt, detail=detail, options=options, default=default, images=images, tables=tables)
         )
 
     async def choose_many(
@@ -182,10 +197,16 @@ class Flow:
         return list(answer or [])
 
     async def text(
-        self, prompt: str, *, detail: str = "", default: str = "", images: list[str] | None = None
+        self,
+        prompt: str,
+        *,
+        detail: str = "",
+        default: str = "",
+        images: list[str] | None = None,
+        tables: list[dict[str, Any]] | None = None,
     ) -> str:
         """Ask for free text, where free text is genuinely what is wanted."""
-        step = Step("text", prompt, detail=detail, default=default, images=images)
+        step = Step("text", prompt, detail=detail, default=default, images=images, tables=tables)
         return str(await self.ask(step) or "")
 
     async def review(self, prompt: str, rows: list[dict[str, Any]], *, detail: str = "") -> bool:
