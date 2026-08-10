@@ -254,8 +254,7 @@ FIELDS: tuple[Field, ...] = (
 
     # --- Paths --------------------------------------------------------
     Field("directory.download_directory", "Download directory", "path", "paths",
-          "Where releases live. Must already exist — lox will not create it, because an empty directory "
-          "invented inside the container would swallow your downloads. Overrides LOX_DOWNLOAD_DIR."),
+          "Where releases live. Created if missing. Overrides LOX_DOWNLOAD_DIR."),
     Field("directory.dottorrents_dir", "Torrent output directory", "path", "paths",
           "Where .torrent files are written. Created if missing. Overrides LOX_TORRENTS_DIR."),
     Field("directory.tmp_dir", "Spectral scratch directory", "path", "paths"),

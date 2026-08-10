@@ -145,7 +145,9 @@ class WatchlistManager:
     async def _execute(self, watch: Watchlist) -> list[dict[str, Any]]:
         """Dispatch a watchlist to the right Deezer surface."""
         if watch.kind == "new_releases":
-            return await self.explorer.new_releases(watch.target, watch.limit)
+            # Carries the source it answered from alongside the albums, so that
+            # a fallback is visible rather than silently passed off as fresh.
+            return (await self.explorer.new_releases(watch.target, watch.limit)).get("results", [])
         if watch.kind == "chart":
             chart = await self.explorer.chart(watch.target, watch.limit)
             return chart["albums"]
@@ -153,7 +155,11 @@ class WatchlistManager:
             rows = await self.gw.search_albums(watch.target, watch.limit)
             return [self.explorer.public_album(a) for a in rows]
         if watch.kind == "artist":
-            return await self.explorer.artist_albums(watch.target, watch.limit)
+            # Grouped by release type for the artist page; a watchlist wants the
+            # flat list, newest first, which is the order the groups are in.
+            artist = await self.explorer.artist(watch.target)
+            albums = [album for group in artist.get("groups", []) for album in group.get("albums", [])]
+            return albums[: watch.limit] if watch.limit else albums
         if watch.kind == "playlist":
             return await self.explorer.playlist_albums(watch.target)
         if watch.kind == "module":

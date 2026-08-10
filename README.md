@@ -218,7 +218,7 @@ a page, and a wrong path has to be fixable from the UI rather than only by editi
 
 | Environment | Config key | |
 |---|---|---|
-| `LOX_DOWNLOAD_DIR` | `directory.download_directory` | Must already exist. Never created for you — an empty directory invented inside the container would swallow your downloads. |
+| `LOX_DOWNLOAD_DIR` | `directory.download_directory` | Created if missing. |
 | `LOX_TORRENTS_DIR` | `directory.dottorrents_dir` | Created if missing. |
 | `LOX_TMP_DIR` | `directory.tmp_dir` | Optional. Created if missing. |
 | `LOX_STATE_DIR` | `checker.state_dir` | Optional. Created if missing. |
@@ -234,6 +234,11 @@ lox starts anyway and shows a banner naming what is wrong, and the operations th
 message pointing at it. Only a bad bind address or an auth token under 16 characters still stops startup — everything
 else is something you fix on the settings page, and exiting on the way up means never reaching that page. A container
 that restart-loops over a path you could have corrected in the UI is worse than one that starts and tells you.
+
+Directories are created when missing, so the interesting failures are the ones creation cannot fix. `isdir()` returns
+False for a volume mounted from the wrong host path, a volume mounted but empty, *and* a directory that is right there
+but owned by a uid the container is not running as — so lox reports what it actually found at the nearest parent that
+does exist, and the uid it is running as, rather than only saying the path is missing.
 
 Outside Docker, `config.toml` is looked for at the repo root, then `~/.config/lox/`, then `~/.config/smoked-salmon/` —
 upstream's location, still read so an existing install keeps working. Nothing is ever written there.
