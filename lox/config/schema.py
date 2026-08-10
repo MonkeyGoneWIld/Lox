@@ -18,12 +18,14 @@ BOOTSTRAP_KEYS = (
     "upload.web_interface.host",
     "upload.web_interface.port",
     "upload.web_interface.auth_token",
-    "directory.download_directory",
-    "directory.dottorrents_dir",
 )
 """Settings the server needs before it can serve the page that would otherwise
-edit them. Supply them in config.toml or through the environment — see
-BOOTSTRAP_ENV."""
+edit them: what to bind, and who is allowed in. Supply them in config.toml or
+through the environment — see BOOTSTRAP_ENV.
+
+The directories are deliberately not here. They are bootstrapped from the
+environment too, but the server does not need them to serve a page, and a wrong
+path has to be fixable from the UI rather than only by editing compose."""
 
 BOOTSTRAP_ENV: dict[str, str] = {
     "LOX_HOST": "upload.web_interface.host",
@@ -120,7 +122,13 @@ SECTIONS: tuple[Section, ...] = (
     Section("upload", "Uploading", "Behaviour of the upload pipeline itself."),
     Section("formatting", "Naming", "How release folders and files are named."),
     Section("debug", "Debug", "Verbose logging and a diagnostics bundle. Credentials are never written."),
-    Section("paths", "Paths", "Scratch and state directories. The main ones are set in config.toml.", test="paths"),
+    Section(
+        "paths",
+        "Paths",
+        "Where lox reads releases from and writes its own files to. Bootstrapped from the environment, "
+        "but anything set here wins — so a wrong mount is fixable without editing compose.",
+        test="paths",
+    ),
 )
 
 
@@ -245,6 +253,11 @@ FIELDS: tuple[Field, ...] = (
     Field("upload.description.bitrates_in_t_desc", "Bitrates in torrent description", "bool", "formatting"),
 
     # --- Paths --------------------------------------------------------
+    Field("directory.download_directory", "Download directory", "path", "paths",
+          "Where releases live. Must already exist — lox will not create it, because an empty directory "
+          "invented inside the container would swallow your downloads. Overrides LOX_DOWNLOAD_DIR."),
+    Field("directory.dottorrents_dir", "Torrent output directory", "path", "paths",
+          "Where .torrent files are written. Created if missing. Overrides LOX_TORRENTS_DIR."),
     Field("directory.tmp_dir", "Spectral scratch directory", "path", "paths"),
     Field("directory.clean_tmp_dir", "Wipe scratch directory at startup", "bool", "paths"),
 )

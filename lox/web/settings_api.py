@@ -19,6 +19,7 @@ from lox import cfg, settings
 from lox import debug as debuglog
 from lox.config.schema import BOOTSTRAP_KEYS, sections_with_fields
 from lox.config.store import SettingsError, coerce, get_value, set_value
+from lox.config.validations import validate as validate_config
 from lox.deezer.gw import DeezerGW, DeezerGWError
 
 routes = web.RouteTableDef()
@@ -63,6 +64,7 @@ async def api_settings(request: web.Request) -> web.Response:
             "overridden": sorted(settings.values),
             "bootstrap": list(BOOTSTRAP_KEYS),
             "config_path": request.app.get("config_path", ""),
+            "problems": validate_config(cfg),
         }
     )
 
@@ -87,6 +89,9 @@ async def api_settings_save(request: web.Request) -> web.Response:
     failed = settings.apply_to(cfg)
     lox.trackers.refresh_tracker_list()
     debuglog.configure()
+    # Directories can be created or corrected here, so re-run the checks that
+    # were reported at startup rather than leaving a fixed problem on screen.
+    remaining = validate_config(cfg)
     # The Deezer client caches its login; a new ARL has to invalidate it.
     if any(k.startswith("metadata.deezer") for k in coerced):
         gw: DeezerGW = request.app["gw"]
@@ -96,7 +101,14 @@ async def api_settings_save(request: web.Request) -> web.Response:
         gw.license_token = None
         await gw.close()
 
-    return _json({"saved": sorted(coerced), "unapplied": failed, "trackers": lox.trackers.tracker_list})
+    return _json(
+        {
+            "saved": sorted(coerced),
+            "unapplied": failed,
+            "trackers": lox.trackers.tracker_list,
+            "problems": remaining,
+        }
+    )
 
 
 @routes.post("/api/settings/reset")

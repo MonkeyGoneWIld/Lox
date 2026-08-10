@@ -28,6 +28,15 @@ def get_legacy_user_cfg_path():
     return os.path.join(user_config_dir(LEGACY_APPNAME), "config.toml")
 
 
+def _bootstrap_dir() -> str:
+    """Where to put lox-owned directories when nothing said where they go.
+
+    The settings volume, so a placeholder path at least lands somewhere that
+    survives a restart rather than inside the container's overlay.
+    """
+    return os.environ.get("LOX_SETTINGS_DIR") or os.path.dirname(get_user_cfg_path())
+
+
 def get_default_config_path():
     default_config_path = os.path.join(root_path, "data", "config.default.toml")
 
@@ -137,22 +146,28 @@ def setup_config():
         # A container can be configured purely from compose. If the environment
         # supplies the bootstrap settings, run without a config file at all -
         # everything else is set in the UI and stored in settings.toml.
-        missing = [
-            name
-            for name, key in (
-                ("LOX_DOWNLOAD_DIR", ("directory", "download_directory")),
-                ("LOX_TORRENTS_DIR", ("directory", "dottorrents_dir")),
-            )
-            if key[1] not in env.get(key[0], {})
-        ]
-        if not missing:
-            click.secho("No config.toml; using bootstrap settings from the environment.", fg="cyan")
-            return msgspec.convert(env, type=Cfg, strict=False)
         if env:
-            click.secho(
-                f"Partial environment bootstrap: still need {', '.join(missing)}.",
-                fg="red",
-            )
+            # The directories are the one thing a container can be started
+            # without: they are editable in the UI, and a placeholder that gets
+            # reported as a problem beats a restart loop nobody can log into to
+            # fix. Only a completely empty environment means "not configured".
+            directory = env.setdefault("directory", {})
+            missing = []
+            for name, key, default in (
+                ("LOX_DOWNLOAD_DIR", "download_directory", "downloads"),
+                ("LOX_TORRENTS_DIR", "dottorrents_dir", "torrents"),
+            ):
+                if not directory.get(key):
+                    directory[key] = os.path.join(_bootstrap_dir(), default)
+                    missing.append(name)
+            click.secho("No config.toml; using bootstrap settings from the environment.", fg="cyan")
+            if missing:
+                click.secho(
+                    f"{', '.join(missing)} not set — using a placeholder. Set the real path under Settings → Paths.",
+                    fg="yellow",
+                )
+            return msgspec.convert(env, type=Cfg, strict=False)
+
         cfg_path = get_user_cfg_path()
         attempted_default_cfg = os.path.join(os.path.dirname(cfg_path), "config.default.toml")
 
