@@ -31,6 +31,20 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"{'PASS' if ok else 'FAIL'}  {name}{'  ' + detail if detail else ''}")
 
 
+async def _rows(kind: str, count: int) -> list[dict]:
+    """Deezer-shaped search rows, for stubbing the client."""
+    return [
+        {
+            "id": i,
+            "title": f"{kind} {i}",
+            "name": f"{kind} {i}",
+            "artist": {"name": "Taylor Swift"},
+            "album": {"id": 5, "cover_medium": ""},
+        }
+        for i in range(count)
+    ]
+
+
 async def main() -> int:
     from lox.database import run_migrations
     from lox.web import create_app_async
@@ -115,6 +129,30 @@ async def main() -> int:
                 data = await r.json()
             check("a change on one page is visible to the other",
                   data["upload"] == {"dry_run": False, "yes_all": True}, str(data.get("upload")))
+
+            # --- search returns every kind at once ----------------------
+            # Stubbed at the Deezer client so this runs without an ARL. The
+            # point is the response shape the page renders sections from.
+            gw = runner.app["gw"]
+            gw.search_albums = lambda q, limit=30: _rows("album", 3)
+            gw.search_tracks = lambda q, limit=30: _rows("track", 2)
+            gw.search_artists = lambda q, limit=30: _rows("artist", 1)
+
+            async with s.get(f"{BASE}/api/search?q=taylor", headers=h) as r:
+                data = await r.json()
+            check("search defaults to every kind", data.get("type") == "all", str(data.get("type")))
+            check("each kind comes back in its own section",
+                  {k: len(v) for k, v in data.get("sections", {}).items()}
+                  == {"album": 3, "track": 2, "artist": 1},
+                  str({k: len(v) for k, v in data.get("sections", {}).items()}))
+            check("a flat list is still there for callers that want one",
+                  len(data.get("results", [])) == 6, str(len(data.get("results", []))))
+
+            async with s.get(f"{BASE}/api/search?q=taylor&type=artist", headers=h) as r:
+                data = await r.json()
+            check("filtering to one kind returns only that kind",
+                  list(data.get("sections", {})) == ["artist"] and len(data["results"]) == 1,
+                  str(list(data.get("sections", {}))))
 
             async with s.get(f"{BASE}/api/settings", headers=h) as r:
                 data = await r.json()

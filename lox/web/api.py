@@ -336,50 +336,69 @@ async def api_config(request: web.Request) -> web.Response:
 
 @routes.get("/api/search")
 async def api_search(request: web.Request) -> web.Response:
-    """Search Deezer for albums, tracks or artists. Costs no tracker budget."""
+    """Search Deezer. Costs no tracker budget.
+
+    ``type`` defaults to every kind at once, because searching for a name and
+    being shown only albums hides the thing you were looking for when it was an
+    artist. The three searches are independent, so they run together.
+    """
     query = (request.query.get("q") or "").strip()
     if not query:
         return error("q is required")
-    kind = request.query.get("type", "album")
+    kind = request.query.get("type", "all")
     limit = min(int(request.query.get("limit", 30)), 100)
     gw: DeezerGW = request.app["gw"]
     explorer: Explorer = request.app["explorer"]
 
+    async def albums() -> list[dict[str, Any]]:
+        return [explorer.public_album(a) for a in await gw.search_albums(query, limit)]
+
+    async def tracks() -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "track",
+                "id": str(t.get("id")),
+                "title": t.get("title", ""),
+                "artist": (t.get("artist") or {}).get("name", ""),
+                "image": (t.get("album") or {}).get("cover_medium"),
+                "album_id": str((t.get("album") or {}).get("id") or ""),
+                "duration": t.get("duration"),
+            }
+            for t in await gw.search_tracks(query, limit)
+        ]
+
+    async def artists() -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "artist",
+                "id": str(a.get("id")),
+                "title": a.get("name", ""),
+                "artist": "",
+                "image": a.get("picture_medium"),
+                "albums": a.get("nb_album"),
+            }
+            for a in await gw.search_artists(query, limit)
+        ]
+
+    wanted = {"album": albums, "track": tracks, "artist": artists}
+    if kind in wanted:
+        wanted = {kind: wanted[kind]}
+
     try:
-        if kind == "track":
-            rows = await gw.search_tracks(query, limit)
-            results = [
-                {
-                    "type": "track",
-                    "id": str(t.get("id")),
-                    "title": t.get("title", ""),
-                    "artist": (t.get("artist") or {}).get("name", ""),
-                    "image": (t.get("album") or {}).get("cover_medium"),
-                    "album_id": str((t.get("album") or {}).get("id") or ""),
-                    "duration": t.get("duration"),
-                }
-                for t in rows
-            ]
-        elif kind == "artist":
-            rows = await gw.search_artists(query, limit)
-            results = [
-                {
-                    "type": "artist",
-                    "id": str(a.get("id")),
-                    "title": a.get("name", ""),
-                    "artist": "",
-                    "image": a.get("picture_medium"),
-                    "albums": a.get("nb_album"),
-                }
-                for a in rows
-            ]
-        else:
-            rows = await gw.search_albums(query, limit)
-            results = [explorer.public_album(a) for a in rows]
+        found = await asyncio.gather(*(fn() for fn in wanted.values()))
     except DeezerGWError as e:
         return error(str(e), status=502)
 
-    return json_response({"query": query, "type": kind, "results": results})
+    sections = dict(zip(wanted, found, strict=True))
+    return json_response(
+        {
+            "query": query,
+            "type": kind,
+            "sections": sections,
+            # Flat list too, so a caller that wants one kind keeps working.
+            "results": [row for rows in sections.values() for row in rows],
+        }
+    )
 
 
 @routes.get("/api/album/{album_id}")
