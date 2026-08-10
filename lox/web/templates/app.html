@@ -46,6 +46,10 @@
            the place to fix it is the settings page. -->
       <div id="config-problems" class="problem-banner" hidden></div>
 
+      <!-- Only present while something is ticked. Batch actions for the
+           releases you selected across search, explore and artist pages. -->
+      <div id="pick-bar" class="pick-bar" hidden></div>
+
       <section class="view active" id="view-search">
         <form class="searchbar" id="search-form">
           <input type="search" id="search-input" placeholder="Search Deezer for an album, track or artist" autocomplete="off">
@@ -182,10 +186,6 @@
       </section>
     </main>
 
-    <aside id="detail" hidden>
-      <button class="close" id="detail-close" aria-label="Close">&times;</button>
-      <div id="detail-body"></div>
-    </aside>
   </div>
 
   <div id="toasts"></div>

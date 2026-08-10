@@ -27,6 +27,9 @@
     requestsTracker: null,
     requestFilters: null,
     requestFiltersFor: null,
+    album: null,
+    // Releases ticked for a batch action, by album id.
+    picked: new Map(),
     uploadTrackers: new Set(),
     albumCheck: null,
     watchlists: [],
@@ -268,7 +271,7 @@
   function card(item) {
     const isAlbum = item.type === 'album' || item.album_id;
     const albumId = item.type === 'album' ? item.id : item.album_id;
-    return el(
+    const node = el(
       'div',
       {
         class: `card ${item.type}`,
@@ -280,6 +283,19 @@
       el(
         'div',
         { class: 'card-art', style: item.image ? `background-image:url('${item.image}')` : '' },
+        // Ticking a release does not open it. One at a time is a click; a
+        // batch is a tick, then one decision for all of them.
+        isAlbum && albumId
+          ? el(
+              'label',
+              { class: 'card-pick', onclick: (e) => e.stopPropagation(), title: 'Select' },
+              el('input', {
+                type: 'checkbox',
+                checked: state.picked.has(albumId),
+                onchange: (e) => togglePick(albumId, item, e.target.checked, node),
+              }),
+            )
+          : null,
         isAlbum && albumId
           ? el(
               'div',
@@ -335,6 +351,87 @@
           )
         : null,
     );
+    if (state.picked.has(albumId)) node.classList.add('picked');
+    return node;
+  }
+
+  // ------------------------------------------------------------ selection
+
+  function togglePick(albumId, item, on, node) {
+    if (on) state.picked.set(albumId, item);
+    else state.picked.delete(albumId);
+    node?.classList.toggle('picked', on);
+    renderPickBar();
+  }
+
+  function clearPicks() {
+    state.picked.clear();
+    $$('.card.picked').forEach((c) => {
+      c.classList.remove('picked');
+      const box = c.querySelector('.card-pick input');
+      if (box) box.checked = false;
+    });
+    renderPickBar();
+  }
+
+  // A bar that only exists while something is selected, so the page is not
+  // permanently carrying controls for a thing you are usually not doing.
+  function renderPickBar() {
+    const bar = $('#pick-bar');
+    const count = state.picked.size;
+    bar.hidden = !count;
+    if (!count) return;
+    const items = () => [...state.picked.entries()].map(([id, item]) => ({ id, item }));
+    bar.replaceChildren(
+      el('strong', {}, `${count} selected`),
+      el('button', { onclick: () => bulkDownload(items()) }, 'Download'),
+      el('button', { onclick: () => bulkDownloadAndUpload(items()) }, 'Download & upload'),
+      el('button', { onclick: () => bulkCheck(items()) }, 'Check trackers'),
+      el('button', { class: 'ghost', onclick: clearPicks }, 'Clear'),
+    );
+  }
+
+  async function bulkDownload(entries) {
+    try {
+      const { queued, failed } = await api('/api/download', {
+        method: 'POST',
+        body: { album_ids: entries.map((e) => e.id) },
+      });
+      toast(`Queued ${queued.length} download${queued.length === 1 ? '' : 's'}` +
+            (failed.length ? `, ${failed.length} failed` : ''), failed.length ? 'bad' : 'ok');
+      clearPicks();
+      setView('downloads');
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
+  // Uploads run one at a time. Several at once would interleave their
+  // questions, and a prompt you cannot tell the release for is worse than
+  // waiting.
+  async function bulkDownloadAndUpload(entries) {
+    const trackers = [...state.uploadTrackers];
+    if (!trackers.length) return toast('Pick a tracker to upload to first', 'bad');
+    clearPicks();
+    setView('uploads');
+    toast(`Queued ${entries.length} for download and upload, one at a time.`);
+    for (const { id, item } of entries) {
+      // Sequential on purpose: each waits for the one before it to finish.
+      await downloadAndUpload(id, item, { quiet: true });
+    }
+  }
+
+  async function bulkCheck(entries) {
+    const trackers = checkTrackers();
+    if (!trackers.length) return toast('No tracker configured', 'bad');
+    setView('missing');
+    const box = $('#missing-sources');
+    const urls = entries
+      .map(({ item }) => item.url || (item.id ? `https://www.deezer.com/album/${item.id}` : ''))
+      .filter(Boolean);
+    box.value = [box.value.trim(), ...urls].filter(Boolean).join('\n');
+    clearPicks();
+    toast(`${urls.length} added. Press Check to spend budget on them.`);
   }
 
   function renderGrid(container, items, emptyMessage) {
@@ -577,14 +674,17 @@
 
   // ---------------------------------------------------------------- detail
 
+  // A page, not a drawer. A release is the thing you are deciding about, and
+  // deciding needs the tracklist, the credits and the tracker verdict side by
+  // side rather than a 380px column you scroll through a slot at a time.
   async function openAlbum(albumId) {
-    const panel = $('#detail');
-    const body = $('#detail-body');
-    panel.hidden = false;
-    body.replaceChildren(spinner('Loading album'));
+    setView('search');
+    const pane = searchPane('album-page');
+    pane.replaceChildren(spinner('Loading album'));
 
     try {
       const album = await api(`/api/album/${albumId}`);
+      state.album = album;
       const availability = album.availability;
       const verdict = availability
         ? availability.uploadable
@@ -597,78 +697,112 @@
           ? el('a', { href: '#', onclick: (e) => { e.preventDefault(); openArtist(id); } }, name)
           : el('span', {}, name);
 
-      // Everyone credited, not just the headline act, each one navigable.
       const featured = (album.contributors || []).filter((c) => c.id !== album.artist_id);
+      const facts = [
+        album.nb_tracks ? `${album.nb_tracks} tracks` : null,
+        album.duration ? duration(album.duration) : null,
+        album.release_date,
+        album.record_type,
+        (album.genres || []).join(', ') || null,
+      ].filter(Boolean);
 
-      body.replaceChildren(
-        ...[
-        album.cover ? el('img', { class: 'detail-art', src: album.cover, alt: '' }) : el('div', { class: 'detail-art' }),
-        el('div', { class: 'detail-title' }, album.title || ''),
-        el('div', { class: 'detail-artist' }, artistLink(album.artist_id, album.artist || '')),
-        featured.length
-          ? el(
-              'p',
-              { class: 'hint featured' },
-              'Featuring ',
-              ...featured.flatMap((c, i) => [i ? el('span', {}, ', ') : null, artistLink(c.id, c.name)])
-                .filter(Boolean),
-            )
-          : null,
+      pane.replaceChildren(
         el(
           'div',
-          { class: 'row' },
-          el('button', { class: 'primary', onclick: () => download(album.id) }, 'Download'),
-          el('button', { onclick: () => downloadAndUpload(album.id, album) }, 'Download & upload'),
-          album.url
-            ? el('a', { class: 'linkbtn', href: album.url, target: '_blank', rel: 'noopener' }, 'Open on Deezer')
-            : null,
-        ),
-        el('p', {}, verdict),
-        el(
-          'dl',
-          { class: 'meta' },
-          ...[
-            ['Released', album.release_date],
-            ['Type', album.record_type],
-            ['Tracks', album.nb_tracks],
-            ['Length', album.duration ? duration(album.duration) : null],
-            ['Label', album.label],
-            ['UPC', album.upc],
-            ['Genres', (album.genres || []).join(', ')],
-            ['Explicit', album.explicit ? 'Yes' : null],
-            availability ? ['FLAC', `${availability.flac_count}/${availability.total}`] : null,
-          ]
-            .filter((row) => row && row[1])
-            .flatMap(([label, value]) => [el('dt', {}, label), el('dd', {}, String(value))]),
-        ),
-        el(
-          'ul',
-          { class: 'tracklist' },
-          ...(album.tracks || []).map((tr) =>
+          { class: 'album-head' },
+          album.cover
+            ? el('img', { class: 'album-art', src: album.cover, alt: '' })
+            : el('div', { class: 'album-art' }),
+          el(
+            'div',
+            { class: 'album-head-body' },
+            album.explicit ? el('span', { class: 'tag dim' }, 'EXPLICIT') : null,
+            el('h1', { class: 'album-title' }, album.title || ''),
+            el('p', { class: 'album-artist' }, artistLink(album.artist_id, album.artist || '')),
+            el('p', { class: 'album-facts' }, facts.join(' · ')),
+            featured.length
+              ? el(
+                  'p',
+                  { class: 'album-facts featured' },
+                  'With ',
+                  ...featured.flatMap((c, i) => [i ? el('span', {}, ', ') : null, artistLink(c.id, c.name)])
+                    .filter(Boolean),
+                )
+              : null,
             el(
-              'li',
+              'div',
+              { class: 'row album-actions' },
+              el('button', { class: 'primary', onclick: () => download(album.id) }, 'Download'),
+              el('button', { onclick: () => downloadAndUpload(album.id, album) }, 'Download & upload'),
+              el('button', { id: 'album-check-btn', onclick: (e) => checkAlbum(album, checkTrackers(), e.target) },
+                'Check trackers'),
+              album.url
+                ? el('a', { class: 'linkbtn', href: album.url, target: '_blank', rel: 'noopener' }, 'Open on Deezer')
+                : null,
+            ),
+            el('p', { class: 'album-verdict' }, verdict,
+               availability ? el('span', { class: 'card-sub' }, ` ${availability.flac_count}/${availability.total} FLAC`) : null),
+            el('p', { class: 'hint' },
+               'Checking spends tracker budget. Nothing above this line has contacted a tracker.'),
+            el('div', { id: 'album-check-body' }),
+          ),
+        ),
+        el(
+          'div',
+          { class: 'table-scroll' },
+          el(
+            'table',
+            { class: 'table tracklist-table' },
+            el(
+              'thead',
               {},
-              el('span', { class: 'num' }, String(tr.number || '')),
               el(
-                'span',
-                { class: 'track-main' },
-                el('span', {}, tr.title || ''),
-                // Only worth showing when the track artist differs from the
-                // album artist, which is what a featured credit looks like.
-                tr.artist && tr.artist !== album.artist
-                  ? el('span', { class: 'card-sub' }, artistLink(tr.artist_id, tr.artist))
-                  : null,
+                'tr',
+                {},
+                el('th', { class: 'num-col' }, '#'),
+                el('th', {}, 'Track'),
+                el('th', {}, 'Featured artists'),
+                el('th', { class: 'dur-col' }, 'Length'),
               ),
-              tr.explicit ? el('span', { class: 'tag dim' }, 'E') : null,
-              el('span', { class: 'dur' }, duration(tr.duration)),
+            ),
+            el(
+              'tbody',
+              {},
+              ...(album.tracks || []).map((tr) =>
+                el(
+                  'tr',
+                  {},
+                  el('td', { class: 'num-col' }, String(tr.number || '')),
+                  el(
+                    'td',
+                    {},
+                    el('span', { class: 'track-title' }, tr.title || ''),
+                    tr.explicit ? el('span', { class: 'tag dim explicit-tag' }, 'E') : null,
+                  ),
+                  // The private records name the whole cast; the public ones
+                  // name only the headline act, so this is blank without an ARL.
+                  el(
+                    'td',
+                    { class: 'featured-col' },
+                    (tr.featured || []).join(', ')
+                      || (tr.artist && tr.artist !== album.artist ? tr.artist : '—'),
+                  ),
+                  el('td', { class: 'dur-col' }, duration(tr.duration)),
+                ),
+              ),
             ),
           ),
         ),
-        ].filter((n) => n !== null && n !== undefined),
       );
     } catch (e) {
-      body.replaceChildren(empty(e.message));
+      pane.replaceChildren(empty(e.message));
     }
+  }
+
+  // Trackers to ask, from the pickers the rest of the app already uses.
+  function checkTrackers() {
+    const picked = [...state.missingTrackers];
+    return picked.length ? picked : state.trackers.map((t) => t.code);
   }
 
   // ------------------------------------------------------ per-album check
@@ -781,7 +915,6 @@
     const needle = `${album.artist} - ${album.title}`.toLowerCase();
     const existing = folders.find((f) => f.name.toLowerCase().startsWith(needle.slice(0, 40)));
 
-    $('#detail').hidden = true;
     if (existing) {
       setView('uploads');
       startUpload(existing.path, trackers);
@@ -863,22 +996,58 @@
   async function download(albumId) {
     try {
       const result = await api('/api/download', { method: 'POST', body: { album_id: String(albumId) } });
-      if (result.failed?.length) toast(result.failed[0].error, 'bad');
-      else {
-        toast('Queued for download', 'ok');
-        pollDownloads(true);
+      if (result.failed?.length) {
+        toast(result.failed[0].error, 'bad');
+        return null;
       }
+      toast('Queued for download', 'ok');
+      pollDownloads(true);
+      return result.queued?.[0] || null;
     } catch (e) {
       toast(e.message, 'bad');
+      return null;
     }
   }
 
-  // Queue the download, then hand off to Uploads with the trackers preselected.
-  async function downloadAndUpload(albumId, item) {
-    await download(albumId);
-    state.pendingUpload = { albumId, name: `${item?.artist || ''} - ${item?.title || ''}`.trim() };
-    toast('Downloading. It will appear under Uploads when it finishes.');
-    setView('downloads');
+  // Resolve once a download job stops moving, with the job itself, so the
+  // caller knows where the files landed.
+  function waitForDownload(jobId) {
+    return new Promise((resolve) => {
+      const tick = async () => {
+        try {
+          const { jobs } = await api('/api/downloads');
+          const job = jobs.find((j) => j.id === jobId);
+          if (!job) return resolve(null);
+          if (job.status === 'done' || job.status === 'failed') return resolve(job);
+        } catch {
+          return resolve(null);
+        }
+        setTimeout(tick, 1500);
+      };
+      tick();
+    });
+  }
+
+  // Download, wait for it, then upload what it produced. Resolves only when the
+  // upload flow has finished, which is what lets a batch run one at a time.
+  async function downloadAndUpload(albumId, item, { quiet = false } = {}) {
+    const trackers = [...state.uploadTrackers];
+    if (!trackers.length) return toast('Pick at least one tracker under Uploads', 'bad');
+
+    const queued = await download(albumId);
+    if (!queued) return;
+    if (!quiet) {
+      toast('Downloading. The upload starts by itself when it finishes.');
+      setView('downloads');
+    }
+
+    const label = `${item?.artist || ''} - ${item?.title || ''}`.trim() || String(albumId);
+    const job = await waitForDownload(queued.id);
+    if (!job || job.status !== 'done' || !job.folder) {
+      return toast(`${label}: ${job?.error || 'download did not finish'}`, 'bad');
+    }
+    setView('uploads');
+    await startUpload(job.folder, trackers);
   }
 
   async function pollDownloads(immediate = false) {
@@ -1491,32 +1660,38 @@
       });
       if (dry_run) toast('Dry run: nothing reaches the tracker or the download client.');
       state.flows.add(flow_id);
-      followFlow(flow_id);
+      return await followFlow(flow_id);
     } catch (e) {
       toast(e.message, 'bad');
+      return null;
     }
   }
 
   // A flow is polled until it finishes. When it is waiting on a question the
   // question is rendered as real controls; answering resumes the pipeline.
+  // Resolves when the flow stops, so a queued batch can wait for one upload --
+  // including every question you answer during it -- before starting the next.
   function followFlow(flowId) {
-    const tick = async () => {
-      let flow;
-      try {
-        flow = await api(`/api/flows/${flowId}`);
-      } catch (e) {
-        toast(e.message, 'bad');
-        return;
-      }
-      renderFlow(flow);
-      if (flow.state === 'running' || flow.state === 'waiting') {
-        setTimeout(tick, flow.state === 'waiting' ? 900 : 500);
-      } else {
-        refreshStatus();
-        loadFolders();
-      }
-    };
-    tick();
+    return new Promise((resolve) => {
+      const tick = async () => {
+        let flow;
+        try {
+          flow = await api(`/api/flows/${flowId}`);
+        } catch (e) {
+          toast(e.message, 'bad');
+          return resolve(null);
+        }
+        renderFlow(flow);
+        if (flow.state === 'running' || flow.state === 'waiting') {
+          setTimeout(tick, flow.state === 'waiting' ? 900 : 500);
+        } else {
+          refreshStatus();
+          loadFolders();
+          resolve(flow);
+        }
+      };
+      tick();
+    });
   }
 
   // What is already in the group you are about to upload into. The question is
@@ -2170,11 +2345,6 @@
       setUploadFlag('upload.dry_run', e.target, 'Dry run'));
     $('#upload-yes-all').addEventListener('change', (e) =>
       setUploadFlag('upload.yes_all', e.target, 'Auto-answer prompts'));
-    $('#detail-close').addEventListener('click', () => ($('#detail').hidden = true));
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') $('#detail').hidden = true;
-    });
-
     refreshStatus();
     setInterval(refreshStatus, 15000);
   }
