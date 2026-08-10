@@ -115,6 +115,33 @@ async def main() -> int:
                              json={"changes": {"upload.web_interface.port": 9999}}) as r:
                 check("bootstrap key refused", r.status == 400)
 
+            # --- sizes are stored as bytes but spoken about in units ----
+            async with s.get(f"{BASE}/api/settings", headers=h) as r:
+                data = await r.json()
+                kinds = {f["key"]: f["kind"] for sec in data["sections"] for f in sec["fields"]}
+                check("log sizes are edited as a number and a unit",
+                      kinds.get("logging.max_file_bytes") == "bytes"
+                      and kinds.get("logging.max_total_bytes") == "bytes",
+                      str(kinds.get("logging.max_file_bytes")))
+
+            async with s.put(f"{BASE}/api/settings", headers=h,
+                             json={"changes": {"logging.max_file_bytes": 512 * 1024}}) as r:
+                data = await r.json()
+                check("a size saves as a plain byte count", r.status == 200, str(data.get("error", "")))
+            check("size applied to live config", lox.cfg.logging.max_file_bytes == 524288,
+                  str(lox.cfg.logging.max_file_bytes))
+
+            # The bound is a byte count in the schema; the complaint should not be.
+            async with s.put(f"{BASE}/api/settings", headers=h,
+                             json={"changes": {"logging.max_file_bytes": 1024}}) as r:
+                data = await r.json()
+                check("an out-of-range size is refused in the same units it is entered",
+                      r.status == 400 and "64 KB" in data.get("error", ""), data.get("error", ""))
+
+            async with s.put(f"{BASE}/api/settings", headers=h,
+                             json={"changes": {"logging.max_file_bytes": 8 * 1024 * 1024}}) as r:
+                check("size restored", r.status == 200)
+
             # --- tests that need no network -----------------------------
             async with s.post(f"{BASE}/api/settings/test/paths", headers=h) as r:
                 data = await r.json()

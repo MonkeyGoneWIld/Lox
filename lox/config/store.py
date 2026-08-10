@@ -30,6 +30,24 @@ def _split(key: str) -> list[str]:
     return key.split(".")
 
 
+def human_size(count: int) -> str:
+    """Render a byte count the way the settings page edits it.
+
+    Uses the largest unit that divides exactly, so 8388608 reads as ``8 MB``
+    rather than ``8192 KB`` or ``8.0 MB``.
+
+    Args:
+        count: Number of bytes.
+
+    Returns:
+        A number and a unit, e.g. ``1 GB``.
+    """
+    for unit, factor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
+        if count >= factor and count % factor == 0:
+            return f"{count // factor} {unit}"
+    return f"{count} B"
+
+
 def get_value(root: Any, key: str) -> Any:
     """Read a dotted key from a config object or nested dict.
 
@@ -111,7 +129,7 @@ def coerce(key: str, value: Any) -> Any:
         return None
 
     try:
-        if field.kind == "int":
+        if field.kind in ("int", "bytes"):
             value = int(value)
         elif field.kind == "float":
             value = float(value)
@@ -126,10 +144,15 @@ def coerce(key: str, value: Any) -> Any:
 
     if field.kind == "choice" and field.choices and value not in field.choices:
         raise SettingsError(f"{field.label}: must be one of {', '.join(field.choices)}")
+
+    def limit(number: float) -> str:
+        """Render a bound the same way the field is edited."""
+        return human_size(int(number)) if field.kind == "bytes" else str(number)
+
     if field.minimum is not None and isinstance(value, int | float) and value < field.minimum:
-        raise SettingsError(f"{field.label}: must be at least {field.minimum}")
+        raise SettingsError(f"{field.label}: must be at least {limit(field.minimum)}")
     if field.maximum is not None and isinstance(value, int | float) and value > field.maximum:
-        raise SettingsError(f"{field.label}: must be at most {field.maximum}")
+        raise SettingsError(f"{field.label}: must be at most {limit(field.maximum)}")
 
     return value
 
