@@ -1050,6 +1050,21 @@
     await startUpload(job.folder, trackers);
   }
 
+  // Deleting a release is not undoable, so it asks first and names what it is
+  // about to remove rather than saying "are you sure".
+  async function deleteFolder(path, name, after) {
+    if (!confirm(`Delete "${name}"?\n\n${path}\n\nThis removes the files from disk and cannot be undone.`)) {
+      return;
+    }
+    try {
+      await api('/api/folders/delete', { method: 'POST', body: { folder: path } });
+      toast(`Deleted ${name}`, 'ok');
+      await after?.();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
   async function pollDownloads(immediate = false) {
     if (state.pollers.has('downloads') && !immediate) return;
     const tick = async () => {
@@ -1099,10 +1114,21 @@
           ),
           el(
             'div',
-            {},
+            { class: 'row dl-actions' },
             job.status === 'queued'
               ? el('button', { class: 'ghost', onclick: () => cancelDownload(job.id) }, 'Cancel')
               : el('span', { class: `tag ${cls === 'done' ? 'ok' : cls === 'failed' ? 'bad' : 'dim'}` }, `${job.percent}%`),
+            // Only once there is something on disk to remove.
+            job.status === 'done' && job.folder
+              ? el(
+                  'button',
+                  {
+                    class: 'danger',
+                    onclick: () => deleteFolder(job.folder, job.title || job.folder, () => pollDownloads(true)),
+                  },
+                  'Delete',
+                )
+              : null,
           ),
         );
       }),
@@ -1638,6 +1664,8 @@
                   'td',
                   {},
                   el('button', { class: 'primary', onclick: () => startUpload(f.path) }, 'Upload'),
+                  el('button', { class: 'danger', onclick: () => deleteFolder(f.path, f.name, loadFolders) },
+                     'Delete'),
                 ),
               ),
             ),

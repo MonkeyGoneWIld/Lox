@@ -915,6 +915,33 @@ async def api_spectral_image(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(path)
 
 
+@routes.post("/api/folders/delete")
+async def api_folder_delete(request: web.Request) -> web.Response:
+    """Delete a release folder.
+
+    Irreversible, so it is gated the same way uploading is: the path has to
+    resolve inside the download or seeding directories, which stops a crafted
+    request from pointing lox at something else. It refuses to delete a root
+    itself -- emptying your whole library should never be one request.
+    """
+    body = await request.json()
+    try:
+        path = resolve_release_path(request.app, body.get("folder", ""))
+    except ValueError as e:
+        return error(str(e))
+
+    if path in allowed_roots(request.app):
+        return error("that is the download directory itself, not a release in it")
+
+    try:
+        await asyncio.to_thread(shutil.rmtree, path)
+    except OSError as e:
+        return error(f"could not delete {path}: {e}", status=500)
+
+    debug.log("deleted release folder %s", path, level=20)
+    return json_response({"deleted": path})
+
+
 @routes.get("/api/folders")
 async def api_folders(request: web.Request) -> web.Response:
     """List release folders sitting in the download directory."""
