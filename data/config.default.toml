@@ -214,6 +214,11 @@ session = 'get-from-site-cookie'
 # # web interface settings
 # host = "127.0.0.1"
 # port = 5015
+# # Shared secret required by every request. Minimum 16 characters:
+# #   openssl rand -hex 32
+# # The UI asks for it on first load and stores an httpOnly cookie for 30 days.
+# # Leave unset only while host stays on loopback.
+# auth_token = ''
 # # Keep this below 32768. Ports in the ephemeral range (see
 # # /proc/sys/net/ipv4/ip_local_port_range) can be transiently taken by an
 # # outbound connection, which makes container port binding fail at random.

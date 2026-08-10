@@ -42,6 +42,12 @@
       ...options,
       body: options.body ? JSON.stringify(options.body) : undefined,
     });
+    // The session cookie expired or was cleared: bounce to the login page
+    // rather than showing every panel an "authentication required" error.
+    if (response.status === 401) {
+      location.replace(`/login?next=${encodeURIComponent(location.pathname + location.search)}`);
+      throw new Error('Session expired');
+    }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
     return data;
@@ -1150,10 +1156,26 @@
           el('button', { onclick: () => clearHistory('requests') }, 'Clear request history'),
         ),
         el('p', { class: 'hint' }, 'Clearing history makes the next scan re-check everything, which costs tracker budget again.'),
+        el('h2', {}, 'Session'),
+        el(
+          'div',
+          { class: 'row' },
+          el('button', { onclick: signOut }, 'Sign out of this browser'),
+        ),
+        el('p', { class: 'hint' }, 'Clears the session cookie. You will be asked for the access token again.'),
       );
     } catch (e) {
       body.replaceChildren(empty(e.message));
     }
+  }
+
+  async function signOut() {
+    try {
+      await api('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // Either way the cookie is gone or never existed; go to the login page.
+    }
+    location.replace('/login');
   }
 
   async function clearHistory(collection) {

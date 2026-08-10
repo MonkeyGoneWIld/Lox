@@ -21,6 +21,7 @@ clean_tmp_dir = true
 host = '0.0.0.0'
 port = 5015
 # Must match LOX_AUTH_TOKEN in your .env. Minimum 16 characters.
+# The UI asks for this on first load and remembers it in a cookie for 30 days.
 auth_token = 'CHANGE-ME-openssl-rand-hex-32'
 
 # ===============================

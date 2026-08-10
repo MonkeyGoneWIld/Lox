@@ -388,6 +388,44 @@ button.ghost { background: none; }
 
 .empty { color: var(--text-dim); text-align: center; padding: 44px 0; }
 
+/* ---------- login ---------- */
+
+.login-body {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.login-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 32px;
+  width: min(400px, 100%);
+  text-align: center;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+}
+
+.login-logo { width: 56px; height: 56px; border-radius: 12px; }
+.login-card h1 { margin: 12px 0 6px; font-size: 24px; letter-spacing: -0.02em; }
+.login-card .hint { text-align: left; }
+.login-card form { display: flex; flex-direction: column; gap: 12px; margin-top: 18px; }
+.login-card input[type="password"] { text-align: center; letter-spacing: 0.06em; }
+.login-card .check { justify-content: center; }
+
+.login-error {
+  background: rgba(239, 74, 74, 0.14);
+  color: var(--bad);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  margin: 14px 0 0;
+}
+
+.login-foot { margin: 18px 0 0; font-size: 12px; }
+.login-foot code { background: var(--bg-input); border-radius: 4px; padding: 1px 5px; }
+
 /* ---------- per-album tracker check ---------- */
 
 .checkbox-panel {
