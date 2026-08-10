@@ -19,7 +19,7 @@ clean_tmp_dir = true
 # 0.0.0.0 is required inside a container so the port publish works. The auth
 # token below is what actually protects it.
 host = '0.0.0.0'
-port = 55015
+port = 5015
 # Must match LOX_AUTH_TOKEN in your .env. Minimum 16 characters.
 auth_token = 'CHANGE-ME-openssl-rand-hex-32'
 

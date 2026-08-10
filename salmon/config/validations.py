@@ -171,7 +171,7 @@ class UploadDescription(BaseStruct):
 
 class UploadWebInterface(BaseStruct):
     host: str = "127.0.0.1"
-    port: int = 55015
+    port: int = 5015
     static_root_url: str = "/static"
     # Shared secret required by every API call. Unset means no authentication,
     # which is only safe while host stays on loopback: the API can spend tracker

@@ -213,7 +213,10 @@ session = 'get-from-site-cookie'
 # [upload.web_interface]
 # # web interface settings
 # host = "127.0.0.1"
-# port = 55015
+# port = 5015
+# # Keep this below 32768. Ports in the ephemeral range (see
+# # /proc/sys/net/ipv4/ip_local_port_range) can be transiently taken by an
+# # outbound connection, which makes container port binding fail at random.
 # static_root_url = "/static"
 
 # [upload.requests]
