@@ -390,7 +390,7 @@ async def api_debug_clear(request: web.Request) -> web.Response:
 
 
 @routes.get("/api/debug/logfile")
-async def api_debug_logfile(request: web.Request) -> web.Response:
+async def api_debug_logfile(request: web.Request) -> web.StreamResponse:
     """Download the active rolling log file.
 
     Already redacted on the way in, so it is safe to share as-is.
