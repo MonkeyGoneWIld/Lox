@@ -25,6 +25,8 @@
     selectedCandidates: new Set(),
     missingTrackers: new Set(),
     requestsTracker: null,
+    requestFilters: null,
+    requestFiltersFor: null,
     uploadTrackers: new Set(),
     albumCheck: null,
     watchlists: [],
@@ -95,6 +97,7 @@
     $('#view-title').textContent = $(`.nav-item[data-view="${view}"]`).textContent.trim();
     if (view === 'explore') loadExplore();
     if (view === 'missing') loadWatchlists();
+    if (view === 'requests' && state.requestFiltersFor !== state.requestsTracker) loadRequestFilters();
     if (view === 'downloads') pollDownloads(true);
     if (view === 'uploads') { loadFolders(); resumeFlows(); }
     if (view === 'settings') loadSettings();
@@ -202,6 +205,7 @@
             onclick: () => {
               state.requestsTracker = t.code;
               renderTrackerPickers();
+              loadRequestFilters();
             },
           },
           t.code,
@@ -1036,18 +1040,169 @@
 
   // ---------------------------------------------------------------- requests
 
-  // What a fetch will cost, before you spend it. The tracker pages at 25.
+  // A labelled field with optional help, matching the settings page.
+  function filterField(id, label, control, help) {
+    return el(
+      'div',
+      { class: 'setting' },
+      el('label', { for: id }, label),
+      control,
+      help ? el('p', { class: 'hint setting-help' }, help) : null,
+    );
+  }
+
+  // A short list becomes checkboxes you can see; a long one becomes a
+  // multi-select. Either way the options come from the tracker, not from us.
+  function filterChoices(id, label, options, help) {
+    const box = el(
+      'div',
+      { class: 'checkgroup', id },
+      ...options.map((name) =>
+        el('label', { class: 'check' }, el('input', { type: 'checkbox', value: name, onchange: requestsCost }), name),
+      ),
+    );
+    return filterField(id, label, box, help);
+  }
+
+  const chosen = (id) => [...$$(`#${id} input:checked`)].map((i) => i.value);
+
+  // Rebuilt whenever the tracker changes: RED and OPS do not offer the same
+  // filters, and showing one tracker's options while the other is selected
+  // would be showing something that cannot be sent.
+  async function loadRequestFilters() {
+    const host = $('#requests-filters');
+    if (!state.requestsTracker) {
+      host.replaceChildren(empty('No tracker configured.'));
+      return;
+    }
+    let spec;
+    try {
+      spec = await api(`/api/requests/filters?tracker=${encodeURIComponent(state.requestsTracker)}`);
+    } catch (e) {
+      host.replaceChildren(empty(e.message));
+      return;
+    }
+    state.requestFilters = spec;
+
+    const fields = [
+      filterField(
+        'requests-search',
+        'Search',
+        el('input', { type: 'search', id: 'requests-search', placeholder: 'Artist, album or both' }),
+        'Matched against artist and title. Blank lists everything open.',
+      ),
+      filterField(
+        'requests-tags',
+        'Tags',
+        el('input', { type: 'search', id: 'requests-tags', placeholder: 'hip.hop, jazz' }),
+        "Comma separated, in the tracker's own spelling — dots, not spaces.",
+      ),
+      filterField(
+        'requests-tags-mode',
+        'Tag match',
+        el(
+          'select',
+          { id: 'requests-tags-mode' },
+          el('option', { value: 'any' }, 'Any of these tags'),
+          el('option', { value: 'all' }, 'All of these tags'),
+        ),
+      ),
+    ];
+
+    if (spec.formats.length) fields.push(filterChoices('requests-format', 'Format', spec.formats));
+    if (spec.media.length) fields.push(filterChoices('requests-media', 'Media', spec.media));
+    if (spec.encodings.length) fields.push(filterChoices('requests-encoding', 'Encoding', spec.encodings));
+    if (spec.release_types.length) {
+      fields.push(filterChoices('requests-release-type', 'Release type', spec.release_types));
+    }
+    if (spec.bounty) {
+      fields.push(
+        filterField(
+          'requests-bounty-min',
+          'Bounty (GiB)',
+          el(
+            'div',
+            { class: 'row' },
+            el('input', { type: 'text', id: 'requests-bounty-min', placeholder: 'min' }),
+            el('input', { type: 'text', id: 'requests-bounty-max', placeholder: 'max' }),
+          ),
+          'In GiB. Add M or T for MiB or TiB.',
+        ),
+      );
+    }
+
+    fields.push(
+      filterField(
+        'requests-limit',
+        'How many to fetch',
+        el(
+          'select',
+          { id: 'requests-limit', onchange: requestsCost },
+          ...[25, 50, 100, 200, 500].map((n) =>
+            el(
+              'option',
+              { value: String(n), selected: n === 100 },
+              `${n} — ${Math.ceil(n / (spec.page_size || 25))} page${n > spec.page_size ? 's' : ''}`,
+            ),
+          ),
+        ),
+        `${state.requestsTracker} serves ${spec.page_size} per page, and each page is one call.`,
+      ),
+    );
+
+    const toggles = [
+      el('label', { class: 'check' }, el('input', { type: 'checkbox', id: 'requests-show-filled' }), 'Include filled'),
+      el(
+        'label',
+        { class: 'check', title: 'Return only what is ticked, rather than merely preferring it' },
+        el('input', { type: 'checkbox', id: 'requests-strict', checked: true }),
+        'Only the ticked values',
+      ),
+    ];
+    if (spec.include_old) {
+      toggles.push(
+        el('label', { class: 'check' }, el('input', { type: 'checkbox', id: 'requests-include-old' }), 'Include old'),
+      );
+    }
+    if (spec.descriptions) {
+      toggles.push(
+        el(
+          'label',
+          { class: 'check' },
+          el('input', { type: 'checkbox', id: 'requests-descriptions' }),
+          'Search descriptions too',
+        ),
+      );
+    }
+
+    host.replaceChildren(...fields, el('div', { class: 'setting filter-toggles' }, el('label', {}, 'Options'),
+      el('div', { class: 'row' }, ...toggles)));
+    if (!spec.mapped && spec.note) {
+      host.append(el('p', { class: 'hint setting-help filter-note' }, spec.note));
+    }
+    for (const id of ['requests-search', 'requests-tags']) {
+      $(`#${id}`).addEventListener('keydown', (e) => e.key === 'Enter' && requestsFetch());
+    }
+    state.requestFiltersFor = state.requestsTracker;
+    requestsCost();
+  }
+
+  // What a fetch will cost, before you spend it.
   function requestsCost() {
-    const limit = Number($('#requests-limit').value) || 25;
-    const pages = Math.ceil(limit / 25);
+    const limitEl = $('#requests-limit');
+    if (!limitEl) return;
+    const size = state.requestFilters?.page_size || 25;
+    const pages = Math.ceil((Number(limitEl.value) || size) / size);
     const budget = state.trackers.find((t) => t.code === state.requestsTracker);
     const note = `Costs up to ${pages} call${pages === 1 ? '' : 's'}`;
     $('#requests-cost').textContent = budget ? `${note} of ${budget.remaining} left on ${budget.code}.` : `${note}.`;
   }
 
+  const ticked = (id) => !!$(`#${id}`)?.checked;
+
   async function requestsFetch() {
     if (!state.requestsTracker) return toast('No tracker configured', 'bad');
-    const limit = Number($('#requests-limit').value) || 25;
+    const limit = Number($('#requests-limit')?.value) || 25;
     const container = $('#requests-results');
     container.replaceChildren(spinner(`Fetching up to ${limit} open requests`));
     try {
@@ -1056,9 +1211,23 @@
         search: $('#requests-search').value,
         tags: $('#requests-tags').value,
         tags_all: $('#requests-tags-mode').value === 'all' ? '1' : '0',
-        show_filled: $('#requests-show-filled').checked ? '1' : '0',
+        show_filled: ticked('requests-show-filled') ? '1' : '0',
+        strict: ticked('requests-strict') ? '1' : '0',
+        include_old: ticked('requests-include-old') ? '1' : '0',
+        descriptions: ticked('requests-descriptions') ? '1' : '0',
+        bounty_min: $('#requests-bounty-min')?.value || '',
+        bounty_max: $('#requests-bounty-max')?.value || '',
         limit: String(limit),
       });
+      // Repeated keys, one per ticked box.
+      for (const [key, id] of [
+        ['format', 'requests-format'],
+        ['media', 'requests-media'],
+        ['encoding', 'requests-encoding'],
+        ['release_type', 'requests-release-type'],
+      ]) {
+        for (const value of chosen(id)) params.append(key, value);
+      }
       const { requests, calls, complete } = await api(`/api/requests/list?${params}`);
       state.requestRows = requests;
       state.selectedRequests = new Set(requests.map((r) => r.id));
@@ -1844,9 +2013,6 @@
       renderCandidates();
     });
     $('#requests-fetch').addEventListener('click', requestsFetch);
-    $('#requests-limit').addEventListener('change', requestsCost);
-    $('#requests-search').addEventListener('keydown', (e) => e.key === 'Enter' && requestsFetch());
-    $('#requests-tags').addEventListener('keydown', (e) => e.key === 'Enter' && requestsFetch());
     $('#requests-check').addEventListener('click', requestsCheck);
     $('#requests-file').addEventListener('change', async (e) => {
       const file = e.target.files?.[0];

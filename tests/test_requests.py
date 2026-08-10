@@ -111,17 +111,61 @@ async def main() -> int:
     sent = gw.calls[0]
     check("search is sent", sent.get("search") == "prairie rose", str(sent.get("search")))
     check("tags are sent", sent.get("tags") == "country, folk", str(sent.get("tags")))
-    check("tag match mode is sent as all", sent.get("tags_type") == 1, str(sent.get("tags_type")))
     check("filled requests excluded by default", sent.get("show_filled") == "false", str(sent.get("show_filled")))
-
-    gw = FakeGateway(total=25)
-    await checker_for(gw).collect_requests("RED", tags="jazz", limit=25)
-    check("tag match mode defaults to any", gw.calls[0].get("tags_type") == 0, str(gw.calls[0].get("tags_type")))
-    check("no tags means no tag parameters", "tags" not in FakeGateway(total=1).calls)
 
     gw = FakeGateway(total=25)
     await checker_for(gw).collect_requests("RED", show_filled=True, limit=25)
     check("filled requests can be asked for", gw.calls[0].get("show_filled") == "true")
+
+    # --- the two trackers do not speak the same language ------------------
+    # Transcribed from the live search forms. Getting these wrong does not
+    # error, it searches for something else -- RED's WEB is OPS's CD-adjacent
+    # DAT -- so each one is pinned.
+    from lox.checker.request_filters import build_params, schema
+
+    red = build_params("RED", tags="jazz", tags_all=True, media=["WEB"], encodings=["Lossless"], formats=["FLAC"])
+    ops = build_params("OPS", tags="jazz", tags_all=True, media=["WEB"], encodings=["Lossless"], formats=["FLAC"])
+
+    check("RED names the tag mode tags_type", red.get("tags_type") == "1", str(red.get("tags_type")))
+    check("OPS names it tag_mode", ops.get("tag_mode") == "all", str(ops.get("tag_mode")))
+    check("RED is not sent OPS's tag parameter", "tag_mode" not in red)
+    check("OPS is not sent RED's tag parameter", "tags_type" not in ops)
+
+    check("WEB is 7 on RED", red.get("media[]") == [7], str(red.get("media[]")))
+    check("WEB is 1 on OPS", ops.get("media[]") == [1], str(ops.get("media[]")))
+    check("Lossless is 8 on RED", red.get("bitrates[]") == [8], str(red.get("bitrates[]")))
+    check("Lossless is 0 on OPS", ops.get("bitrates[]") == [0], str(ops.get("bitrates[]")))
+    check("FLAC happens to agree at 1", red.get("formats[]") == [1] and ops.get("formats[]") == [1])
+
+    check("RED spells the strict flag bitrate_strict", "bitrate_strict" in red, str(sorted(red)))
+    check("OPS spells it bitrates_strict", "bitrates_strict" in ops, str(sorted(ops)))
+
+    check("RED indexes the music category", red.get("filter_cat[1]") == 1, str(red.get("filter_cat[1]")))
+    check("OPS lists it", ops.get("filter_cat[]") == 0, str(ops.get("filter_cat[]")))
+
+    # Filters one tracker has and the other does not.
+    red_extra = build_params("RED", include_old=True, search_descriptions=True, bounty_min="5")
+    ops_extra = build_params("OPS", include_old=True, search_descriptions=True, bounty_min="5")
+    check("include-old is RED only", "showall" in red_extra and "showall" not in ops_extra)
+    check("description search is RED only",
+          "include_descriptions" in red_extra and "include_descriptions" not in ops_extra)
+    check("a bounty floor is OPS only", ops_extra.get("bounty_min") == "5" and "bounty_min" not in red_extra)
+
+    # A label the tracker does not have must be dropped, never translated.
+    check("an unknown label is dropped rather than mistranslated",
+          "media[]" not in build_params("RED", media=["BD"]), str(build_params("RED", media=["BD"])))
+
+    # --- an unmapped tracker gets only what needs no IDs ------------------
+    unknown = build_params("DIC", tags="jazz", tags_all=True, media=["WEB"], encodings=["Lossless"])
+    check("an unmapped tracker sends no ID filters", "media[]" not in unknown and "bitrates[]" not in unknown,
+          str(sorted(unknown)))
+    check("an unmapped tracker gets both tag spellings",
+          unknown.get("tags_type") == 1 and unknown.get("tag_mode") == "all", str(unknown))
+    check("the schema says so rather than pretending", schema("DIC")["mapped"] is False)
+    check("the schema explains why", "verified" in schema("DIC")["note"])
+    check("a mapped schema offers its own options",
+          "WEB" in schema("RED")["media"] and schema("RED")["bounty"] is False)
+    check("OPS advertises its bounty filter", schema("OPS")["bounty"] is True)
 
     # --- the rows are shaped for the table -------------------------------
     gw = FakeGateway(total=1)

@@ -243,6 +243,22 @@ does exist, and the uid it is running as, rather than only saying the path is mi
 Outside Docker, `config.toml` is looked for at the repo root, then `~/.config/lox/`, then `~/.config/smoked-salmon/` —
 upstream's location, still read so an existing install keeps working. Nothing is ever written there.
 
+### Request filters
+
+The Requests tab builds its own filters from whichever tracker is selected, because the two do not agree. Both run
+Gazelle and both search pages look identical, but the parameter names differ and so do the numeric IDs behind the
+labels — media `WEB` is `7` on RED and `1` on OPS, encoding `Lossless` is `8` on RED and `0` on OPS, and the tag mode
+is `tags_type=0|1` on one and `tag_mode=any|all` on the other. A shared table would not fail on one of them; it would
+succeed with the wrong filter and report nothing unusual.
+
+`lox/checker/request_filters.py` holds one vocabulary per tracker, transcribed from their live search pages rather
+than from the Gazelle source, so it matches what those sites are running. RED alone offers *include old* and
+*search descriptions*; OPS alone offers a bounty range. A tracker with no entry there — DIC — gets only the filters
+that need no IDs, and the UI says so rather than offering options that would search for the wrong thing.
+
+Each page of results is one tracker call and holds 25 requests, so the fetch count is a deliberate choice with its
+cost shown next to the button.
+
 ### Getting your ARL
 
 Log into Deezer, open developer tools → Application → Cookies → `https://www.deezer.com`, and copy the `arl` value. It
