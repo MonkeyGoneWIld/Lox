@@ -34,12 +34,46 @@ _BRACKET = re.compile(r"\[([A-Za-z])\]([A-Za-z]*)")
 # with the id and the url on the same logical line. Capturing them turns
 # "paste a URL" into a row of buttons.
 _GROUP_LINE = re.compile(r"^\s*\d+\s*>>\s*(\d+)\s*\|\s*(.+?)(?:\s*\|\s*(https?://\S+))?\s*$")
+# Metadata candidates print differently: "> 01 Artist - Title {Tracks: 14} | https://..."
+_RESULT_LINE = re.compile(r"^>?\s*(\d{1,2})\s+(.+?)(?:\s*\|\s*(https?://\S+))?\s*$")
+# Numbered menus, as used by downconversion: "  1. MP3 320"
+_MENU_LINE = re.compile(r"^\s*(\d{1,2}|\*)\.\s+(\S.*?)\s*$")
+# "(Options: ptpimg, catbox, ptscreens)" and "Your choices are OPS or [n]one."
+_PAREN_OPTIONS = re.compile(r"\(Options:\s*([^)]+)\)", re.IGNORECASE)
+_CHOICES_ARE = re.compile(r"choices are\s+([A-Za-z0-9]+(?:\s*(?:,|or)\s*[A-Za-z0-9]+)*)", re.IGNORECASE)
+# A prompt that only wants acknowledgement.
+_PRESS_ENTER = re.compile(r"press enter|once you are finished", re.IGNORECASE)
+# Space-separated id lists, which are a multi-select wearing a text box.
+_ID_LIST = re.compile(r"space-separated list of IDs", re.IGNORECASE)
 _SPECTRAL_EXT = (".png", ".jpg", ".jpeg")
 
 
 def strip_ansi(text: str) -> str:
     """Remove colour codes so prompt text can be shown as plain text."""
     return _ANSI.sub("", str(text or ""))
+
+
+def parse_extra_options(text: str) -> list[dict[str, Any]]:
+    """Recover options the pipeline states in prose rather than in brackets.
+
+    Two shapes appear in real runs: "(Options: ptpimg, catbox, ...)" when a
+    spectral upload fails, and "Your choices are OPS or [n]one" when offering
+    another tracker. Both were falling through to a text box.
+
+    Args:
+        text: The prompt text.
+
+    Returns:
+        Option dicts, empty when neither shape is present.
+    """
+    found: list[dict[str, Any]] = []
+    match = _PAREN_OPTIONS.search(text) or _CHOICES_ARE.search(text)
+    if match:
+        for raw in re.split(r"\s*(?:,|or)\s*", match[1]):
+            name = raw.strip().strip(".")
+            if name and not _BRACKET.match(name):
+                found.append({"value": name, "label": name})
+    return found
 
 
 def parse_options(text: str) -> list[dict[str, Any]]:
@@ -91,8 +125,9 @@ class FlowPrompts:
         self._saved: dict[str, Any] = {}
         # Group candidates printed since the last question, so the next prompt
         # can offer them instead of asking for a pasted URL.
-        self._groups: list[dict[str, Any]] = []
+        self._candidates: list[dict[str, Any]] = []
         self._line = ""
+        self._spectrals_ready = False
 
     async def _confirm(self, text: str, default: bool = True, abort: bool = False, **_: Any) -> bool:
         """Stand-in for click.confirm."""
@@ -116,7 +151,29 @@ class FlowPrompts:
         # Anything the pipeline listed just before asking becomes a real
         # option, so a found duplicate group is a button rather than a URL you
         # have to copy out of the log.
-        found, self._groups = self._groups, []
+        found, self._candidates = self._candidates, []
+        options = options or parse_extra_options(prompt)
+
+        # "Press enter once you are finished viewing" wants acknowledgement,
+        # not typing -- and it is the moment the spectrals are meant to be
+        # looked at, so they belong on this question.
+        if _PRESS_ENTER.search(prompt) and not options and not found:
+            await self.flow.choose(
+                prompt.split("[")[0].strip() or "Continue",
+                [{"value": "", "label": "Continue"}],
+                images=self._spectral_images(),
+            )
+            return default if default is not None else ""
+
+        # A space-separated list of IDs is a multi-select wearing a text box.
+        if _ID_LIST.search(prompt) and found:
+            picked = await self.flow.choose_many(
+                prompt.split("(")[0].strip().rstrip("?:,"),
+                found,
+                detail=prompt,
+                default=[o["value"] for o in found],
+            )
+            return " ".join(picked) if picked else "0"
 
         if options or found:
             question = prompt.split("[")[0].strip().rstrip("?:,") or "Choose an option"
@@ -125,14 +182,14 @@ class FlowPrompts:
                 found + options,
                 detail=prompt if prompt != question else "",
                 default=default_letter(prompt) or (str(default).lower() if default else None),
-                images=self._spectral_images() if "spectral" in prompt.lower() else [],
+                images=self._spectral_images() if self._wants_images(prompt) else [],
             )
             return chosen
 
         answer = await self.flow.text(
             prompt,
             default="" if default is None else str(default),
-            images=self._spectral_images() if "spectral" in prompt.lower() else [],
+            images=self._spectral_images() if self._wants_images(prompt) else [],
         )
         return answer if answer != "" else default
 
@@ -151,17 +208,33 @@ class FlowPrompts:
         if not text:
             return
 
-        match = _GROUP_LINE.match(text)
-        if match:
-            group_id, description, url = match[1], match[2].strip(), match[3]
-            self._groups.append(
-                {
-                    "value": url or group_id,
-                    "label": description[:90],
-                    "detail": url or f"group {group_id}",
-                }
+        group = _GROUP_LINE.match(text)
+        if group:
+            group_id, description, url = group[1], group[2].strip(), group[3]
+            self._candidates.append(
+                {"value": url or group_id, "label": description[:90], "detail": url or f"group {group_id}"}
             )
+        else:
+            # Metadata results and numbered menus are offered the same way: the
+            # pipeline wants the index back, so that is the option's value.
+            result = _RESULT_LINE.match(text) if text.startswith(">") else None
+            menu = _MENU_LINE.match(text)
+            if result:
+                index, description, url = result[1], result[2].strip(), result[3]
+                self._candidates.append(
+                    {"value": str(int(index)), "label": description[:90], "detail": url or ""}
+                )
+            elif menu and len(text) < 60:
+                self._candidates.append({"value": menu[1], "label": menu[2][:60], "detail": ""})
+
+        if "spectrals are available" in text.lower():
+            self._spectrals_ready = True
         self.flow.note(text)
+
+    def _wants_images(self, prompt: str) -> bool:
+        """Whether this question is one the spectrals inform."""
+        lowered = prompt.lower()
+        return "spectral" in lowered or "lossy master" in lowered or self._spectrals_ready
 
     def _spectral_images(self) -> list[str]:
         """URLs for the spectrals generated for this release, if any."""

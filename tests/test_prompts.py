@@ -4,7 +4,7 @@ import asyncio
 import sys
 
 from lox.flow import Flow
-from lox.upload_flow import FlowPrompts, default_letter, parse_options, strip_ansi
+from lox.upload_flow import FlowPrompts, default_letter, parse_extra_options, parse_options, strip_ansi
 
 results: list[tuple[str, bool, str]] = []
 
@@ -86,6 +86,70 @@ async def main() -> int:
     check("confirm becomes a confirm step", step3.kind == "confirm" and step3.default is True)
     flow3.answer(step3.id, False)
     check("confirm returns the answer", await asyncio.wait_for(task3, timeout=2) is False)
+
+    # --- prose options: spectral host retry and the next-tracker offer ---
+    hosts = parse_extra_options(
+        "Some spectrals failed to upload. Which image host would you like to retry with? "
+        "(Options: ptpimg, catbox, ptscreens, oeimg, imgbb, imgbox)"
+    )
+    check("host retry becomes buttons", [o["value"] for o in hosts] ==
+          ["ptpimg", "catbox", "ptscreens", "oeimg", "imgbb", "imgbox"], str(len(hosts)))
+
+    tracker = parse_extra_options("Would you like to upload to another tracker? Your choices are OPS or [n]one.")
+    check("next-tracker offer becomes buttons", [o["value"] for o in tracker] == ["OPS"], str(tracker))
+
+    # --- metadata results become buttons ------------------------------
+    flow4 = Flow("upload", "meta")
+    p4 = FlowPrompts(flow4)
+
+    async def meta():
+        p4._echo("Results for Deezer:")
+        p4._echo("> 01 Ryan Charles - Jiggy Buckaroo {Tracks: 14} | https://www.deezer.com/album/823528971")
+        return await p4._prompt(
+            'Which metadata results would you like to use? Other options: paste URLs, [m]anual, [a], '
+            'prefix choice or URL with "*" to indicate source (WEB)'
+        )
+
+    task4 = asyncio.create_task(meta())
+    step4 = await wait_for_step(flow4)
+    check("metadata result offered", step4.options[0]["value"] == "1", str(step4.options[0]))
+    check("metadata label readable", "Jiggy Buckaroo" in step4.options[0]["label"])
+    flow4.answer(step4.id, "1")
+    check("index returned to the pipeline", await asyncio.wait_for(task4, timeout=2) == "1")
+
+    # --- "press enter" becomes a Continue button ----------------------
+    flow5 = Flow("upload", "enter")
+    p5 = FlowPrompts(flow5)
+
+    async def press():
+        p5._echo("Spectrals are available at http://192.168.1.25:5015/spectrals")
+        return await p5._prompt("Press enter once you are finished viewing to continue the uploading process")
+
+    task5 = asyncio.create_task(press())
+    step5 = await wait_for_step(flow5)
+    check("press-enter is a single Continue button",
+          step5.kind == "choice" and [o["label"] for o in step5.options] == ["Continue"], str(step5.options))
+    flow5.answer(step5.id, "")
+    await asyncio.wait_for(task5, timeout=2)
+
+    # --- downconversion menu becomes a multi-select -------------------
+    flow6 = Flow("upload", "downconv")
+    p6 = FlowPrompts(flow6)
+
+    async def downconv():
+        p6._echo("  1. MP3 320")
+        p6._echo("  2. MP3 V0")
+        return await p6._prompt(
+            'Select formats to convert (space-separated list of IDs, "0" for none, "*" for all)', default="*"
+        )
+
+    task6 = asyncio.create_task(downconv())
+    step6 = await wait_for_step(flow6)
+    check("downconversion is a multi-select",
+          step6.kind == "multi" and [o["label"] for o in step6.options] == ["MP3 320", "MP3 V0"],
+          str([o["label"] for o in step6.options]))
+    flow6.answer(step6.id, ["1", "2"])
+    check("selection returned space-separated", await asyncio.wait_for(task6, timeout=2) == "1 2")
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
