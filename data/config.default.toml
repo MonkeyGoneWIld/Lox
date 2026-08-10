@@ -170,6 +170,12 @@ session = 'get-from-site-cookie'
 # # answers yes to all questions during upload. risky!
 # yes_all = false
 
+# # Do everything except the two irreversible steps: posting the torrent to the
+# # tracker and handing it to the download client. Tagging, renaming, spectrals,
+# # image uploads, hardlinking and .torrent creation all still run.
+# # Also available per-run as `lox up --dry-run` (-n) and as a toggle in the UI.
+# dry_run = false
+
 # # enable seedbox uploading
 # upload_to_seedbox = true
 

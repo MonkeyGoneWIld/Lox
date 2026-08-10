@@ -224,6 +224,12 @@ class Upload(BaseStruct):
 
     yes_all: bool = False
 
+    # Do everything except the two irreversible steps: posting the torrent to
+    # the tracker and handing it to the download client. Tagging, renaming,
+    # spectrals, image uploads, hardlinking and .torrent creation all still run,
+    # so you can inspect the result before committing to it.
+    dry_run: bool = False
+
     upload_to_seedbox: bool = True
 
     # TODO: take these out of the upload struct!

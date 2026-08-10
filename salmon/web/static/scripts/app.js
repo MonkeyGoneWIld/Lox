@@ -1077,14 +1077,16 @@
     const targets = trackers && trackers.length ? trackers : [...state.uploadTrackers];
     if (!targets.length) return toast('Pick at least one tracker', 'bad');
 
+    const dryRun = $('#upload-dry-run').checked;
     $('#upload-console-panel').hidden = false;
     $('#upload-console').textContent = '';
     try {
       const { job_id, linking } = await api('/api/upload', {
         method: 'POST',
-        body: { folder, trackers: targets },
+        body: { folder, trackers: targets, dry_run: dryRun },
       });
-      if (linking && targets.length > 1) toast(`Hardlinking one folder per tracker: ${targets.join(', ')}`);
+      if (dryRun) toast('Dry run: nothing will reach the tracker or the download client.');
+      else if (linking && targets.length > 1) toast(`Hardlinking one folder per tracker: ${targets.join(', ')}`);
       state.uploadJob = job_id;
       followJob(job_id, {
         interval: 700,

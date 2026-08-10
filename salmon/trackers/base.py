@@ -551,12 +551,43 @@ class BaseGazelleApi:
             files: FormData containing files to upload.
 
         Returns:
-            Tuple of (torrent_id, group_id).
+            Tuple of (torrent_id, group_id). In a dry run the torrent ID is 0.
         """
+        if cfg.upload.dry_run:
+            return self._log_dry_run_upload(data)
         if getattr(self, "api_key", None):
             return await self.api_key_upload(data, files)
         else:
             return await self.site_page_upload(data, files)
+
+    def _log_dry_run_upload(self, data: dict) -> tuple[int, int]:
+        """Print what would have been posted, and return placeholder IDs.
+
+        Args:
+            data: The upload form data that was assembled.
+
+        Returns:
+            Tuple of (0, group id from the payload or 0).
+        """
+        click.secho(f"\n[DRY RUN] Not uploading to {self.site_string}. Would have posted:", fg="yellow", bold=True)
+        interesting = (
+            "type", "artists", "title", "year", "releasetype", "format", "bitrate", "media",
+            "remaster_year", "remaster_title", "remaster_record_label", "remaster_catalogue_number",
+            "tags", "groupid", "requestid", "scene", "vanity_house",
+        )
+        for key in interesting:
+            value = data.get(key)
+            if value not in (None, "", [], False):
+                click.secho(f"  {key:28} {value}", fg="yellow")
+        description = data.get("album_desc") or data.get("release_desc") or ""
+        if description:
+            click.secho(f"  description                  {len(str(description))} chars", fg="yellow")
+        click.secho("[DRY RUN] No torrent was uploaded and no request was filled.\n", fg="yellow", bold=True)
+        try:
+            group_id = int(data.get("groupid") or 0)
+        except (TypeError, ValueError):
+            group_id = 0
+        return 0, group_id
 
     async def report_lossy_master(self, torrent_id: int, comment: str, source: str) -> bool:
         """Report torrent for lossy master/web approval.
@@ -572,6 +603,12 @@ class BaseGazelleApi:
         Raises:
             RequestError: If report fails.
         """
+        if cfg.upload.dry_run:
+            click.secho(
+                f"[DRY RUN] Not filing a lossy master report on {self.site_string} for torrent {torrent_id}.",
+                fg="yellow",
+            )
+            return True
         await self.ensure_authenticated()
         url = self.base_url + "/reportsv2.php"
         params = {"action": "takereport"}
@@ -605,6 +642,12 @@ class BaseGazelleApi:
         Raises:
             RequestError: If edit fails.
         """
+        if cfg.upload.dry_run:
+            click.secho(
+                f"[DRY RUN] Not editing the description of torrent {torrent_id} on {self.site_string}.",
+                fg="yellow",
+            )
+            return
         await self.ensure_authenticated()
         current_details = await self.request("torrent", params={"id": torrent_id})
         new_data = {

@@ -761,6 +761,7 @@ async def api_upload(request: web.Request) -> web.Response:
 
     source = body.get("source", "WEB")
     auto_rename = bool(body.get("auto_rename", True))
+    dry_run = bool(body.get("dry_run", False))
     jobs: JobRegistry = request.app["jobs"]
 
     async def run(job) -> None:
@@ -783,6 +784,8 @@ async def api_upload(request: web.Request) -> web.Response:
             args = ["up", target, "--source", source, "--tracker", tracker]
             if auto_rename:
                 args.append("--auto-rename")
+            if dry_run:
+                args.append("--dry-run")
             code = await _run_cli(job, args)
             if code != 0:
                 job.write_log(f"[{tracker}] exited with code {code}")
@@ -792,8 +795,11 @@ async def api_upload(request: web.Request) -> web.Response:
         if failures:
             job.error = f"{failures} of {len(trackers)} tracker upload(s) failed"
 
-    job = jobs.spawn("upload", f"Uploading {os.path.basename(folder)} to {', '.join(trackers)}", run)
-    return json_response({"job_id": job.id, "trackers": trackers, "linking": cfg.linking.enabled})
+    verb = "Dry run of" if dry_run else "Uploading"
+    job = jobs.spawn("upload", f"{verb} {os.path.basename(folder)} to {', '.join(trackers)}", run)
+    return json_response(
+        {"job_id": job.id, "trackers": trackers, "linking": cfg.linking.enabled, "dry_run": dry_run}
+    )
 
 
 @routes.post("/api/jobs/{job_id}/input")
