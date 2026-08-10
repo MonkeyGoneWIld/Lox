@@ -1,5 +1,6 @@
 import os
 import shutil
+import sys
 
 import asyncclick as click
 import msgspec
@@ -136,26 +137,47 @@ def setup_config():
         # A container can be configured purely from compose. If the environment
         # supplies the bootstrap settings, run without a config file at all -
         # everything else is set in the UI and stored in settings.toml.
-        required = ("directory", "upload")
-        if all(section in env for section in required) and "download_directory" in env["directory"]:
+        missing = [
+            name
+            for name, key in (
+                ("LOX_DOWNLOAD_DIR", ("directory", "download_directory")),
+                ("LOX_TORRENTS_DIR", ("directory", "dottorrents_dir")),
+            )
+            if key[1] not in env.get(key[0], {})
+        ]
+        if not missing:
             click.secho("No config.toml; using bootstrap settings from the environment.", fg="cyan")
             return msgspec.convert(env, type=Cfg, strict=False)
+        if env:
+            click.secho(
+                f"Partial environment bootstrap: still need {', '.join(missing)}.",
+                fg="red",
+            )
         cfg_path = get_user_cfg_path()
         attempted_default_cfg = os.path.join(os.path.dirname(cfg_path), "config.default.toml")
 
         click.secho(f"Could not find configuration path at {cfg_path}.", fg="red")
+        click.secho(
+            "Set the LOX_* environment variables (LOX_HOST, LOX_PORT, LOX_AUTH_TOKEN, "
+            "LOX_DOWNLOAD_DIR, LOX_TORRENTS_DIR) or provide a config.toml.",
+            fg="yellow",
+        )
         if os.path.exists(attempted_default_cfg):
             click.secho(
                 "Hint: Create a config by copying config.default.toml to config.toml.",
                 fg="yellow",
             )
+        elif sys.stdin.isatty():
+            # Only ask when someone is there to answer. In a container this
+            # prompt aborts instantly, and the abort used to mask the real
+            # error behind a confusing traceback and a restart loop.
+            if click.confirm(f"Do you want lox to create a default config file at {attempted_default_cfg}?"):
+                _try_creating_config(get_default_config_path(), attempted_default_cfg)
         else:
-            user_choice = click.confirm(
-                f"Do you want lox to create a default config file at {attempted_default_cfg}?"
+            click.secho(
+                "Running without a terminal, so not prompting to create one.",
+                fg="yellow",
             )
-            if user_choice:
-                default_cfg = get_default_config_path()
-                _try_creating_config(default_cfg, attempted_default_cfg)
         exit(-1)
 
     cfg = _parse_config(path)
