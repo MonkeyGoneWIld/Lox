@@ -3,18 +3,18 @@ import shutil
 
 import asyncclick as click
 
-import salmon.commands
-import salmon.converter
-import salmon.database
-import salmon.images
-import salmon.search
-import salmon.tagger
-import salmon.uploader
-import salmon.web
-from salmon import cfg
-from salmon.common import commandgroup
-from salmon.errors import FilterError, LoginError, UploadError
-from salmon.release_notification import show_release_notification
+import lox.commands
+import lox.converter
+import lox.database
+import lox.images
+import lox.search
+import lox.tagger
+import lox.uploader
+import lox.web
+from lox import cfg
+from lox.common import commandgroup
+from lox.errors import FilterError, LoginError, UploadError
+from lox.release_notification import show_release_notification
 
 
 def cleanup_tmp_dir():

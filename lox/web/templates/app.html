@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>lox</title>
+  <link rel="icon" href="{{ static_root_url }}/images/favicon.ico">
+  <link rel="stylesheet" href="{{ static_root_url }}/css/app.css">
+</head>
+<body>
+  <div id="app">
+    <nav id="sidebar">
+      <div class="brand">
+        <img src="{{ static_root_url }}/images/logo.png" alt="" class="brand-logo">
+        <div>
+          <div class="brand-name">lox</div>
+          <div class="brand-sub">deemix &times; lox</div>
+        </div>
+      </div>
+
+      <ul class="nav" role="tablist">
+        <li><button class="nav-item active" data-view="search" role="tab">Search</button></li>
+        <li><button class="nav-item" data-view="explore" role="tab">Explore</button></li>
+        <li><button class="nav-item" data-view="missing" role="tab">Missing</button></li>
+        <li><button class="nav-item" data-view="requests" role="tab">Requests</button></li>
+        <li><button class="nav-item" data-view="downloads" role="tab">Downloads <span class="badge" id="dl-badge" hidden></span></button></li>
+        <li><button class="nav-item" data-view="uploads" role="tab">Uploads</button></li>
+        <li><button class="nav-item" data-view="settings" role="tab">Settings</button></li>
+      </ul>
+
+      <div class="sidebar-foot">
+        <div class="status-line" id="deezer-status">
+          <span class="dot" data-state="unknown"></span><span class="status-text">Deezer</span>
+        </div>
+        <div id="tracker-budgets"></div>
+      </div>
+    </nav>
+
+    <main id="main">
+      <header id="topbar">
+        <h1 id="view-title">Search</h1>
+        <div id="topbar-actions"></div>
+      </header>
+
+      <section class="view active" id="view-search">
+        <form class="searchbar" id="search-form">
+          <input type="search" id="search-input" placeholder="Search Deezer for an album, track or artist" autocomplete="off">
+          <div class="segmented" id="search-type">
+            <button type="button" class="active" data-type="album">Albums</button>
+            <button type="button" data-type="track">Tracks</button>
+            <button type="button" data-type="artist">Artists</button>
+          </div>
+          <button type="submit" class="primary">Search</button>
+        </form>
+        <p class="hint">Search and browsing never contact a tracker. Only the Missing and Requests tabs do.</p>
+        <div class="grid" id="search-results"></div>
+      </section>
+
+      <section class="view" id="view-explore">
+        <div class="tabstrip" id="explore-tabs">
+          <button class="active" data-explore="channels">Channels</button>
+          <button data-explore="charts">Charts</button>
+          <button data-explore="releases">New releases</button>
+        </div>
+        <div class="filterbar" id="explore-filters"></div>
+        <div id="explore-body"></div>
+      </section>
+
+      <section class="view" id="view-missing">
+        <div class="panel">
+          <h2>Saved searches</h2>
+          <p class="hint">Re-runnable Deezer queries. Running one is free &mdash; it feeds albums into the collect step below.</p>
+          <div id="watchlists"></div>
+          <form class="row" id="watchlist-form">
+            <input type="text" id="watchlist-name" placeholder="Name, e.g. New house releases">
+            <select id="watchlist-kind">
+              <option value="new_releases">New releases (genre)</option>
+              <option value="chart">Chart (genre)</option>
+              <option value="search">Album search</option>
+              <option value="artist">Artist discography</option>
+              <option value="playlist">Playlist</option>
+              <option value="module">Channel module</option>
+            </select>
+            <input type="text" id="watchlist-target" placeholder="Genre ID, search text, or entity ID">
+            <button type="submit">Save search</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h2>1 &middot; Collect from Deezer</h2>
+          <p class="hint">Paste playlist URLs, channel module URLs or album URLs, one per line. This step is free.</p>
+          <textarea id="missing-sources" rows="4" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-..."></textarea>
+          <div class="row">
+            <label class="check"><input type="checkbox" id="missing-skip-known" checked> Skip albums already resolved</label>
+            <button class="primary" id="missing-collect">Collect albums</button>
+          </div>
+          <div class="joblog" id="missing-collect-log" hidden></div>
+        </div>
+
+        <div class="panel" id="missing-candidates-panel" hidden>
+          <h2>2 &middot; Check the trackers</h2>
+          <p class="hint" id="missing-cost"></p>
+          <div class="row">
+            <div class="segmented" id="missing-trackers"></div>
+            <label class="check"><input type="checkbox" id="missing-select-all" checked> Select all</label>
+            <button class="primary" id="missing-check">Check trackers</button>
+          </div>
+          <div class="joblog" id="missing-check-log" hidden></div>
+          <table class="table" id="missing-table"></table>
+        </div>
+      </section>
+
+      <section class="view" id="view-requests">
+        <div class="panel">
+          <h2>Find requests</h2>
+          <div class="row">
+            <div class="segmented" id="requests-tracker"></div>
+            <input type="search" id="requests-search" placeholder="Filter open requests (optional)">
+            <button id="requests-fetch">Fetch open requests</button>
+          </div>
+          <p class="hint">Fetching a page costs one tracker call. Checking each request costs one more.</p>
+          <textarea id="requests-ids" rows="3" placeholder="Or paste request IDs / URLs, one per line"></textarea>
+          <div class="row">
+            <label class="check filebtn">
+              <input type="file" id="requests-file" accept=".txt,.csv,.log,text/plain" hidden>
+              Upload a list&hellip;
+            </label>
+            <button class="primary" id="requests-check">Check selected</button>
+            <span class="hint" id="requests-selected-count"></span>
+          </div>
+          <div class="joblog" id="requests-log" hidden></div>
+        </div>
+        <div id="requests-results"></div>
+      </section>
+
+      <section class="view" id="view-downloads">
+        <div class="row toolbar">
+          <button id="downloads-clear">Clear finished</button>
+          <span class="hint" id="downloads-dir"></span>
+        </div>
+        <div id="downloads-list"></div>
+      </section>
+
+      <section class="view" id="view-uploads">
+        <div class="row toolbar">
+          <button id="folders-refresh">Refresh folders</button>
+          <span class="hint">Upload to:</span>
+          <div class="segmented" id="upload-tracker"></div>
+          <label class="check" title="Runs everything except posting to the tracker and adding to the download client">
+            <input type="checkbox" id="upload-dry-run"> Dry run
+          </label>
+          <span class="hint" id="uploads-dir"></span>
+        </div>
+        <p class="hint" id="linking-note"></p>
+        <div id="folders-list"></div>
+        <div class="panel" id="upload-console-panel" hidden>
+          <h2>Upload console</h2>
+          <p class="hint">lox still drives the upload. Prompts appear here &mdash; the lossy-master question always asks, by design.</p>
+          <pre class="console" id="upload-console"></pre>
+          <form class="row" id="upload-input-form">
+            <input type="text" id="upload-input" placeholder="Answer a prompt and press enter" autocomplete="off">
+            <button type="submit">Send</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="panel" id="settings-body"></div>
+      </section>
+    </main>
+
+    <aside id="detail" hidden>
+      <button class="close" id="detail-close" aria-label="Close">&times;</button>
+      <div id="detail-body"></div>
+    </aside>
+  </div>
+
+  <div id="toasts"></div>
+  <script src="{{ static_root_url }}/scripts/app.js"></script>
+</body>
+</html>

@@ -9,7 +9,7 @@ import ast, builtins, os, sys
 BUILTINS = set(dir(builtins))
 problems = []
 
-for dirpath, _dirs, files in os.walk("salmon"):
+for dirpath, _dirs, files in os.walk("lox"):
     if "__pycache__" in dirpath:
         continue
     for name in sorted(f for f in files if f.endswith(".py")):
