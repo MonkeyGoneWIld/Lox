@@ -18,6 +18,7 @@ import msgspec
 from lox import cfg
 from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable
 from lox.checker.matching import MIN_TOTAL_SCORE, find_best_deezer_match
+from lox.checker.request_filters import build_params
 from lox.checker.store import CheckerStore
 from lox.checker.trackcount import TrackCountVerifier, track_count_from_description
 from lox.deezer.gw import DeezerGW, DeezerGWError
@@ -104,10 +105,7 @@ class DeezerRequestChecker:
         tracker: str,
         search: str = "",
         page: int = 1,
-        *,
-        tags: str = "",
-        tags_all: bool = False,
-        show_filled: bool = False,
+        **filters: Any,
     ) -> tuple[list[dict[str, Any]], int]:
         """List one page of requests on a tracker.
 
@@ -115,9 +113,9 @@ class DeezerRequestChecker:
             tracker: Tracker code.
             search: Search string, matched against artist and title.
             page: Result page, 1-based.
-            tags: Comma-separated tag list.
-            tags_all: Require every tag rather than any of them.
-            show_filled: Include requests that have already been filled.
+            **filters: Selections by label, passed to
+                :func:`lox.checker.request_filters.build_params`, which knows
+                what each tracker calls them and which IDs it uses.
 
         Returns:
             The page's request summaries, and how many pages the tracker says
@@ -126,14 +124,7 @@ class DeezerRequestChecker:
         Raises:
             TrackerBudgetExceeded: If the tracker's budget is spent.
         """
-        params: dict[str, Any] = {"page": page, "show_filled": "true" if show_filled else "false"}
-        if search:
-            params["search"] = search
-        if tags:
-            params["tags"] = tags
-            # Gazelle reads this as 0 = any of these tags, 1 = all of them.
-            params["tags_type"] = 1 if tags_all else 0
-
+        params = build_params(tracker, page=page, search=search, **filters)
         data = await self.gateway.call_action(tracker, "requests", params)
         rows = (data or {}).get("results") or []
         try:
@@ -180,10 +171,8 @@ class DeezerRequestChecker:
         tracker: str,
         search: str = "",
         *,
-        tags: str = "",
-        tags_all: bool = False,
-        show_filled: bool = False,
         limit: int = 25,
+        **filters: Any,
     ) -> dict[str, Any]:
         """Page through requests until ``limit`` of them are gathered.
 
@@ -195,10 +184,8 @@ class DeezerRequestChecker:
         Args:
             tracker: Tracker code.
             search: Search string.
-            tags: Comma-separated tag list.
-            tags_all: Require every tag rather than any of them.
-            show_filled: Include filled requests.
             limit: How many requests to gather.
+            **filters: Selections by label, translated per tracker.
 
         Returns:
             ``requests``, the number of ``calls`` spent, and ``complete``, which
@@ -214,9 +201,7 @@ class DeezerRequestChecker:
         total_pages = 0
 
         while len(gathered) < limit:
-            rows, pages = await self.search_requests(
-                tracker, search, page, tags=tags, tags_all=tags_all, show_filled=show_filled
-            )
+            rows, pages = await self.search_requests(tracker, search, page, **filters)
             calls += 1
             total_pages = pages or total_pages
             # A page that repeats what we already have means the tracker is

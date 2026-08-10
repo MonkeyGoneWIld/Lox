@@ -25,6 +25,7 @@ from lox import cfg, debug
 from lox.checker.deezer_requests import DeezerRequestChecker
 from lox.checker.gateway import TrackerGateway
 from lox.checker.missing import Candidate, MissingScanner
+from lox.checker.request_filters import schema as filter_schema
 from lox.checker.store import CheckerStore
 from lox.checker.watchlists import WatchlistManager
 from lox.config.validations import ensure_dir
@@ -736,19 +737,48 @@ async def api_requests_list(request: web.Request) -> web.Response:
     except ValueError:
         return error("limit must be a number")
 
+    def flag(name: str) -> bool:
+        return request.query.get(name, "") in ("1", "true", "yes", "on")
+
+    def labels(name: str) -> list[str]:
+        return [v for v in request.query.getall(name, []) if v]
+
     checker: DeezerRequestChecker = request.app["request_checker"]
     try:
         found = await checker.collect_requests(
             tracker,
             request.query.get("search", ""),
-            tags=request.query.get("tags", ""),
-            tags_all=request.query.get("tags_all", "") in ("1", "true", "yes"),
-            show_filled=request.query.get("show_filled", "") in ("1", "true", "yes"),
             limit=limit,
+            tags=request.query.get("tags", ""),
+            tags_all=flag("tags_all"),
+            show_filled=flag("show_filled"),
+            include_old=flag("include_old"),
+            search_descriptions=flag("descriptions"),
+            formats=labels("format"),
+            media=labels("media"),
+            encodings=labels("encoding"),
+            release_types=labels("release_type"),
+            strict=flag("strict"),
+            bounty_min=request.query.get("bounty_min", ""),
+            bounty_max=request.query.get("bounty_max", ""),
         )
     except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
         return error(str(e), status=502)
     return json_response(found)
+
+
+@routes.get("/api/requests/filters")
+async def api_requests_filters(request: web.Request) -> web.Response:
+    """Describe the filters a tracker's request search takes. No tracker calls.
+
+    The UI renders itself from this rather than from a fixed list, because the
+    two trackers do not offer the same filters and do not agree on the IDs
+    behind the ones they share.
+    """
+    tracker = request.query.get("tracker", "")
+    if not tracker:
+        return error("tracker is required")
+    return json_response(filter_schema(tracker))
 
 
 @routes.post("/api/requests/check")
