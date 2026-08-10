@@ -21,9 +21,23 @@ BOOTSTRAP_KEYS = (
     "directory.download_directory",
     "directory.dottorrents_dir",
 )
-"""Settings that must be in config.toml. The server needs them before it can
-serve the page that would otherwise edit them, and in Docker they are fixed by
-the volume mounts anyway."""
+"""Settings the server needs before it can serve the page that would otherwise
+edit them. Supply them in config.toml or through the environment — see
+BOOTSTRAP_ENV."""
+
+BOOTSTRAP_ENV: dict[str, str] = {
+    "LOX_HOST": "upload.web_interface.host",
+    "LOX_PORT": "upload.web_interface.port",
+    "LOX_AUTH_TOKEN": "upload.web_interface.auth_token",
+    "LOX_DOWNLOAD_DIR": "directory.download_directory",
+    "LOX_TORRENTS_DIR": "directory.dottorrents_dir",
+    "LOX_TMP_DIR": "directory.tmp_dir",
+    "LOX_STATE_DIR": "checker.state_dir",
+    "LOX_DEBUG": "upload.debug",
+}
+"""Environment variables that supply bootstrap settings, so a container can be
+configured entirely from compose with no config file. The environment wins over
+config.toml. Everything else is set in the UI."""
 
 
 class Field(NamedTuple):
@@ -103,6 +117,7 @@ SECTIONS: tuple[Section, ...] = (
     Section("notifications", "Notifications", "Optional Discord webhook for scan results.", test="discord"),
     Section("upload", "Uploading", "Behaviour of the upload pipeline itself."),
     Section("formatting", "Naming", "How release folders and files are named."),
+    Section("debug", "Debug", "Verbose logging and a diagnostics bundle. Credentials are never written."),
     Section("paths", "Paths", "Scratch and state directories. The main ones are set in config.toml.", test="paths"),
 )
 
@@ -191,7 +206,9 @@ FIELDS: tuple[Field, ...] = (
     Field("upload.upload_to_seedbox", "Inject into the torrent client", "bool", "upload"),
     Field("upload.simultaneous_threads", "Worker threads", "int", "upload", minimum=1, maximum=16),
     Field("upload.default_editor", "Text editor", "text", "upload", placeholder="nano"),
-    Field("upload.debug_tracker_connection", "Log tracker requests and responses", "bool", "upload", "Noisy."),
+    Field("upload.debug", "Debug mode", "bool", "debug",
+          "Verbose logging, shown below. Credentials are redacted before anything is written."),
+    Field("upload.debug_tracker_connection", "Also log tracker requests and responses", "bool", "debug", "Noisy."),
     Field("upload.update_notification", "Check for lox updates on startup", "bool", "upload"),
     Field("upload.compression.flac_compression_level", "FLAC compression level", "int", "upload",
           minimum=0, maximum=8),

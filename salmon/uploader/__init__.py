@@ -56,7 +56,7 @@ from salmon.uploader.dupe_checker import (
     print_torrents,
 )
 from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions
-from salmon.uploader.request_checker import check_requests
+from salmon.uploader.request_fill import check_requests
 from salmon.uploader.seedbox import UploadManager
 from salmon.uploader.spectrals import (
     check_spectrals,
@@ -168,7 +168,7 @@ if TYPE_CHECKING:
 )
 @click.option(
     "--dry-run",
-    "-n",
+    "-D",
     is_flag=True,
     help="Do everything except upload the torrent to the tracker and add it to the download client",
 )

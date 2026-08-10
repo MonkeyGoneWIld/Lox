@@ -153,53 +153,70 @@ as an alias, and every upstream CLI command is unchanged.
 ```bash
 cp .env.example .env
 openssl rand -hex 32   # put this in LOX_AUTH_TOKEN
-cp config/config.docker.toml config/config.toml   # then fill in your credentials
 docker compose up -d
 ```
 
-[`docker-compose.yml`](docker-compose.yml) is annotated. Two things will bite you if you skip them:
+That is the whole setup. **No config file.** [`docker-compose.yml`](docker-compose.yml) supplies the handful of
+bootstrap values through `LOX_*` environment variables; everything else is configured in the UI under Settings, each
+section with a Test button, and stored in `settings.toml` on the mounted volume.
+
+Two things will bite you if you skip them:
 
 **Set `LOX_AUTH_TOKEN`.** The UI can spend your tracker API budget, read your authenticated Deezer session, and start
-uploads to your tracker accounts. The compose file binds to `127.0.0.1` by default for exactly this reason. If you
-publish the port, the token is the only thing standing between the internet and your upload privileges. lox prints a
-loud warning at startup if you bind publicly without one.
+uploads to your tracker accounts. The compose file binds to `127.0.0.1` by default for exactly that reason. lox prints
+a loud warning at startup if you bind publicly without a token.
 
-**Put `/downloads` and `/links` on the same filesystem.** Different volumes means no hardlinks.
+**Put the download directory and the seeding directory on the same filesystem.** Different volumes means no hardlinks.
+Mounting their common parent as one volume is the simplest guarantee — and the Seeding layout test will tell you
+whether it actually worked.
 
-On first load the UI asks for the token and stores an httpOnly session cookie for 30 days, so you only enter it once
-per browser. Sign out from Settings. A `?token=` query parameter still works for bookmarks and scripts, and the
-`X-Auth-Token` header works for API clients — that is what the compose healthcheck uses.
-
----
+On first load the UI asks for the token and stores an httpOnly cookie for 30 days. Sign out from Settings. A `?token=`
+query parameter and the `X-Auth-Token` header both still work for scripts and the healthcheck.
 
 ## Configuration
 
-Everything lives in `config.toml`, which is gitignored. No credential is ever written to the repo.
+Almost everything is set in the UI under **Settings** — 73 settings across 12 sections, applied without a restart.
+Nine sections have a **Test connection** button that calls the real service rather than just checking a field is
+non-empty:
 
-It is looked for in this order:
-
-1. `config.toml` next to the repo root — handy for development, and the easiest thing to bind-mount into a container.
-2. `~/.config/lox/config.toml` (`%LOCALAPPDATA%\lox\config.toml` on Windows).
-3. `~/.config/smoked-salmon/config.toml` — upstream's location, still read so an existing smoked-salmon install keeps
-   working when you switch. Nothing new is ever written there. The database is handled the same way: an existing
-   `smoked-salmon` data directory wins over a fresh `lox` one, so switching does not orphan it.
-
-| Section | Key settings |
+| Test | What it actually proves |
 |---|---|
-| `[metadata.deezer]` | `arl`, `download_dir`, `preferred_format`, `format_fallback`, `concurrent_downloads` |
-| `[linking]` | `enabled`, `link_dir`, `method`, `per_tracker_dirs`, `fallback_to_copy` |
-| `[checker]` | `tracker_budget`, `tracker_budget_window`, `tracker_call_delay`, `failure_threshold`, `cooldown_seconds`, `min_tracks`, `min_date`, `min_confidence` |
-| `[upload.web_interface]` | `host`, `port`, `auth_token` |
-| `[notifications]` | `enabled`, `discord_webhook`, `notify_missing`, `notify_fillable` |
-| `[tracker.red]` / `[tracker.ops]` | `session`, `api_key` |
-| `[metadata]` | `discogs_token`, `apple_music_token`, Qobuz and Tidal credentials — all used to verify request track counts |
+| Deezer | Logs in with the ARL and reports the account, plus whether it holds a streaming licence — a valid ARL without one cannot download |
+| RED / OPS / DIC | Calls `index`, reports your username and whether it authenticated by API key or session cookie |
+| Seeding layout | Creates a real hardlink between the download and seeding directories and compares inodes |
+| Discogs | Fetches a known release |
+| Torrent client | Connects and logs in |
+| Discord | Posts a test message |
+| Paths | Checks every directory exists and is writable |
+| Image hosting | Checks keys are present — no upload is attempted, since that would put a real file on a public host |
+
+UI settings live in `settings.toml`. Nothing ever rewrites `config.toml`, and deleting `settings.toml` reverts to
+whatever the bootstrap says.
+
+### Bootstrap
+
+Five values are read before a web server exists, so they cannot come from a page the server has not started yet. Supply
+them through the environment (what the compose file does) or a `config.toml`:
+
+| Environment | Config key |
+|---|---|
+| `LOX_HOST` | `upload.web_interface.host` |
+| `LOX_PORT` | `upload.web_interface.port` |
+| `LOX_AUTH_TOKEN` | `upload.web_interface.auth_token` |
+| `LOX_DOWNLOAD_DIR` | `directory.download_directory` |
+| `LOX_TORRENTS_DIR` | `directory.dottorrents_dir` |
+
+`LOX_TMP_DIR`, `LOX_STATE_DIR` and `LOX_SETTINGS_DIR` are optional. The environment wins over `config.toml`, so a stale
+mounted file cannot override a deployment. With the environment set, no config file is needed at all.
+
+Outside Docker, `config.toml` is looked for at the repo root, then `~/.config/lox/`, then `~/.config/smoked-salmon/` —
+upstream's location, still read so an existing install keeps working. Nothing is ever written there.
 
 ### Getting your ARL
 
 Log into Deezer, open developer tools → Application → Cookies → `https://www.deezer.com`, and copy the `arl` value. It
-is a full session credential: anyone holding it is logged into your account. Treat it like a password.
-
----
+is a full session credential: anyone holding it is logged into your account. Paste it into Settings → Deezer and press
+Test.
 
 ## Differences from upstream smoked-salmon
 

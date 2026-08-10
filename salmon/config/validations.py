@@ -227,6 +227,10 @@ class Upload(BaseStruct):
 
     yes_all: bool = False
 
+    # Verbose logging, viewable in the UI under Settings. Credentials are
+    # redacted before anything is written, so the log is safe to share.
+    debug: bool = False
+
     # Do everything except the two irreversible steps: posting the torrent to
     # the tracker and handing it to the download client. Tagging, renaming,
     # spectrals, image uploads, hardlinking and .torrent creation all still run,

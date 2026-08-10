@@ -21,10 +21,10 @@ from urllib.parse import quote
 import msgspec
 from aiohttp import web
 
-from salmon import cfg
+from salmon import cfg, debug
 from salmon.checker.gateway import TrackerGateway
 from salmon.checker.missing import Candidate, MissingScanner
-from salmon.checker.requests_check import RequestChecker
+from salmon.checker.deezer_requests import DeezerRequestChecker
 from salmon.checker.store import CheckerStore
 from salmon.checker.watchlists import WatchlistManager
 from salmon.deezer.download import Downloader
@@ -184,6 +184,7 @@ def binds_publicly(host: str) -> bool:
 
 async def setup_services(app: web.Application) -> None:
     """Attach the shared service objects to the application."""
+    debug.configure()
     gw = DeezerGW()
     gateway = TrackerGateway()
     store = CheckerStore()
@@ -194,7 +195,7 @@ async def setup_services(app: web.Application) -> None:
     app["gateway"] = gateway
     app["store"] = store
     app["scanner"] = MissingScanner(gw, gateway, store)
-    app["request_checker"] = RequestChecker(gw, gateway, store)
+    app["request_checker"] = DeezerRequestChecker(gw, gateway, store)
     app["watchlists"] = WatchlistManager(gw, store)
     app["notifier"] = DiscordNotifier()
     app["jobs"] = JobRegistry()
@@ -691,7 +692,7 @@ async def api_requests_list(request: web.Request) -> web.Response:
     tracker = request.query.get("tracker", "")
     if not tracker:
         return error("tracker is required")
-    checker: RequestChecker = request.app["request_checker"]
+    checker: DeezerRequestChecker = request.app["request_checker"]
     try:
         rows = await checker.search_requests(
             tracker, request.query.get("search", ""), int(request.query.get("page", 1))
@@ -715,7 +716,7 @@ async def api_requests_check(request: web.Request) -> web.Response:
         status = gateway.status(tracker).as_dict()
         return error(f"No budget available for {tracker} ({status['remaining']} left)", status=429)
 
-    checker: RequestChecker = request.app["request_checker"]
+    checker: DeezerRequestChecker = request.app["request_checker"]
     notifier: DiscordNotifier = request.app["notifier"]
     jobs: JobRegistry = request.app["jobs"]
 

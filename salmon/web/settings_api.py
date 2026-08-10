@@ -16,6 +16,7 @@ from aiohttp import web
 
 import salmon.trackers
 from salmon import cfg, settings
+from salmon import debug as debuglog
 from salmon.config.schema import BOOTSTRAP_KEYS, sections_with_fields
 from salmon.config.store import SettingsError
 from salmon.deezer.gw import DeezerGW, DeezerGWError
@@ -85,6 +86,7 @@ async def api_settings_save(request: web.Request) -> web.Response:
 
     failed = settings.apply_to(cfg)
     salmon.trackers.refresh_tracker_list()
+    debuglog.configure()
     # The Deezer client caches its login; a new ARL has to invalidate it.
     if any(k.startswith("metadata.deezer") for k in coerced):
         gw: DeezerGW = request.app["gw"]
@@ -353,4 +355,43 @@ async def _test_images(request: web.Request) -> web.Response:
     return ok(
         f"Using {', '.join(sorted(selected))}. Keys present. "
         f"Not verified against the host — that would mean uploading a real image."
+    )
+
+
+# ----------------------------------------------------------------------
+# Debug
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/debug")
+async def api_debug(request: web.Request) -> web.Response:
+    """Return debug state, the diagnostics summary and the recent log."""
+    limit = min(int(request.query.get("limit", 300)), 2000)
+    return _json(
+        {
+            "enabled": debuglog.enabled(),
+            "diagnostics": debuglog.diagnostics(),
+            "log": debuglog.recent(limit),
+        }
+    )
+
+
+@routes.post("/api/debug/clear")
+async def api_debug_clear(request: web.Request) -> web.Response:
+    """Empty the in-memory debug log."""
+    debuglog.clear()
+    return _json({"ok": True})
+
+
+@routes.get("/api/debug/bundle")
+async def api_debug_bundle(request: web.Request) -> web.Response:
+    """Download diagnostics plus the recent log as a text file.
+
+    Everything in it has been through the redactor, so it is safe to paste into
+    an issue: secrets are reported as set or unset, never by value.
+    """
+    return web.Response(
+        text=debuglog.diagnostics_text(),
+        content_type="text/plain",
+        headers={"Content-Disposition": 'attachment; filename="lox-diagnostics.txt"'},
     )
