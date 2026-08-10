@@ -107,7 +107,7 @@ lox fails loudly rather than silently making real copies — unless you set `lin
 Needs Python 3.11+, plus `sox`, `flac`, `lame` and `mp3val` on PATH.
 
 ```bash
-uv tool install git+https://github.com/MonkeyGoneWIld/deezer-upload
+uv tool install git+https://github.com/MonkeyGoneWIld/lox
 ```
 
 Then write a config (see [`data/config.default.toml`](data/config.default.toml) for every option) and run:
