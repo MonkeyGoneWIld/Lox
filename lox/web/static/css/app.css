@@ -575,3 +575,23 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .theme-toggle:hover { color: var(--text); }
 
 .icon-btn.upload { background: var(--ok); margin-left: 6px; }
+
+/* ---------- artist page ---------- */
+
+.artist-head { display: flex; gap: 20px; align-items: center; margin-bottom: 24px; }
+.artist-pic { width: 128px; height: 128px; border-radius: 50%; object-fit: cover; }
+.artist-name { margin: 0 0 4px; font-size: 26px; letter-spacing: -0.02em; }
+
+.card-meta { color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-link { text-decoration: none; display: block; }
+.card-link:hover { text-decoration: underline; color: var(--text); }
+
+/* ---------- album detail ---------- */
+
+.detail-artist a, .featured a { color: var(--text); text-decoration: none; }
+.detail-artist a:hover, .featured a:hover { color: var(--accent); text-decoration: underline; }
+.featured { margin-top: -6px; }
+
+.track-main { display: flex; flex-direction: column; min-width: 0; }
+.track-main > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tracklist li { align-items: center; }

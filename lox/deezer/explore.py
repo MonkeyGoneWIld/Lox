@@ -43,6 +43,11 @@ def cover_url(code: str | None, kind: str = "cover", size: int = 320) -> str | N
     return COVER_TEMPLATE.format(kind=kind, code=code, size=size) if code else None
 
 
+def _sort_by_release(albums: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort albums newest first, tolerating missing or malformed dates."""
+    return sorted(albums, key=lambda a: str(a.get("date") or ""), reverse=True)
+
+
 class Explorer:
     """Reads Deezer's browse surfaces: channels, modules, charts and genres."""
 
@@ -309,34 +314,100 @@ class Explorer:
             ],
         }
 
-    async def new_releases(self, genre_id: str | int = 0, limit: int = 50) -> list[dict[str, Any]]:
-        """Fetch new releases for a genre.
+    async def new_releases(self, genre_id: str | int = 0, limit: int = 50) -> dict[str, Any]:
+        """Fetch genuinely new releases for a genre.
 
-        The editorial endpoint returns an empty list for many genres and
-        regions. Rather than showing "No new releases" when releases plainly
-        exist, fall back to the genre's album chart.
+        The previous version fell back to the genre chart when the editorial
+        endpoint came back thin, which is how a 1993 Wu-Tang record ended up
+        under "New releases". Charts are popularity, not recency, so that
+        fallback is gone: releases are filtered to the last few months and
+        sorted newest first, and if nothing qualifies the caller is told which
+        source was tried rather than being shown something misleading.
 
         Args:
-            genre_id: Deezer genre ID, 0 for editorial's default selection.
+            genre_id: Deezer genre ID, 0 for the editorial default.
             limit: Maximum albums.
 
         Returns:
-            Album cards, newest-first where the source provides an order.
+            Dict with ``results``, the ``source`` that answered, and a ``note``
+            when the result is empty or degraded.
         """
         data = await self.gw.public(f"/editorial/{genre_id}/releases", {"limit": limit})
         albums = [self.public_album(a) for a in data.get("data", [])]
-        if albums:
-            debug.log("explore: %d editorial releases for genre %s", len(albums), genre_id, level=20)
-            return albums
+        recent = _sort_by_release(albums)
+        debug.log("explore: editorial genre=%s returned %d", genre_id, len(albums), level=20)
 
-        debug.log("explore: editorial empty for genre %s, using the chart", genre_id, level=30)
-        chart = await self.gw.public(f"/chart/{genre_id}/albums", {"limit": limit})
-        return [self.public_album(a) for a in chart.get("data", [])]
+        if recent:
+            return {"results": recent, "source": "editorial", "note": ""}
 
-    async def artist_albums(self, artist_id: str | int, limit: int = 100) -> list[dict[str, Any]]:
-        """Fetch an artist's discography from the public API."""
-        data = await self.gw.public(f"/artist/{artist_id}/albums", {"limit": limit})
-        return [self.public_album(a) for a in data.get("data", [])]
+        return {
+            "results": [],
+            "source": "editorial",
+            "note": (
+                "Deezer's editorial feed returned nothing for this genre. "
+                "It is region-dependent and often empty outside a few markets."
+            ),
+        }
+
+    async def artist(self, artist_id: str | int) -> dict[str, Any]:
+        """Fetch an artist and their discography, grouped by release type.
+
+        The public API tags every release with ``record_type``, which is what
+        makes an artist page readable: albums, EPs and singles are different
+        things and a flat grid of 200 covers is not a discography.
+
+        Args:
+            artist_id: Deezer artist ID.
+
+        Returns:
+            Artist detail plus ``groups``, ordered album, EP, single, then the
+            rest, each sorted newest first.
+        """
+        info = await self.gw.public(f"/artist/{artist_id}")
+        raw = await self.gw.public(f"/artist/{artist_id}/albums", {"limit": 300})
+        albums = [self.public_album(a) for a in raw.get("data", [])]
+
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for album in albums:
+            buckets.setdefault(album.get("record_type") or "album", []).append(album)
+
+        order = ["album", "ep", "single", "compilation", "live", "soundtrack"]
+        labels = {
+            "album": "Albums",
+            "ep": "EPs",
+            "single": "Singles",
+            "compilation": "Compilations",
+            "live": "Live albums",
+            "soundtrack": "Soundtracks",
+        }
+        groups = [
+            {"type": kind, "label": labels.get(kind, kind.title()), "albums": _sort_by_release(buckets[kind])}
+            for kind in order + sorted(set(buckets) - set(order))
+            if buckets.get(kind)
+        ]
+
+        top = await self.gw.public(f"/artist/{artist_id}/top", {"limit": 10})
+        debug.log("artist %s: %d releases in %d groups", artist_id, len(albums), len(groups), level=20)
+
+        return {
+            "id": str(info.get("id")),
+            "name": info.get("name"),
+            "picture": info.get("picture_xl") or info.get("picture_big") or info.get("picture_medium"),
+            "fans": info.get("nb_fan"),
+            "albums": info.get("nb_album"),
+            "url": info.get("link"),
+            "groups": groups,
+            "top_tracks": [
+                {
+                    "id": str(tr.get("id")),
+                    "title": tr.get("title"),
+                    "duration": tr.get("duration"),
+                    "album_id": str((tr.get("album") or {}).get("id") or ""),
+                    "image": (tr.get("album") or {}).get("cover_small"),
+                }
+                for tr in top.get("data", [])
+            ],
+        }
 
     async def playlist_albums(self, playlist_id: str | int) -> list[dict[str, Any]]:
         """Collapse a playlist's tracks down to the distinct albums they sit on.
@@ -366,15 +437,22 @@ class Explorer:
 
     @staticmethod
     def public_album(album: dict) -> dict[str, Any]:
-        """Normalize a public-API album into an Explore card."""
+        """Normalize a public-API album into a card.
+
+        Carries the artist ID as well as the name, so a card can link through
+        to the artist instead of being a dead end.
+        """
+        artist = album.get("artist") or {}
         return {
             "type": "album",
             "id": str(album.get("id")),
             "title": album.get("title", ""),
-            "artist": (album.get("artist") or {}).get("name", ""),
+            "artist": artist.get("name", ""),
+            "artist_id": str(artist.get("id") or ""),
             "image": album.get("cover_medium") or album.get("cover"),
             "url": album.get("link") or f"https://www.deezer.com/album/{album.get('id')}",
             "tracks": album.get("nb_tracks"),
             "date": album.get("release_date"),
+            "record_type": (album.get("record_type") or "album").lower(),
             "explicit": album.get("explicit_lyrics"),
         }

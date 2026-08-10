@@ -265,7 +265,28 @@
           : null,
       ),
       el('div', { class: 'card-title', title: item.title }, item.title || ''),
-      el('div', { class: 'card-sub', title: item.artist }, item.artist || (item.albums ? `${item.albums} albums` : '')),
+      item.artist_id
+        ? el(
+            'a',
+            {
+              class: 'card-sub card-link',
+              title: item.artist,
+              href: '#',
+              onclick: (e) => { e.preventDefault(); e.stopPropagation(); openArtist(item.artist_id); },
+            },
+            item.artist,
+          )
+        : el('div', { class: 'card-sub', title: item.artist },
+            item.artist || (item.albums ? `${item.albums} albums` : '')),
+      item.date || item.record_type
+        ? el(
+            'div',
+            { class: 'card-meta' },
+            [item.date ? item.date.slice(0, 4) : null,
+             item.record_type && item.record_type !== 'album' ? item.record_type.toUpperCase() : null,
+             item.tracks ? `${item.tracks} tracks` : null].filter(Boolean).join(' · '),
+          )
+        : null,
     );
   }
 
@@ -334,10 +355,12 @@
         }
         if (!body.children.length) body.replaceChildren(empty('No chart data.'));
       } else {
-        const { results } = await api(`/api/explore/releases?genre=${state.exploreGenre}`);
+        const data = await api(`/api/explore/releases?genre=${state.exploreGenre}`);
         const grid = el('div', { class: 'grid' });
-        renderGrid(grid, results, 'No new releases.');
-        body.replaceChildren(grid);
+        renderGrid(grid, data.results, data.note || 'No new releases.');
+        body.replaceChildren(
+          ...[data.note ? el('p', { class: 'hint' }, data.note) : null, grid].filter(Boolean),
+        );
       }
     } catch (e) {
       body.replaceChildren(empty(e.message));
@@ -408,13 +431,49 @@
   }
 
   async function openArtist(artistId) {
-    const results = $('#search-results');
     setView('search');
-    results.replaceChildren(spinner('Loading discography'));
+    const results = $('#search-results');
+    results.replaceChildren(spinner('Loading artist'));
     try {
-      const { results: albums } = await api(`/api/artist/${artistId}/albums`);
-      renderGrid(results, albums, 'No albums.');
+      const artist = await api(`/api/artist/${artistId}`);
+      const total = artist.groups.reduce((n, g) => n + g.albums.length, 0);
+
+      results.className = '';
+      results.replaceChildren(
+        el(
+          'div',
+          { class: 'artist-head' },
+          artist.picture ? el('img', { class: 'artist-pic', src: artist.picture, alt: '' }) : null,
+          el(
+            'div',
+            {},
+            el('h2', { class: 'artist-name' }, artist.name || ''),
+            el(
+              'p',
+              { class: 'hint' },
+              [
+                artist.fans ? `${Number(artist.fans).toLocaleString()} fans` : null,
+                `${total} release${total === 1 ? '' : 's'}`,
+                artist.groups.map((g) => `${g.albums.length} ${g.label.toLowerCase()}`).join(' · '),
+              ].filter(Boolean).join(' — '),
+            ),
+            artist.url
+              ? el('a', { class: 'linkbtn', href: artist.url, target: '_blank', rel: 'noopener' }, 'Open on Deezer')
+              : null,
+          ),
+        ),
+        // One section per release type, newest first inside each.
+        ...artist.groups.flatMap((group) => [
+          el(
+            'h3',
+            { class: 'section-title' },
+            `${group.label} (${group.albums.length})`,
+          ),
+          el('div', { class: 'grid' }, ...group.albums.map(card)),
+        ]),
+      );
     } catch (e) {
+      results.className = 'grid';
       results.replaceChildren(empty(e.message));
     }
   }
@@ -443,62 +502,79 @@
           : el('span', { class: 'tag bad' }, availability.reason || 'Not uploadable')
         : el('span', { class: 'tag dim' }, album.availability_error || 'Availability needs an ARL');
 
+      const artistLink = (id, name) =>
+        id
+          ? el('a', { href: '#', onclick: (e) => { e.preventDefault(); openArtist(id); } }, name)
+          : el('span', {}, name);
+
+      // Everyone credited, not just the headline act, each one navigable.
+      const featured = (album.contributors || []).filter((c) => c.id !== album.artist_id);
+
       body.replaceChildren(
+        ...[
         album.cover ? el('img', { class: 'detail-art', src: album.cover, alt: '' }) : el('div', { class: 'detail-art' }),
         el('div', { class: 'detail-title' }, album.title || ''),
-        el('div', { class: 'detail-artist' }, album.artist || ''),
+        el('div', { class: 'detail-artist' }, artistLink(album.artist_id, album.artist || '')),
+        featured.length
+          ? el(
+              'p',
+              { class: 'hint featured' },
+              'Featuring ',
+              ...featured.flatMap((c, i) => [i ? el('span', {}, ', ') : null, artistLink(c.id, c.name)])
+                .filter(Boolean),
+            )
+          : null,
         el(
           'div',
           { class: 'row' },
           el('button', { class: 'primary', onclick: () => download(album.id) }, 'Download'),
-          album.url ? el('a', { class: 'linkbtn', href: album.url, target: '_blank', rel: 'noopener' }, 'Open on Deezer') : null,
+          el('button', { onclick: () => downloadAndUpload(album.id, album) }, 'Download & upload'),
+          album.url
+            ? el('a', { class: 'linkbtn', href: album.url, target: '_blank', rel: 'noopener' }, 'Open on Deezer')
+            : null,
         ),
         el('p', {}, verdict),
         el(
-          'div',
-          { class: 'checkbox-panel', id: 'album-check' },
-          el(
-            'div',
-            { class: 'row' },
-            el('strong', {}, 'Trackers'),
-            ...state.trackers.map((t) =>
-              el('button', { onclick: (e) => checkAlbum(album, [t.code], e.target) }, `Check ${t.code}`),
-            ),
-            state.trackers.length > 1
-              ? el(
-                  'button',
-                  { class: 'primary', onclick: (e) => checkAlbum(album, state.trackers.map((t) => t.code), e.target) },
-                  'Check all',
-                )
-              : null,
-          ),
-          el('div', { id: 'album-check-body' }, el('p', { class: 'hint' }, 'Nothing has been asked of a tracker yet.')),
-        ),
-        el(
           'dl',
           { class: 'meta' },
-          el('dt', {}, 'Released'), el('dd', {}, album.release_date || '?'),
-          el('dt', {}, 'Type'), el('dd', {}, album.record_type || '?'),
-          el('dt', {}, 'Tracks'), el('dd', {}, String(album.nb_tracks ?? '?')),
-          el('dt', {}, 'Label'), el('dd', {}, album.label || '?'),
-          el('dt', {}, 'UPC'), el('dd', {}, album.upc || '?'),
-          el('dt', {}, 'Genres'), el('dd', {}, (album.genres || []).join(', ') || '?'),
-          availability ? el('dt', {}, 'FLAC') : null,
-          availability ? el('dd', {}, `${availability.flac_count}/${availability.total}`) : null,
+          ...[
+            ['Released', album.release_date],
+            ['Type', album.record_type],
+            ['Tracks', album.nb_tracks],
+            ['Length', album.duration ? duration(album.duration) : null],
+            ['Label', album.label],
+            ['UPC', album.upc],
+            ['Genres', (album.genres || []).join(', ')],
+            ['Explicit', album.explicit ? 'Yes' : null],
+            availability ? ['FLAC', `${availability.flac_count}/${availability.total}`] : null,
+          ]
+            .filter((row) => row && row[1])
+            .flatMap(([label, value]) => [el('dt', {}, label), el('dd', {}, String(value))]),
         ),
         el(
           'ul',
           { class: 'tracklist' },
-          ...(album.tracks || []).map((t) =>
+          ...(album.tracks || []).map((tr) =>
             el(
               'li',
               {},
-              el('span', { class: 'num' }, String(t.number || '')),
-              el('span', {}, t.title || ''),
-              el('span', { class: 'dur' }, duration(t.duration)),
+              el('span', { class: 'num' }, String(tr.number || '')),
+              el(
+                'span',
+                { class: 'track-main' },
+                el('span', {}, tr.title || ''),
+                // Only worth showing when the track artist differs from the
+                // album artist, which is what a featured credit looks like.
+                tr.artist && tr.artist !== album.artist
+                  ? el('span', { class: 'card-sub' }, artistLink(tr.artist_id, tr.artist))
+                  : null,
+              ),
+              tr.explicit ? el('span', { class: 'tag dim' }, 'E') : null,
+              el('span', { class: 'dur' }, duration(tr.duration)),
             ),
           ),
         ),
+        ].filter((n) => n !== null && n !== undefined),
       );
     } catch (e) {
       body.replaceChildren(empty(e.message));

@@ -398,6 +398,14 @@ async def api_album(request: web.Request) -> web.Response:
             "id": str(meta.get("id")),
             "title": meta.get("title"),
             "artist": (meta.get("artist") or {}).get("name"),
+            "artist_id": str((meta.get("artist") or {}).get("id") or ""),
+            # Everyone credited on the release, which is what "featured artists"
+            # actually means. Each one links through to their own page.
+            "contributors": [
+                {"id": str(c.get("id")), "name": c.get("name"), "role": c.get("role") or ""}
+                for c in (meta.get("contributors") or [])
+                if c.get("id")
+            ],
             "cover": meta.get("cover_xl") or meta.get("cover_big") or meta.get("cover"),
             "release_date": meta.get("release_date"),
             "record_type": meta.get("record_type"),
@@ -413,9 +421,11 @@ async def api_album(request: web.Request) -> web.Response:
                     "id": str(t.get("id")),
                     "title": t.get("title"),
                     "artist": (t.get("artist") or {}).get("name"),
+                    "artist_id": str((t.get("artist") or {}).get("id") or ""),
                     "duration": t.get("duration"),
                     "number": t.get("track_position"),
                     "disc": t.get("disk_number"),
+                    "explicit": t.get("explicit_lyrics"),
                 }
                 for t in (meta.get("tracks") or {}).get("data", [])
             ],
@@ -448,6 +458,15 @@ async def api_album_check(request: web.Request) -> web.Response:
 
     job = jobs.spawn("album_check", f"Checking album {album_id} on {', '.join(trackers)}", run)
     return json_response({"job_id": job.id})
+
+
+@routes.get("/api/artist/{artist_id}")
+async def api_artist(request: web.Request) -> web.Response:
+    """Return an artist with their discography grouped by release type."""
+    try:
+        return json_response(await request.app["explorer"].artist(request.match_info["artist_id"]))
+    except DeezerGWError as e:
+        return error(str(e), status=502)
 
 
 @routes.get("/api/artist/{artist_id}/albums")
@@ -526,7 +545,7 @@ async def api_releases(request: web.Request) -> web.Response:
     """Fetch editorial new releases for a genre."""
     genre = request.query.get("genre", "0")
     try:
-        return json_response({"results": await request.app["explorer"].new_releases(genre)})
+        return json_response(await request.app["explorer"].new_releases(genre))
     except DeezerGWError as e:
         return error(str(e), status=502)
 
