@@ -16,8 +16,10 @@ labelled buttons rather than a box you have to type a letter into.
 """
 
 import asyncio
+import os
 import re
 from typing import Any
+from urllib.parse import quote
 
 import asyncclick as click
 
@@ -28,6 +30,11 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # Upstream writes choices as "[y]es, [N]o, [a]bort". The capitalised initial is
 # the default.
 _BRACKET = re.compile(r"\[([A-Za-z])\]([A-Za-z]*)")
+# The dupe checker prints candidates as " 01 >> 1605624 | Artist - Title ... | https://..."
+# with the id and the url on the same logical line. Capturing them turns
+# "paste a URL" into a row of buttons.
+_GROUP_LINE = re.compile(r"^\s*\d+\s*>>\s*(\d+)\s*\|\s*(.+?)(?:\s*\|\s*(https?://\S+))?\s*$")
+_SPECTRAL_EXT = (".png", ".jpg", ".jpeg")
 
 
 def strip_ansi(text: str) -> str:
@@ -72,10 +79,20 @@ def default_letter(text: str) -> str | None:
 class FlowPrompts:
     """Redirects click's prompt functions into a flow for as long as it is active."""
 
-    def __init__(self, flow: Flow) -> None:
-        """Initialize with the flow that questions should go to."""
+    def __init__(self, flow: Flow, folder: str = "") -> None:
+        """Initialize with the flow that questions should go to.
+
+        Args:
+            flow: Where questions and notes are published.
+            folder: The release being uploaded, used to locate its spectrals.
+        """
         self.flow = flow
+        self.folder = folder
         self._saved: dict[str, Any] = {}
+        # Group candidates printed since the last question, so the next prompt
+        # can offer them instead of asking for a pasted URL.
+        self._groups: list[dict[str, Any]] = []
+        self._line = ""
 
     async def _confirm(self, text: str, default: bool = True, abort: bool = False, **_: Any) -> bool:
         """Stand-in for click.confirm."""
@@ -96,25 +113,67 @@ class FlowPrompts:
         options = parse_options(prompt)
         debug.event("upload.prompt", kind="choice" if options else "text", prompt=prompt[:80])
 
-        if options:
-            # The option list is in the prompt; the question is the part before it.
+        # Anything the pipeline listed just before asking becomes a real
+        # option, so a found duplicate group is a button rather than a URL you
+        # have to copy out of the log.
+        found, self._groups = self._groups, []
+
+        if options or found:
             question = prompt.split("[")[0].strip().rstrip("?:,") or "Choose an option"
             chosen = await self.flow.choose(
                 question,
-                options,
+                found + options,
                 detail=prompt if prompt != question else "",
                 default=default_letter(prompt) or (str(default).lower() if default else None),
+                images=self._spectral_images() if "spectral" in prompt.lower() else [],
             )
             return chosen
 
-        answer = await self.flow.text(prompt, default="" if default is None else str(default))
+        answer = await self.flow.text(
+            prompt,
+            default="" if default is None else str(default),
+            images=self._spectral_images() if "spectral" in prompt.lower() else [],
+        )
         return answer if answer != "" else default
 
-    def _echo(self, message: Any = "", **_: Any) -> None:
-        """Stand-in for click.echo and click.secho: becomes a flow note."""
-        text = strip_ansi(message).strip()
-        if text:
-            self.flow.note(text)
+    def _echo(self, message: Any = "", nl: bool = True, **_: Any) -> None:
+        """Stand-in for click.echo and click.secho.
+
+        The pipeline builds some lines in pieces with ``nl=False``, so partial
+        writes are buffered until the line ends. Completed lines become flow
+        notes, and any that describe a duplicate group are also remembered as
+        an option for the next question.
+        """
+        self._line += strip_ansi(message)
+        if not nl:
+            return
+        text, self._line = self._line.strip(), ""
+        if not text:
+            return
+
+        match = _GROUP_LINE.match(text)
+        if match:
+            group_id, description, url = match[1], match[2].strip(), match[3]
+            self._groups.append(
+                {
+                    "value": url or group_id,
+                    "label": description[:90],
+                    "detail": url or f"group {group_id}",
+                }
+            )
+        self.flow.note(text)
+
+    def _spectral_images(self) -> list[str]:
+        """URLs for the spectrals generated for this release, if any."""
+        if not self.folder:
+            return []
+        from lox.uploader.spectrals import get_spectrals_path
+
+        directory = get_spectrals_path(self.folder)
+        if not os.path.isdir(directory):
+            return []
+        names = sorted(f for f in os.listdir(directory) if f.lower().endswith(_SPECTRAL_EXT))
+        return [f"/spectral-image/{quote(os.path.basename(directory))}/{quote(n)}" for n in names]
 
     def __enter__(self) -> "FlowPrompts":
         """Patch click's prompt functions."""
@@ -166,7 +225,7 @@ async def run_upload(
     debug.log("upload start tracker=%s folder=%s", tracker, folder, level=20)
 
     gazelle = lox.trackers.get_class(tracker)()
-    with FlowPrompts(flow):
+    with FlowPrompts(flow, folder):
         await run_pipeline(
             gazelle,
             folder,

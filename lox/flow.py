@@ -54,6 +54,7 @@ class Step:
         options: list[dict[str, Any]] | None = None,
         default: Any = None,
         danger: bool = False,
+        images: list[str] | None = None,
     ) -> None:
         """Initialize a step."""
         self.id = uuid.uuid4().hex[:8]
@@ -63,6 +64,10 @@ class Step:
         self.options = options or []
         self.default = default
         self.danger = danger
+        # Pictures the answer depends on -- spectrals, above all. Deciding
+        # whether a release is lossy mastered by reading a filename is not a
+        # decision; you have to see them.
+        self.images = images or []
         self.asked = time.time()
 
     def as_dict(self) -> dict[str, Any]:
@@ -75,6 +80,7 @@ class Step:
             "options": self.options,
             "default": self.default,
             "danger": self.danger,
+            "images": self.images,
         }
 
 
@@ -145,6 +151,7 @@ class Flow:
         *,
         detail: str = "",
         default: Any = None,
+        images: list[str] | None = None,
     ) -> Any:
         """Ask the user to pick one of a named set.
 
@@ -153,11 +160,14 @@ class Flow:
             options: Dicts with ``value`` and ``label``, optionally ``detail``.
             detail: Supporting text.
             default: Pre-selected value.
+            images: Pictures shown with the question.
 
         Returns:
             The chosen ``value``.
         """
-        return await self.ask(Step("choice", prompt, detail=detail, options=options, default=default))
+        return await self.ask(
+            Step("choice", prompt, detail=detail, options=options, default=default, images=images)
+        )
 
     async def choose_many(
         self,
@@ -171,9 +181,12 @@ class Flow:
         answer = await self.ask(Step("multi", prompt, detail=detail, options=options, default=default or []))
         return list(answer or [])
 
-    async def text(self, prompt: str, *, detail: str = "", default: str = "") -> str:
+    async def text(
+        self, prompt: str, *, detail: str = "", default: str = "", images: list[str] | None = None
+    ) -> str:
         """Ask for free text, where free text is genuinely what is wanted."""
-        return str(await self.ask(Step("text", prompt, detail=detail, default=default)) or "")
+        step = Step("text", prompt, detail=detail, default=default, images=images)
+        return str(await self.ask(step) or "")
 
     async def review(self, prompt: str, rows: list[dict[str, Any]], *, detail: str = "") -> bool:
         """Show a table of facts and ask whether to go ahead.

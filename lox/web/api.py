@@ -758,6 +758,26 @@ async def api_requests_check(request: web.Request) -> web.Response:
 # ----------------------------------------------------------------------
 
 
+@routes.get("/spectral-image/{folder}/{name}")
+async def api_spectral_image(request: web.Request) -> web.StreamResponse:
+    """Serve one generated spectral image.
+
+    Spectrals live in the scratch directory and are what the lossy-master
+    question is actually about, so the browser has to be able to see them
+    rather than being sent to a separate page.
+    """
+    folder = request.match_info["folder"]
+    name = request.match_info["name"]
+    if "/" in folder or "\\" in folder or os.path.basename(name) != name:
+        return error("bad path", status=400)
+
+    root = cfg.directory.tmp_dir or cfg.directory.download_directory
+    path = os.path.realpath(os.path.join(root, folder, name))
+    if not path.startswith(os.path.realpath(root) + os.sep) or not os.path.isfile(path):
+        return error("not found", status=404)
+    return web.FileResponse(path)
+
+
 @routes.get("/api/folders")
 async def api_folders(request: web.Request) -> web.Response:
     """List release folders sitting in the download directory."""

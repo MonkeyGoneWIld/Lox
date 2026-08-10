@@ -59,4 +59,5 @@ jobs:
         run: |
           mkdir -p /tmp/lox/downloads
           uv run python tests/test_flow.py
+          uv run python tests/test_prompts.py
           uv run python tests/smoke_test.py

@@ -595,3 +595,15 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .track-main { display: flex; flex-direction: column; min-width: 0; }
 .track-main > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tracklist li { align-items: center; }
+
+.step-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.step-images img { width: 100%; border-radius: 6px; display: block; background: var(--bg); }
+.step-controls button { margin-bottom: 4px; }
