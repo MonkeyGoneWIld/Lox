@@ -116,7 +116,8 @@ Then write a config (see [`data/config.default.toml`](data/config.default.toml) 
 lox ui
 ```
 
-The `salmon` command still works as an alias, and every upstream CLI command is unchanged.
+The UI comes up on `http://127.0.0.1:55015` — change it under `[upload.web_interface]`. The `salmon` command still works
+as an alias, and every upstream CLI command is unchanged.
 
 ---
 

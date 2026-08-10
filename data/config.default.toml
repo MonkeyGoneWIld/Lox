@@ -197,7 +197,7 @@ session = 'get-from-site-cookie'
 # [upload.web_interface]
 # # web interface settings
 # host = "127.0.0.1"
-# port = 55110
+# port = 55015
 # static_root_url = "/static"
 
 # [upload.requests]

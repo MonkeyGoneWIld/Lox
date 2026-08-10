@@ -23,7 +23,7 @@ RUN mkdir -p /app/.torrents && chmod -R 777 /app
 RUN uv sync --no-dev
 
 # The web UI listens here; see docker-compose.yml for the auth-token warning.
-EXPOSE 55110
+EXPOSE 55015
 
 # Set the entrypoint to run the 'lox' script
 ENTRYPOINT ["uv", "run", "--project", "/app", "--no-sync", "lox"]
