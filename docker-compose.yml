@@ -1,71 +1,72 @@
 # lox — Deezer to Gazelle upload pipeline
 #
-# Read the two warnings before deploying:
+# No config file needed. Everything the server needs to start is below;
+# everything else — Deezer ARL, tracker credentials, image hosts, seeding
+# layout, budgets, notifications — is set in the UI under Settings, each with a
+# Test button, and stored in settings.toml on the mounted volume.
 #
-# 1. Set LOX_AUTH_TOKEN. The UI can spend your tracker API budget, read your
-#    Deezer session and start uploads to your tracker accounts. Exposing it
-#    without a token hands all of that to anyone who can reach the port.
+# Two things to get right:
 #
-# 2. /downloads and /links must be the SAME Docker volume or the same
-#    underlying filesystem. Hardlinks cannot cross filesystems, and if they
-#    can't be made you either get an error or a full second copy of every
-#    release, depending on linking.fallback_to_copy.
+# 1. LOX_AUTH_TOKEN. The UI can spend your tracker API budget, read your Deezer
+#    session and start uploads. Without a token, anything that can reach the
+#    port can do all of that.
+#
+# 2. The downloads directory and the seeding directory must be on the SAME
+#    filesystem. Hardlinks cannot cross filesystems. Mounting their common
+#    parent as one volume is the simplest way to guarantee it.
 
 services:
   lox:
-    # Built and pushed by .github/workflows/build-alpha.yml on every push to
-    # main, and on demand via workflow_dispatch.
     image: ghcr.io/monkeygonewild/lox:alpha
-    # Or build from source instead:
+    # Or build from source:
     # build: https://github.com/MonkeyGoneWIld/lox.git#main
     container_name: lox
     restart: unless-stopped
     command: ["ui"]
 
     ports:
-      # Bind to loopback and put a reverse proxy in front of it. Change to
-      # "5015:5015" only if you have set an auth token.
+      # Scope this to one interface. Keep the host port below 32768 — ports in
+      # the ephemeral range can be transiently taken by an outbound connection,
+      # which makes the bind fail at random.
       - "127.0.0.1:5015:5015"
 
     environment:
       TZ: ${TZ:-Etc/UTC}
-      # Read by config.toml via ${LOX_AUTH_TOKEN}; generate one with:
-      #   openssl rand -hex 32
+
+      # --- bootstrap: read before the settings page exists ---------------
+      LOX_HOST: "0.0.0.0"
+      LOX_PORT: "5015"
+      # openssl rand -hex 32
       LOX_AUTH_TOKEN: ${LOX_AUTH_TOKEN:?set LOX_AUTH_TOKEN in your .env}
+      LOX_DOWNLOAD_DIR: "/data/media/deemix"
+      LOX_TORRENTS_DIR: "/config/torrents"
+      LOX_TMP_DIR: "/config/spectrals"
+      LOX_STATE_DIR: "/config/state"
+      # Where the UI writes everything else.
+      LOX_SETTINGS_DIR: "/config"
+
+      HOME: /config
+
+    user: "${PUID:-1000}:${PGID:-1000}"
 
     volumes:
-      # config.toml holds every credential. Mounted where find_config_path()
-      # looks first, so it wins over anything baked into the image.
-      - ./config/config.toml:/app/config.toml:ro
-      # Scan history and saved searches persist here.
-      - ./config/state:/config/state
-
-      # Finished downloads. This is what the Uploads tab lists.
-      - ${MUSIC_DIR:-./data/music}:/downloads
-
-      # Hardlink target: your qBittorrent upload/seeding directory. Must be on
-      # the same filesystem as /downloads. lox writes /links/RED/... and
-      # /links/OPS/... here, and qBittorrent seeds from those paths.
-      - ${LINKS_DIR:-./data/links}:/links
-
-      # Generated .torrent files, or a client watch folder.
-      - ${TORRENTS_DIR:-./data/torrents}:/torrents
-
-      # Spectral scratch space. Fast disk helps.
-      - ${TMP_DIR:-./data/tmp}:/tmp/lox
-
-    # Match your qBittorrent user so hardlinks and permissions line up.
-    user: "${PUID:-1000}:${PGID:-1000}"
+      # settings.toml, the database, .torrent output and spectral scratch.
+      - ${CONFIG:-./config}/lox:/config
+      # One mount for media: downloads and hardlink targets share a filesystem.
+      - ${NAS:-./data}/data:/data
 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,os,sys; r=urllib.request.Request('http://127.0.0.1:5015/api/status', headers={'X-Auth-Token': os.environ.get('LOX_AUTH_TOKEN','')}); sys.exit(0 if urllib.request.urlopen(r, timeout=5).status==200 else 1)"]
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 40s
 
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"

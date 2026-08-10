@@ -1,23 +1,23 @@
-# lox bootstrap configuration
+# Optional. docker-compose.yml sets everything here through LOX_* environment
+# variables instead, which is the simpler path — see the compose file.
 #
-# Only what the server needs BEFORE it can serve the settings page. Everything
-# else — Deezer ARL, tracker credentials, image hosts, seeding layout, budgets,
-# notifications — is configured in the UI under Settings, with a Test button per
-# section, and is stored separately in settings.toml beside this file.
+# Use this file only if you would rather not put the auth token in the
+# environment. Environment variables win over anything set here.
 #
-# lox never rewrites this file.
+# Everything not in this file is configured in the UI under Settings and stored
+# in settings.toml. lox never rewrites either file.
 
 [directory]
-# Where releases live. In Docker these are fixed by the volume mounts.
-download_directory = '/downloads'
-dottorrents_dir = '/torrents'
+download_directory = '/data/media/deemix'
+dottorrents_dir = '/config/torrents'
+tmp_dir = '/config/spectrals'
 
 [upload.web_interface]
-# 0.0.0.0 inside a container so the published port works.
 host = '0.0.0.0'
-# Keep below 32768: ports in the ephemeral range can be transiently taken by an
-# outbound connection, which makes the container port bind fail at random.
 port = 5015
-# REQUIRED. Minimum 16 characters: openssl rand -hex 32
+# Minimum 16 characters: openssl rand -hex 32
 # The UI asks for this on first load and remembers it in a cookie for 30 days.
 auth_token = 'CHANGE-ME-openssl-rand-hex-32'
+
+[checker]
+state_dir = '/config/state'

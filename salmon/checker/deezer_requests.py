@@ -1,4 +1,8 @@
-"""Check whether tracker requests can be filled from Deezer.
+"""Given open tracker requests, find Deezer releases that could fill them.
+
+The mirror image of :mod:`salmon.uploader.request_fill`, which asks the
+opposite question: given a release being uploaded, which open requests does
+it satisfy?
 
 Fetching the request itself is the only step that costs tracker budget. Deezer
 search, match scoring, FLAC/streamability checks and external track-count
@@ -75,7 +79,7 @@ def format_bounty(value: Any) -> str:
     return f"{size} B"
 
 
-class RequestChecker:
+class DeezerRequestChecker:
     """Resolves tracker requests to Deezer releases."""
 
     def __init__(

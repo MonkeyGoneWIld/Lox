@@ -1139,6 +1139,7 @@
       state.settings = data;
       state.pending = {};
       renderSettings();
+      loadDebug();
     } catch (e) {
       body.replaceChildren(empty(e.message));
     }
@@ -1249,6 +1250,7 @@
         ),
         el('ul', { class: 'bootstrap-list' }, ...bootstrap.map((k) => el('li', {}, el('code', {}, k)))),
       ),
+      el('section', { class: 'panel', id: 'debug-panel' }, el('h2', {}, 'Debug log'), spinner('Loading')),
       el(
         'section',
         { class: 'panel' },
@@ -1263,6 +1265,40 @@
         el('p', { class: 'hint' }, 'Clearing history makes the next scan re-check everything, costing tracker budget again.'),
       ),
     );
+  }
+
+  async function loadDebug() {
+    const panel = $('#debug-panel');
+    if (!panel) return;
+    try {
+      const data = await api('/api/debug?limit=300');
+      panel.replaceChildren(
+        el(
+          'div',
+          { class: 'row' },
+          el('h2', {}, 'Debug log'),
+          el('span', { class: `tag ${data.enabled ? 'ok' : 'dim'}` }, data.enabled ? 'debug on' : 'debug off'),
+          el('button', { onclick: loadDebug }, 'Refresh'),
+          el('button', { onclick: clearDebug }, 'Clear'),
+          el('a', { class: 'linkbtn', href: '/api/debug/bundle' }, 'Download diagnostics'),
+        ),
+        el(
+          'p',
+          { class: 'hint' },
+          data.enabled
+            ? 'Credentials are redacted before anything is written, so this is safe to share.'
+            : 'Turn on Debug mode above, reproduce the problem, then refresh.',
+        ),
+        el('pre', { class: 'console' }, data.log.join('\n') || '(nothing logged yet)'),
+      );
+    } catch (e) {
+      panel.replaceChildren(el('h2', {}, 'Debug log'), empty(e.message));
+    }
+  }
+
+  async function clearDebug() {
+    await api('/api/debug/clear', { method: 'POST' });
+    loadDebug();
   }
 
   async function saveSettings() {

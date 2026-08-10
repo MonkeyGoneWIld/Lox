@@ -12,10 +12,12 @@ from salmon.sources import DeezerBase
 
 
 class Searcher(DeezerBase, SearchMixin):
+    """Deezer search, backed by the shared private-API client."""
+
     async def search_releases(self, searchstr, limit):
-        await self._check_arl()
+        """Search albums and return them as identification candidates."""
         releases = {}
-        resp = await self.get_json("/search/album", params={"q": searchstr})
+        resp = await self.client.public("/search/album", {"q": searchstr})
         for rls in resp["data"]:
             releases[rls["id"]] = (
                 IdentData(rls["artist"]["name"], rls["title"], None, rls["nb_tracks"], "WEB"),
@@ -36,11 +38,11 @@ class Searcher(DeezerBase, SearchMixin):
         return "Deezer", list(chain.from_iterable(await asyncio.gather(*tasks)))
 
     async def _get_artist_ids(self, artiststr):
-        resp = await self.get_json("/search/artist", params={"q": artiststr})
+        resp = await self.client.public("/search/artist", {"q": artiststr})
         return [a["id"] for a in resp["data"] if a["name"].lower() == artiststr.lower()]
 
     async def _get_artist_albums(self, artist_id, artist_name):
-        resp = await self.get_json(f"/artist/{artist_id}/albums")
+        resp = await self.client.public(f"/artist/{artist_id}/albums")
         return [
             ArtistRlsData(
                 url=rls["link"],
@@ -57,14 +59,14 @@ class Searcher(DeezerBase, SearchMixin):
     async def get_label_releases(self, labelstr, maximum=0, year=None):
         yearstr = "year='" + year + "'" if year else ""
         url_str = f"/search/album&q=label:'{labelstr}' {yearstr}/albums"
-        resp = await self.get_json(url_str)
+        resp = await self.client.public(url_str)
         albums = []
         i = 0
         while i < maximum or maximum == 0:
             print(i)
             i += 25
             for rls in resp["data"]:
-                album = await self.get_json(f"/album/{rls['id']}")
+                album = await self.client.album(rls["id"])
                 albums.append(
                     LabelRlsData(
                         url=rls["link"],
@@ -79,7 +81,7 @@ class Searcher(DeezerBase, SearchMixin):
                 if maximum > 0 and len(albums) >= maximum:
                     return "Deezer", albums
             if "next" in resp:
-                resp = await self.get_json(url_str, params={"index": i})
+                resp = await self.client.public(url_str, {"index": i})
             else:
                 return "Deezer", albums
         return "Deezer", albums

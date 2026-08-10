@@ -1,3 +1,9 @@
+"""Given a release being uploaded, find open requests it fills.
+
+The mirror image of :mod:`salmon.checker.deezer_requests`, which asks the
+opposite question: given an open request, which Deezer release fills it?
+"""
+
 from typing import TYPE_CHECKING, Any
 from urllib import parse
 
