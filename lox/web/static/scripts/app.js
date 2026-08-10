@@ -1287,8 +1287,21 @@
     return el(
       'div',
       { class: 'step' },
+      ...[
       el('div', { class: 'step-prompt' }, step.prompt),
       step.detail ? el('p', { class: 'hint' }, step.detail) : null,
+      // Spectrals ride along with the question they inform, so the lossy-master
+      // call is made by looking rather than by trusting a filename.
+      step.images && step.images.length
+        ? el(
+            'div',
+            { class: 'step-images' },
+            ...step.images.map((src) =>
+              el('a', { href: src, target: '_blank', rel: 'noopener' },
+                el('img', { src, loading: 'lazy', alt: 'spectral' })),
+            ),
+          )
+        : null,
       step.kind === 'review' && step.options.length
         ? el(
             'dl',
@@ -1297,6 +1310,7 @@
           )
         : null,
       el('div', { class: 'row step-controls' }, ...controls),
+      ].filter((n) => n !== null && n !== undefined),
     );
   }
 
