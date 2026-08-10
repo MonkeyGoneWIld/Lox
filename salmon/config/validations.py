@@ -8,6 +8,31 @@ class BaseStruct(msgspec.Struct, forbid_unknown_fields=False):
     pass
 
 
+def ensure_dir(path: str, label: str) -> None:
+    """Create a working directory lox owns, if it is not already there.
+
+    Used for scratch and output directories only. Demanding the operator
+    pre-create these defeats a zero-config container deploy, and getting them
+    wrong is harmless — they hold artefacts lox regenerates.
+
+    Args:
+        path: Directory to create.
+        label: Config key name, for the error message.
+
+    Raises:
+        ValueError: If the path exists but is not a directory, or cannot be
+            created.
+    """
+    if os.path.isdir(path):
+        return
+    if os.path.exists(path):
+        raise ValueError(f"{label} exists but is not a directory: {path}")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        raise ValueError(f"{label} could not be created at {path}: {e}") from e
+
+
 class Directory(BaseStruct):
     dottorrents_dir: str
     download_directory: str
@@ -15,12 +40,20 @@ class Directory(BaseStruct):
     clean_tmp_dir: bool = False
 
     def __post_init__(self):
-        if not os.path.isdir(self.dottorrents_dir):
-            raise ValueError("dottorrents_dir is not a valid directory")
+        # Created on demand: these hold .torrent files and spectral scratch,
+        # both of which lox produces itself.
+        ensure_dir(self.dottorrents_dir, "directory.dottorrents_dir")
+        if self.tmp_dir:
+            ensure_dir(self.tmp_dir, "directory.tmp_dir")
+
+        # Never created. This is your music library; if it is missing, a volume
+        # mount is wrong, and silently making an empty directory inside the
+        # container would send downloads somewhere that vanishes on restart.
         if not os.path.isdir(self.download_directory):
-            raise ValueError("download_directory is not a valid directory")
-        if self.tmp_dir and not os.path.isdir(self.tmp_dir):
-            raise ValueError("tmp_dir is not a valid directory")
+            raise ValueError(
+                f"download_directory does not exist: {self.download_directory}. "
+                f"This is not created automatically — check your volume mount."
+            )
 
 
 ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox"]
@@ -72,8 +105,10 @@ class DeezerSettings(BaseStruct):
     concurrent_downloads: Annotated[int, msgspec.Meta(ge=1, le=8)] = 2
 
     def __post_init__(self):
-        if self.download_dir and not os.path.isdir(self.download_dir):
-            raise ValueError("metadata.deezer.download_dir is not a valid directory")
+        # Deezer downloads land beside the main library; if the operator points
+        # this somewhere new, create it rather than refusing to start.
+        if self.download_dir:
+            ensure_dir(self.download_dir, "metadata.deezer.download_dir")
 
 
 class Metadata(BaseStruct):
@@ -276,8 +311,12 @@ class Checker(BaseStruct):
     # Minimum confidence for a Deezer release to be offered as a request fill.
     min_confidence: Annotated[float, msgspec.Meta(ge=0.0, le=1.0)] = 0.70
 
-    # Where scan state is kept. Defaults to <download_directory>/.salmon-checker.
+    # Where scan state is kept. Defaults to <download_directory>/.lox-checker.
     state_dir: str | None = None
+
+    def __post_init__(self):
+        if self.state_dir:
+            ensure_dir(self.state_dir, "checker.state_dir")
 
 
 class Linking(BaseStruct):
@@ -299,8 +338,8 @@ class Linking(BaseStruct):
     def __post_init__(self):
         if self.enabled and not self.link_dir:
             raise ValueError("linking.enabled is true but linking.link_dir is not set")
-        if self.link_dir and not os.path.isdir(self.link_dir):
-            raise ValueError("linking.link_dir is not a valid directory")
+        if self.link_dir:
+            ensure_dir(self.link_dir, "linking.link_dir")
 
 
 class Notifications(BaseStruct):
