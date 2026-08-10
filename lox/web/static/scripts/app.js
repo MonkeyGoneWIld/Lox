@@ -1281,6 +1281,14 @@
           el('button', { onclick: loadDebug }, 'Refresh'),
           el('button', { onclick: clearDebug }, 'Clear'),
           el('a', { class: 'linkbtn', href: '/api/debug/bundle' }, 'Download diagnostics'),
+          el('a', { class: 'linkbtn', href: '/api/debug/logfile' }, 'Download log file'),
+        ),
+        el(
+          'p',
+          { class: 'hint' },
+          `Rolling log at ${data.logfile.path} — ${(data.logfile.bytes / 1048576).toFixed(1)} MB, ` +
+            `${(data.logfile.max_file_bytes / 1048576).toFixed(0)} MB per file, ` +
+            `${(data.logfile.max_total_bytes / 1073741824).toFixed(1)} GB total before old files are dropped.`,
         ),
         el(
           'p',

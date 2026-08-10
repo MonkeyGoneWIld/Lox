@@ -366,11 +366,18 @@ async def _test_images(request: web.Request) -> web.Response:
 async def api_debug(request: web.Request) -> web.Response:
     """Return debug state, the diagnostics summary and the recent log."""
     limit = min(int(request.query.get("limit", 300)), 2000)
+    path = debuglog.log_path()
     return _json(
         {
             "enabled": debuglog.enabled(),
             "diagnostics": debuglog.diagnostics(),
             "log": debuglog.recent(limit),
+            "logfile": {
+                "path": path,
+                "bytes": os.path.getsize(path) if os.path.isfile(path) else 0,
+                "max_file_bytes": cfg.logging.max_file_bytes,
+                "max_total_bytes": cfg.logging.max_total_bytes,
+            },
         }
     )
 
@@ -380,6 +387,20 @@ async def api_debug_clear(request: web.Request) -> web.Response:
     """Empty the in-memory debug log."""
     debuglog.clear()
     return _json({"ok": True})
+
+
+@routes.get("/api/debug/logfile")
+async def api_debug_logfile(request: web.Request) -> web.Response:
+    """Download the active rolling log file.
+
+    Already redacted on the way in, so it is safe to share as-is.
+    """
+    path = debuglog.log_path()
+    if not os.path.isfile(path):
+        return _json({"error": "no log file yet"}, status=404)
+    return web.FileResponse(
+        path, headers={"Content-Disposition": 'attachment; filename="lox.log"'}
+    )
 
 
 @routes.get("/api/debug/bundle")

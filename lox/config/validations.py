@@ -342,6 +342,31 @@ class Linking(BaseStruct):
             ensure_dir(self.link_dir, "linking.link_dir")
 
 
+class Logging(BaseStruct):
+    """On-disk rolling logs.
+
+    Bounded twice over: no single file exceeds max_file_bytes, and the whole
+    set is capped at max_total_bytes so a chatty run cannot fill the volume the
+    config lives on.
+    """
+
+    # Defaults to <settings directory>/logs.
+    directory: str | None = None
+    max_file_bytes: Annotated[int, msgspec.Meta(ge=65536)] = 8 * 1024 * 1024
+    max_total_bytes: Annotated[int, msgspec.Meta(ge=1048576)] = 1024 * 1024 * 1024
+
+    def __post_init__(self):
+        if self.max_total_bytes < self.max_file_bytes:
+            raise ValueError("logging.max_total_bytes must be at least logging.max_file_bytes")
+        if self.directory:
+            ensure_dir(self.directory, "logging.directory")
+
+    @property
+    def backup_count(self) -> int:
+        """How many rotated files to keep so the total stays under the cap."""
+        return max(1, (self.max_total_bytes // self.max_file_bytes) - 1)
+
+
 class Notifications(BaseStruct):
     """Optional Discord webhook notifications for checker results."""
 
@@ -366,5 +391,6 @@ class Cfg(BaseStruct):
     seedbox: list[Seedbox] = msgspec.field(default_factory=list)
     upload: Upload = msgspec.field(default_factory=Upload)
     checker: Checker = msgspec.field(default_factory=Checker)
+    logging: Logging = msgspec.field(default_factory=Logging)
     linking: Linking = msgspec.field(default_factory=Linking)
     notifications: Notifications = msgspec.field(default_factory=Notifications)

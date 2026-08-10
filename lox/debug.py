@@ -10,6 +10,7 @@ or ``--debug`` on the CLI.
 """
 
 import logging
+import logging.handlers
 import os
 import re
 import time
@@ -60,16 +61,42 @@ def redact_value(value: Any) -> Any:
     return value
 
 
-class _RedactingRingHandler(logging.Handler):
-    """Keeps recent log lines in memory, redacted, for the UI to read."""
+class RedactingFormatter(logging.Formatter):
+    """Formats a record and strips anything credential-shaped from the result.
+
+    Applied at the formatter rather than the handler so every sink - the ring
+    buffer the UI reads and the file on disk - is redacted by construction. A
+    log file that leaks an ARL is worse than no log file.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Format and redact one record."""
+        return redact(super().format(record))
+
+
+class _RingHandler(logging.Handler):
+    """Keeps recent lines in memory for the UI to tail."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Format, redact and store one record."""
+        """Store one already-formatted line."""
         try:
-            line = self.format(record)
+            _ring.append(self.format(record))
         except Exception:  # noqa: BLE001 - logging must never raise
             return
-        _ring.append(redact(line))
+
+
+def log_dir() -> str:
+    """Return the directory rolling logs are written to, creating it if needed."""
+    from lox import cfg, settings
+
+    directory = cfg.logging.directory or os.path.join(os.path.dirname(settings.path), "logs")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def log_path() -> str:
+    """Path of the active log file."""
+    return os.path.join(log_dir(), "lox.log")
 
 
 def logger() -> logging.Logger:
@@ -103,9 +130,29 @@ def configure(force: bool | None = None) -> bool:
     log.propagate = False
 
     if not _configured:
-        handler = _RedactingRingHandler()
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S"))
-        log.addHandler(handler)
+        from lox import cfg
+
+        ring = _RingHandler()
+        ring.setFormatter(RedactingFormatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S"))
+        log.addHandler(ring)
+
+        # Rolling file log, bounded by size and by total. backup_count is
+        # derived from the two limits so the set cannot exceed the cap.
+        try:
+            rotating = logging.handlers.RotatingFileHandler(
+                log_path(),
+                maxBytes=cfg.logging.max_file_bytes,
+                backupCount=cfg.logging.backup_count,
+                encoding="utf-8",
+            )
+            rotating.setFormatter(
+                RedactingFormatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S")
+            )
+            log.addHandler(rotating)
+        except OSError as e:
+            log.addHandler(logging.NullHandler())
+            print(f"[lox] could not open the log file: {e}")
+
         _configured = True
 
     # Third-party chatter is where the useful detail lives when a request fails.
@@ -183,6 +230,13 @@ def diagnostics() -> dict[str, Any]:
             "ops_api_key": state(cfg.tracker.ops.api_key),
             "auth_token": state(cfg.upload.web_interface.auth_token),
             "discord_webhook": state(cfg.notifications.discord_webhook),
+        },
+        "logging": {
+            "directory": log_dir(),
+            "file": log_path(),
+            "max_file_bytes": cfg.logging.max_file_bytes,
+            "max_total_bytes": cfg.logging.max_total_bytes,
+            "files_kept": cfg.logging.backup_count + 1,
         },
         "paths": {
             "download_directory": cfg.directory.download_directory,

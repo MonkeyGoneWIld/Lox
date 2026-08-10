@@ -42,6 +42,7 @@ services:
       LOX_TORRENTS_DIR: "/config/torrents"
       LOX_TMP_DIR: "/config/spectrals"
       LOX_STATE_DIR: "/config/state"
+      LOX_LOG_DIR: "/config/logs"
       # Where the UI writes everything else.
       LOX_SETTINGS_DIR: "/config"
 

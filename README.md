@@ -190,6 +190,16 @@ non-empty:
 | Paths | Checks every directory exists and is writable |
 | Image hosting | Checks keys are present — no upload is attempted, since that would put a real file on a public host |
 
+### Logs
+
+lox writes a rolling log to `<settings dir>/logs/lox.log`, or wherever `LOX_LOG_DIR` points. It is bounded twice:
+**8 MB per file** and **1 GB in total**, with the oldest files dropped once the cap is reached. Both limits are
+editable under Settings → Debug.
+
+Everything is redacted at the formatter, so ARLs, session cookies, API keys and webhook URLs never reach disk — the log
+is safe to share. Turn on Debug mode for verbose output; Settings → Debug tails it live and offers both the log file
+and a diagnostics bundle for download.
+
 UI settings live in `settings.toml`. Nothing ever rewrites `config.toml`, and deleting `settings.toml` reverts to
 whatever the bootstrap says.
 
@@ -206,7 +216,7 @@ them through the environment (what the compose file does) or a `config.toml`:
 | `LOX_DOWNLOAD_DIR` | `directory.download_directory` |
 | `LOX_TORRENTS_DIR` | `directory.dottorrents_dir` |
 
-`LOX_TMP_DIR`, `LOX_STATE_DIR` and `LOX_SETTINGS_DIR` are optional. The environment wins over `config.toml`, so a stale
+`LOX_TMP_DIR`, `LOX_STATE_DIR`, `LOX_LOG_DIR` and `LOX_SETTINGS_DIR` are optional. The environment wins over `config.toml`, so a stale
 mounted file cannot override a deployment. With the environment set, no config file is needed at all.
 
 Outside Docker, `config.toml` is looked for at the repo root, then `~/.config/lox/`, then `~/.config/smoked-salmon/` —
