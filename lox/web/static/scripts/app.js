@@ -1694,6 +1694,38 @@
     });
   }
 
+  // One row per track: the full spectral wide enough to read, its zoom beside
+  // it, and the track number. The old grid of 180px thumbnails in a 420px box
+  // showed twenty-four unlabelled squares you could not judge anything from,
+  // which defeated the point of looking at them.
+  function spectralList(images) {
+    return el(
+      'div',
+      { class: 'spectrals' },
+      ...images.map((img) =>
+        el(
+          'div',
+          { class: 'spectral-row' },
+          el('div', { class: 'spectral-num' }, img.track || ''),
+          el(
+            'div',
+            { class: 'spectral-pair' },
+            img.full
+              ? el('a', { class: 'spectral-full', href: img.full, target: '_blank', rel: 'noopener',
+                          title: 'Open full size' },
+                  el('img', { src: img.full, loading: 'lazy', alt: `Full spectral, track ${img.track}` }))
+              : null,
+            img.zoom
+              ? el('a', { class: 'spectral-zoom', href: img.zoom, target: '_blank', rel: 'noopener',
+                          title: 'Open full size' },
+                  el('img', { src: img.zoom, loading: 'lazy', alt: `Zoomed spectral, track ${img.track}` }))
+              : null,
+          ),
+        ),
+      ),
+    );
+  }
+
   // What is already in the group you are about to upload into. The question is
   // "does my release duplicate one of these", which is a comparison across
   // media, format and encoding -- so those are columns, sortable by eye,
@@ -1721,6 +1753,11 @@
 
   function stepTable(table) {
     if (table.kind === 'torrents') return torrentTable(table);
+    // Metadata is a field-and-value list. Running it through the three-column
+    // diff renderer gave it a before/after it does not have, and printed each
+    // multi-value field twice -- once as an empty label, once as a group
+    // header over its own values.
+    if (table.kind === 'previous' || table.kind === 'pending') return metaTable(table);
     // Rows can be grouped -- by filename for a tag diff, by field for a
     // metadata list -- so a group header is emitted whenever it changes.
     const rows = [];
@@ -1754,6 +1791,33 @@
           changed ? ` — ${changed} change${changed === 1 ? '' : 's'}` : ` — ${table.rows.length} rows`),
       ),
       el('table', { class: 'table diff-table' }, el('tbody', {}, ...rows)),
+    );
+  }
+
+  // Two columns, one row per field, empties collapsed to a dash. Open by
+  // default: it is the thing the next question is about.
+  function metaTable(table) {
+    const rows = table.rows.filter((r) => r.label || r.before);
+    return el(
+      'details',
+      { class: 'diff meta-block', open: true },
+      el('summary', {}, table.title, el('span', { class: 'card-sub' }, ` — ${rows.length} fields`)),
+      el(
+        'table',
+        { class: 'table meta-table' },
+        el(
+          'tbody',
+          {},
+          ...rows.map((r) =>
+            el(
+              'tr',
+              { class: r.before ? '' : 'meta-empty' },
+              el('td', { class: 'meta-field' }, r.label || ''),
+              el('td', { class: 'meta-value' }, r.before || '—'),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1857,16 +1921,7 @@
       ...(step.tables || []).map(stepTable),
       // Spectrals ride along with the question they inform, so the lossy-master
       // call is made by looking rather than by trusting a filename.
-      step.images && step.images.length
-        ? el(
-            'div',
-            { class: 'step-images' },
-            ...step.images.map((src) =>
-              el('a', { href: src, target: '_blank', rel: 'noopener' },
-                el('img', { src, loading: 'lazy', alt: 'spectral' })),
-            ),
-          )
-        : null,
+      step.images && step.images.length ? spectralList(step.images) : null,
       step.kind === 'review' && step.options.length
         ? el(
             'dl',
@@ -1879,48 +1934,82 @@
     );
   }
 
+  // Rebuilt in pieces, each only when that piece actually changed. Replacing the
+  // whole card on every poll -- twice a second -- threw away your scroll
+  // position, closed anything you had expanded and cleared anything you had
+  // typed, which made a question you needed to read impossible to read.
   function renderFlow(flow) {
     const container = $('#upload-flows');
     if (!container) return;
+
     let card = $(`#flow-${flow.id}`);
     if (!card) {
-      card = el('div', { class: 'panel flow-card', id: `flow-${flow.id}` });
+      card = el(
+        'div',
+        { class: 'panel flow-card', id: `flow-${flow.id}` },
+        el('div', { class: 'row flow-head' }),
+        el('p', { class: 'hint flow-stage' }),
+        el('div', { class: 'bar flow-bar', hidden: true }, el('div', { class: 'bar-fill' })),
+        el('div', { class: 'flow-step' }),
+        el('div', { class: 'flow-error' }),
+        el('div', { class: 'flow-notes' }, el('ul', { class: 'notelist' })),
+      );
       container.prepend(card);
     }
 
     const stateTag = { waiting: 'warn', done: 'ok', failed: 'bad', cancelled: 'dim' }[flow.state] || 'dim';
-    const notes = flow.events.slice(-8);
+    const head = card.querySelector('.flow-head');
+    if (head.dataset.state !== flow.state) {
+      head.dataset.state = flow.state;
+      head.replaceChildren(
+        ...[
+          el('h2', {}, flow.label),
+          el('span', { class: `tag ${stateTag}` }, flow.state === 'waiting' ? 'needs you' : flow.state),
+          flow.state === 'running' || flow.state === 'waiting'
+            ? el('button', { class: 'ghost', onclick: () => cancelFlow(flow.id) }, 'Cancel')
+            : null,
+        ].filter(Boolean),
+      );
+    }
 
-    card.replaceChildren(
-      ...[
-      el(
-        'div',
-        { class: 'row' },
-        el('h2', {}, flow.label),
-        el('span', { class: `tag ${stateTag}` }, flow.state === 'waiting' ? 'needs you' : flow.state),
-        flow.state === 'running' || flow.state === 'waiting'
-          ? el('button', { class: 'ghost', onclick: () => cancelFlow(flow.id) }, 'Cancel')
-          : null,
-      ),
-      flow.stage ? el('p', { class: 'hint' }, flow.stage) : null,
-      flow.percent !== null && flow.percent !== undefined
-        ? el('div', { class: 'bar' }, el('div', { class: 'bar-fill', style: `width:${flow.percent}%` }))
-        : null,
-      flow.step ? flowStep(flow) : null,
-      flow.error ? el('p', { class: 'test-result warn' }, flow.error) : null,
-      // Notes are what the pipeline is telling you -- duplicate groups it
-      // found, what it is checking. Hiding them behind a disclosure was why
-      // the page looked empty. Show them, newest last, and keep them open.
-      flow.events.length
-        ? el(
-            'div',
-            { class: 'flow-notes' },
-            el('ul', { class: 'notelist' }, ...flow.events.slice(-25).map((n) =>
-              el('li', { class: n.level }, n.message))),
-          )
-        : null,
-      ].filter((n) => n !== null && n !== undefined),
-    );
+    const stage = card.querySelector('.flow-stage');
+    if (stage.textContent !== (flow.stage || '')) stage.textContent = flow.stage || '';
+    stage.hidden = !flow.stage;
+
+    const bar = card.querySelector('.flow-bar');
+    const pct = flow.percent;
+    bar.hidden = pct === null || pct === undefined;
+    if (!bar.hidden) bar.firstElementChild.style.width = `${pct}%`;
+
+    // The expensive part, and the one holding your scroll and your typing.
+    // Only rebuilt when it becomes a different question.
+    const stepBox = card.querySelector('.flow-step');
+    const stepId = flow.step?.id || '';
+    if (stepBox.dataset.step !== stepId) {
+      stepBox.dataset.step = stepId;
+      stepBox.replaceChildren(...(flow.step ? [flowStep(flow)] : []));
+    }
+
+    const errorBox = card.querySelector('.flow-error');
+    if (errorBox.dataset.error !== (flow.error || '')) {
+      errorBox.dataset.error = flow.error || '';
+      errorBox.replaceChildren(...(flow.error ? [el('p', { class: 'test-result warn' }, flow.error)] : []));
+    }
+
+    // Notes append rather than redraw, and only follow the tail while you are
+    // already at the bottom -- scrolling up to read something should not be
+    // undone by the next line arriving.
+    const notes = card.querySelector('.flow-notes');
+    const list = notes.querySelector('.notelist');
+    const shown = Number(notes.dataset.count || 0);
+    const events = flow.events.slice(-25);
+    if (events.length !== shown || list.childElementCount !== events.length) {
+      const atBottom = notes.scrollHeight - notes.scrollTop - notes.clientHeight < 24;
+      notes.dataset.count = String(events.length);
+      list.replaceChildren(...events.map((n) => el('li', { class: n.level }, n.message)));
+      if (atBottom) notes.scrollTop = notes.scrollHeight;
+    }
+    notes.hidden = !events.length;
   }
 
   async function cancelFlow(flowId) {

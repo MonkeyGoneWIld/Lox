@@ -1025,7 +1025,7 @@ async def api_upload(request: web.Request) -> web.Response:
         return error("at least one configured tracker is required")
 
     source = body.get("source", "WEB")
-    auto_rename = bool(body.get("auto_rename", True))
+    auto_rename = bool(body.get("auto_rename", False))
     flows: FlowRegistry = request.app["flows"]
 
     label = f"{os.path.basename(folder)} to {', '.join(trackers)}"
