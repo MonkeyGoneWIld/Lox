@@ -405,6 +405,35 @@ button.ghost { background: none; }
 .toast.ok { border-left-color: var(--ok); }
 
 .empty { color: var(--text-dim); text-align: center; padding: 44px 0; }
+.empty.bad { color: var(--bad); }
+
+/* ---------- configuration problems ---------- */
+
+/* Shown when lox started despite something being wrong: a download directory
+   that is not mounted, an image host with no key. Warning-coloured rather than
+   error-coloured -- the app works, parts of it will not. */
+.problem-banner {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: rgba(245, 166, 35, 0.1);
+  font-size: 13px;
+}
+
+.problem-banner ul { margin: 6px 0 8px; padding-left: 18px; }
+.problem-banner li { margin: 3px 0; color: var(--text); }
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
 
 /* ---------- login ---------- */
 

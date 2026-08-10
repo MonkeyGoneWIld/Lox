@@ -76,7 +76,17 @@ async def main() -> int:
                 fields = sum(len(sec["fields"]) for sec in data["sections"])
                 check("/api/settings schema", r.status == 200 and fields > 60,
                       f"{len(data['sections'])} sections, {fields} fields")
-                check("bootstrap keys reported", len(data["bootstrap"]) == 5)
+                # Only what the server needs before it can serve the page that
+                # would edit it. Directories are deliberately not in here: a
+                # wrong path has to be fixable from the UI, not just compose.
+                check("bootstrap keys cover bind address and auth",
+                      set(data["bootstrap"]) == {"upload.web_interface.host",
+                                                 "upload.web_interface.port",
+                                                 "upload.web_interface.auth_token"},
+                      str(sorted(data["bootstrap"])))
+                editable = {f["key"] for sec in data["sections"] for f in sec["fields"]}
+                check("download directory is editable in the UI",
+                      "directory.download_directory" in editable)
 
             # --- a real settings write, applied live --------------------
             async with s.put(f"{BASE}/api/settings", headers=h,

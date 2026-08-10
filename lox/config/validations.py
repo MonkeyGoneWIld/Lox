@@ -3,34 +3,79 @@ from typing import Annotated, Literal
 
 import msgspec
 
+PROBLEMS: dict[str, str] = {}
+"""Settings that are wrong but are not reasons to refuse to start.
+
+A missing download directory, a hardlink target on the wrong volume, an image
+host selected without its key: every one of these is something you fix on the
+settings page — and you cannot reach the settings page if the process exits on
+the way up. Refusing to boot over a value the UI exists to correct produces a
+restart loop, which is strictly worse than starting up and saying what is wrong.
+
+So these are collected here, reported by the API and shown as a banner, and the
+operations that actually need the setting fail with a message naming it. Only
+things that make the server unable to serve safely — a bad port, a weak auth
+token — still stop startup.
+"""
+
 
 class BaseStruct(msgspec.Struct, forbid_unknown_fields=False):
     pass
 
 
-def ensure_dir(path: str, label: str) -> None:
+def _note(key: str, message: str | None) -> None:
+    """Record a problem against a settings key, or clear it if it is fixed."""
+    if message:
+        PROBLEMS[key] = message
+    else:
+        PROBLEMS.pop(key, None)
+
+
+def problems() -> list[dict[str, str]]:
+    """Everything currently wrong with the configuration, for the UI."""
+    return [{"key": key, "message": message} for key, message in sorted(PROBLEMS.items())]
+
+
+def ensure_dir(path: str, label: str) -> str | None:
     """Create a working directory lox owns, if it is not already there.
 
     Used for scratch and output directories only. Demanding the operator
     pre-create these defeats a zero-config container deploy, and getting them
-    wrong is harmless — they hold artefacts lox regenerates.
+    wrong is cheap — they hold artefacts lox regenerates.
 
     Args:
         path: Directory to create.
-        label: Config key name, for the error message.
+        label: Human-readable name of the setting, for the message.
 
-    Raises:
-        ValueError: If the path exists but is not a directory, or cannot be
-            created.
+    Returns:
+        A description of what is wrong, or None if the directory is usable.
     """
     if os.path.isdir(path):
-        return
+        return None
     if os.path.exists(path):
-        raise ValueError(f"{label} exists but is not a directory: {path}")
+        return f"{label} is not a directory: {path}"
     try:
         os.makedirs(path, exist_ok=True)
     except OSError as e:
-        raise ValueError(f"{label} could not be created at {path}: {e}") from e
+        return f"{label} could not be created at {path}: {e}"
+    return None
+
+
+def require_dir(path: str, label: str) -> str | None:
+    """Check a directory lox must not create.
+
+    Args:
+        path: Directory that has to already exist.
+        label: Human-readable name of the setting, for the message.
+
+    Returns:
+        A description of what is wrong, or None if the directory is usable.
+    """
+    if os.path.isdir(path):
+        return None
+    if os.path.exists(path):
+        return f"{label} is not a directory: {path}"
+    return f"{label} does not exist: {path}. lox will not create it — check the volume mount, or set another path."
 
 
 class Directory(BaseStruct):
@@ -40,20 +85,18 @@ class Directory(BaseStruct):
     clean_tmp_dir: bool = False
 
     def __post_init__(self):
+        self.check()
+
+    def check(self) -> None:
         # Created on demand: these hold .torrent files and spectral scratch,
         # both of which lox produces itself.
-        ensure_dir(self.dottorrents_dir, "directory.dottorrents_dir")
-        if self.tmp_dir:
-            ensure_dir(self.tmp_dir, "directory.tmp_dir")
+        _note("directory.dottorrents_dir", ensure_dir(self.dottorrents_dir, "Torrent output directory"))
+        _note("directory.tmp_dir", ensure_dir(self.tmp_dir, "Spectral scratch directory") if self.tmp_dir else None)
 
         # Never created. This is your music library; if it is missing, a volume
         # mount is wrong, and silently making an empty directory inside the
         # container would send downloads somewhere that vanishes on restart.
-        if not os.path.isdir(self.download_directory):
-            raise ValueError(
-                f"download_directory does not exist: {self.download_directory}. "
-                f"This is not created automatically — check your volume mount."
-            )
+        _note("directory.download_directory", require_dir(self.download_directory, "Download directory"))
 
 
 ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox"]
@@ -71,15 +114,24 @@ class ImageUploader(BaseStruct):
     auto_compress_cover: bool = False
 
     def __post_init__(self):
-        uploader_selections = set({self.image_uploader, self.cover_uploader, self.specs_uploader})
-        if ("ptpimg" in uploader_selections) and self.ptpimg_key is None:
-            raise ValueError("ptpimg key not specified")
-        if "ptscreens" in uploader_selections and self.ptscreens_key is None:
-            raise ValueError("PTScreens key not specified")
-        if "oeimg" in uploader_selections and self.oeimg_key is None:
-            raise ValueError("OEImage key not specified")
-        if "imgbb" in uploader_selections and self.imgbb_key is None:
-            raise ValueError("imgbb key not specified")
+        self.check()
+
+    def check(self) -> None:
+        selected = {self.image_uploader, self.cover_uploader, self.specs_uploader}
+        missing = [
+            host
+            for host, key in (
+                ("ptpimg", self.ptpimg_key),
+                ("ptscreens", self.ptscreens_key),
+                ("oeimg", self.oeimg_key),
+                ("imgbb", self.imgbb_key),
+            )
+            if host in selected and not key
+        ]
+        _note(
+            "image.image_uploader",
+            f"Image host {', '.join(missing)} is selected but has no API key set." if missing else None,
+        )
 
 
 class TidalSettings(BaseStruct):
@@ -105,10 +157,15 @@ class DeezerSettings(BaseStruct):
     concurrent_downloads: Annotated[int, msgspec.Meta(ge=1, le=8)] = 2
 
     def __post_init__(self):
+        self.check()
+
+    def check(self) -> None:
         # Deezer downloads land beside the main library; if the operator points
         # this somewhere new, create it rather than refusing to start.
-        if self.download_dir:
-            ensure_dir(self.download_dir, "metadata.deezer.download_dir")
+        _note(
+            "metadata.deezer.download_dir",
+            ensure_dir(self.download_dir, "Deezer download directory") if self.download_dir else None,
+        )
 
 
 class Metadata(BaseStruct):
@@ -319,8 +376,13 @@ class Checker(BaseStruct):
     state_dir: str | None = None
 
     def __post_init__(self):
-        if self.state_dir:
-            ensure_dir(self.state_dir, "checker.state_dir")
+        self.check()
+
+    def check(self) -> None:
+        _note(
+            "checker.state_dir",
+            ensure_dir(self.state_dir, "Scan history directory") if self.state_dir else None,
+        )
 
 
 class Linking(BaseStruct):
@@ -340,10 +402,13 @@ class Linking(BaseStruct):
     fallback_to_copy: bool = False
 
     def __post_init__(self):
+        self.check()
+
+    def check(self) -> None:
         if self.enabled and not self.link_dir:
-            raise ValueError("linking.enabled is true but linking.link_dir is not set")
-        if self.link_dir:
-            ensure_dir(self.link_dir, "linking.link_dir")
+            _note("linking.link_dir", "Hardlinking is on but no seeding directory is set.")
+        else:
+            _note("linking.link_dir", ensure_dir(self.link_dir, "Seeding directory") if self.link_dir else None)
 
 
 class Logging(BaseStruct):
@@ -360,10 +425,14 @@ class Logging(BaseStruct):
     max_total_bytes: Annotated[int, msgspec.Meta(ge=1048576)] = 1024 * 1024 * 1024
 
     def __post_init__(self):
-        if self.max_total_bytes < self.max_file_bytes:
-            raise ValueError("logging.max_total_bytes must be at least logging.max_file_bytes")
-        if self.directory:
-            ensure_dir(self.directory, "logging.directory")
+        self.check()
+
+    def check(self) -> None:
+        _note(
+            "logging.max_total_bytes",
+            "Total log size is smaller than one log file." if self.max_total_bytes < self.max_file_bytes else None,
+        )
+        _note("logging.directory", ensure_dir(self.directory, "Log directory") if self.directory else None)
 
     @property
     def backup_count(self) -> int:
@@ -381,8 +450,11 @@ class Notifications(BaseStruct):
     notify_fillable: bool = False
 
     def __post_init__(self):
-        if self.enabled and not self.discord_webhook:
-            raise ValueError("notifications.enabled is true but no discord_webhook is set")
+        self.check()
+
+    def check(self) -> None:
+        unset = self.enabled and not self.discord_webhook
+        _note("notifications.discord_webhook", "Notifications are on but no Discord webhook is set." if unset else None)
 
 
 class Cfg(BaseStruct):
@@ -398,3 +470,29 @@ class Cfg(BaseStruct):
     logging: Logging = msgspec.field(default_factory=Logging)
     linking: Linking = msgspec.field(default_factory=Linking)
     notifications: Notifications = msgspec.field(default_factory=Notifications)
+
+
+def validate(cfg: Cfg) -> list[dict[str, str]]:
+    """Re-check everything that can be wrong without being fatal.
+
+    The per-struct checks run once at parse time, which is before settings.toml
+    is layered on and long before anyone edits a path in the UI. This runs them
+    against the live config, so a directory you have just corrected on the
+    settings page stops being reported without a restart — and one you have just
+    broken starts being reported.
+
+    Args:
+        cfg: The live configuration.
+
+    Returns:
+        The remaining problems, newly recomputed.
+    """
+    PROBLEMS.clear()
+    cfg.directory.check()
+    cfg.metadata.deezer.check()
+    cfg.image.check()
+    cfg.checker.check()
+    cfg.linking.check()
+    cfg.logging.check()
+    cfg.notifications.check()
+    return problems()

@@ -205,19 +205,35 @@ whatever the bootstrap says.
 
 ### Bootstrap
 
-Five values are read before a web server exists, so they cannot come from a page the server has not started yet. Supply
-them through the environment (what the compose file does) or a `config.toml`:
+Three values are read before a web server exists, so they cannot come from a page the server has not started yet:
 
 | Environment | Config key |
 |---|---|
 | `LOX_HOST` | `upload.web_interface.host` |
 | `LOX_PORT` | `upload.web_interface.port` |
 | `LOX_AUTH_TOKEN` | `upload.web_interface.auth_token` |
-| `LOX_DOWNLOAD_DIR` | `directory.download_directory` |
-| `LOX_TORRENTS_DIR` | `directory.dottorrents_dir` |
 
-`LOX_TMP_DIR`, `LOX_STATE_DIR`, `LOX_LOG_DIR` and `LOX_SETTINGS_DIR` are optional. The environment wins over `config.toml`, so a stale
+The directories are bootstrapped the same way, but they are *not* in that list — the server does not need them to serve
+a page, and a wrong path has to be fixable from the UI rather than only by editing compose:
+
+| Environment | Config key | |
+|---|---|---|
+| `LOX_DOWNLOAD_DIR` | `directory.download_directory` | Must already exist. Never created for you — an empty directory invented inside the container would swallow your downloads. |
+| `LOX_TORRENTS_DIR` | `directory.dottorrents_dir` | Created if missing. |
+| `LOX_TMP_DIR` | `directory.tmp_dir` | Optional. Created if missing. |
+| `LOX_STATE_DIR` | `checker.state_dir` | Optional. Created if missing. |
+| `LOX_LOG_DIR` | `logging.directory` | Optional. Created if missing. |
+| `LOX_SETTINGS_DIR` | — | Optional. Where `settings.toml` and the database go. |
+
+Anything set under Settings → Paths overrides the environment. The environment wins over `config.toml`, so a stale
 mounted file cannot override a deployment. With the environment set, no config file is needed at all.
+
+### When configuration is wrong
+
+lox starts anyway and shows a banner naming what is wrong, and the operations that need the setting refuse with a
+message pointing at it. Only a bad bind address or an auth token under 16 characters still stops startup — everything
+else is something you fix on the settings page, and exiting on the way up means never reaching that page. A container
+that restart-loops over a path you could have corrected in the UI is worse than one that starts and tells you.
 
 Outside Docker, `config.toml` is looked for at the repo root, then `~/.config/lox/`, then `~/.config/smoked-salmon/` —
 upstream's location, still read so an existing install keeps working. Nothing is ever written there.

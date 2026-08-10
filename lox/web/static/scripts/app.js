@@ -135,6 +135,21 @@
     badge.textContent = status.downloads.active;
     $('#downloads-dir').textContent = `Saving to ${status.downloads.directory} as ${status.downloads.format}`;
     $('#uploads-dir').textContent = status.downloads.directory;
+    renderProblems(status.problems);
+  }
+
+  // A misconfigured path no longer stops the server booting, so it has to be
+  // impossible to miss once it has booted -- and one click from being fixed.
+  function renderProblems(problems) {
+    const banner = $('#config-problems');
+    const list = problems || [];
+    banner.hidden = !list.length;
+    if (!list.length) return;
+    banner.replaceChildren(
+      el('strong', {}, list.length === 1 ? 'Configuration problem' : `${list.length} configuration problems`),
+      el('ul', {}, ...list.map((p) => el('li', {}, p.message))),
+      el('button', { class: 'link', onclick: () => setView('settings') }, 'Open settings'),
+    );
   }
 
   function renderBudgets() {
@@ -1143,12 +1158,17 @@
     const list = $('#folders-list');
     list.replaceChildren(spinner('Reading download folder'));
     try {
-      const { folders, directory, linking } = await api('/api/folders');
+      const { folders, directory, linking, error: dirError } = await api('/api/folders');
       $('#uploads-dir').textContent = directory;
       state.linking = linking;
       $('#linking-note').textContent = linking
         ? 'Linking is on: each tracker gets its own hardlinked folder under the seeding directory, so the bytes exist once.'
         : 'Linking is off — every tracker will seed from the same folder. Set [linking] in your config for cross-seed style layout.';
+      if (dirError) {
+        // "No folders" and "cannot see the folder" look identical otherwise.
+        list.replaceChildren(el('p', { class: 'empty bad' }, dirError));
+        return;
+      }
       if (!folders.length) {
         list.replaceChildren(empty('No release folders yet.'));
         return;

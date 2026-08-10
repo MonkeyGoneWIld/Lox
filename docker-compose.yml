@@ -14,6 +14,13 @@
 # 2. The downloads directory and the seeding directory must be on the SAME
 #    filesystem. Hardlinks cannot cross filesystems. Mounting their common
 #    parent as one volume is the simplest way to guarantee it.
+#
+# LOX_DOWNLOAD_DIR is a path *inside* the container, so it has to sit under a
+# volume you actually mounted — with the mounts below, /data/media/deemix means
+# ${NAS}/data/media/deemix on the host. If it does not exist lox still starts and
+# says so in a banner, and you can correct it under Settings → Paths without
+# touching this file. It is never created for you: an empty directory invented
+# inside the container would swallow your downloads on the next restart.
 
 services:
   lox:

@@ -4,6 +4,7 @@ import asyncclick as click
 
 from lox.config import Cfg, find_config_path, get_user_cfg_path, setup_config
 from lox.config.store import SettingsStore
+from lox.config.validations import validate as validate_config
 
 
 def _config_location() -> str:
@@ -49,3 +50,8 @@ if _unapplied:
         f"Ignored {len(_unapplied)} saved setting(s) with no matching config section: {', '.join(_unapplied)}",
         fg="yellow",
     )
+
+# Anything still wrong is reported, not fatal. The settings page is where these
+# get fixed, and exiting here would mean never reaching it.
+for _problem in validate_config(cfg):
+    click.secho(f"Configuration problem — {_problem['message']}", fg="yellow")
