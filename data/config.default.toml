@@ -1,4 +1,4 @@
-# Smoked Salmon Configuration File
+# Smoked Lox Configuration File
 # Read details about each setting here:
 # https://github.com/smokin-salmon/smoked-salmon/wiki/Configuration
 
@@ -64,7 +64,7 @@ token = 'your-token'
 [metadata.qobuz]
 app_id = 'app-id'
 user_auth_token = 'user_auth_token'
-# if you are using salmon from a non-english country, set this to true to avoid retrieving non-english genres
+# if you are using lox from a non-english country, set this to true to avoid retrieving non-english genres
 # no_genres_from_qobuz = False
 
 # Deezer ARL cookie. Required for downloading, channel browsing and FLAC
@@ -143,7 +143,7 @@ session = 'get-from-site-cookie'
 # ===============================
 # [upload]
 # simultaneous_threads = 3
-# user_agent = "salmon uploading tools"
+# user_agent = "lox uploading tools"
 
 # # Default text editor for interactive editing operations
 # # "nano", "vim", "emacs", or any command available in PATH
@@ -265,7 +265,7 @@ session = 'get-from-site-cookie'
 # # Minimum confidence for a Deezer release to be offered as a request fill.
 # min_confidence = 0.70
 #
-# # Where scan state lives. Defaults to <download_directory>/.salmon-checker
+# # Where scan state lives. Defaults to <download_directory>/.lox-checker
 # state_dir = ''
 
 

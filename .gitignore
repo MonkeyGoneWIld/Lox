@@ -19,7 +19,7 @@ smoked.db*
 config.py
 config.toml
 accounts.json
-salmon/web/static/specs
+lox/web/static/specs
 !.gitkeep
 .venv
 

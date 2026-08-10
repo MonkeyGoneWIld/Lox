@@ -143,7 +143,7 @@ Then write a config (see [`data/config.default.toml`](data/config.default.toml) 
 lox ui
 ```
 
-The UI comes up on `http://127.0.0.1:5015` — change it under `[upload.web_interface]`. The `salmon` command still works
+The UI comes up on `http://127.0.0.1:5015` — change it under `[upload.web_interface]`. The `lox` command still works
 as an alias, and every upstream CLI command is unchanged.
 
 ---
@@ -234,19 +234,19 @@ Test.
 ## How it fits together
 
 ```
-salmon/deezer/     gw.py, crypto.py, download.py, explore.py
+lox/deezer/     gw.py, crypto.py, download.py, explore.py
                    Private gw-light API, Blowfish stream decryption, channels
 
-salmon/checker/    gateway.py    every tracker call, budgeted and breakered
+lox/checker/    gateway.py    every tracker call, budgeted and breakered
                    matching.py   title/artist/edition heuristics, request scoring
                    missing.py    collect (free) then check (budgeted)
                    requests_check.py + trackcount.py
                    watchlists.py saved searches
                    store.py      debounced atomic JSON state
 
-salmon/seeding/    links.py      hardlinked per-tracker folders
+lox/seeding/    links.py      hardlinked per-tracker folders
 
-salmon/web/        api.py        JSON API, auth middleware, path validation
+lox/web/        api.py        JSON API, auth middleware, path validation
                    jobs.py       background jobs with progress
                    static/       no-build SPA
 ```

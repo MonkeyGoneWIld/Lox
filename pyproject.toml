@@ -1,5 +1,5 @@
 [project]
-name = "salmon"
+name = "lox"
 version = "0.10.0"
 description = "An uploading script for Gazelle-based music trackers."
 license = "Apache-2.0"
@@ -40,15 +40,13 @@ dependencies = [
 
 [project.scripts]
 lox = "run:main"
-# Kept so existing scripts and the upstream muscle memory still work.
-salmon = "run:main"
 
 [build-system]
 requires = ["setuptools >= 61.0", "setuptools-scm >= 8"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["salmon", "data"]
+packages = ["lox", "data"]
 py-modules = ["run"]
 
 [dependency-groups]
@@ -81,7 +79,7 @@ select = [
 "run.py" = ["F401"]
 
 [tool.pyright]
-include = ["salmon"]
+include = ["lox"]
 typeCheckingMode = "standard"
 reportPossiblyUnboundVariable = "warning"
 reportUnreachable = "warning"
