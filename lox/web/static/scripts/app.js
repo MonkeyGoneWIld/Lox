@@ -16,7 +16,7 @@
 
   const state = {
     view: 'search',
-    searchType: 'album',
+    searchType: 'all',
     exploreTab: 'channels',
     exploreGenre: '0',
     candidates: [],
@@ -354,18 +354,50 @@
 
   // ---------------------------------------------------------------- search
 
+  const SECTION_LABEL = { album: 'Albums', track: 'Tracks', artist: 'Artists' };
+
   async function runSearch(event) {
     event?.preventDefault();
     const query = $('#search-input').value.trim();
     if (!query) return;
-    const results = searchPane('grid');
+    // Unfiltered results stack as sections, each holding its own grid; a single
+    // kind is just a grid.
+    const single = state.searchType !== 'all';
+    const results = searchPane(single ? 'grid' : 'search-sections');
     results.replaceChildren(spinner('Searching Deezer'));
     try {
       const data = await api(`/api/search?q=${encodeURIComponent(query)}&type=${state.searchType}`);
-      renderGrid(results, data.results, 'Nothing found.');
+      if (single) {
+        renderGrid(results, data.results, 'Nothing found.');
+        return;
+      }
+
+      const sections = Object.entries(data.sections || {}).filter(([, rows]) => rows.length);
+      if (!sections.length) {
+        results.replaceChildren(empty('Nothing found.'));
+        return;
+      }
+      results.replaceChildren(
+        ...sections.flatMap(([kind, rows]) => [
+          el(
+            'div',
+            { class: 'section-head' },
+            el('h3', { class: 'section-title' }, `${SECTION_LABEL[kind] || kind} (${rows.length})`),
+            // Straight to that kind on its own, which is what the filter is for.
+            el('button', { class: 'link', onclick: () => selectSearchType(kind) }, 'Only these'),
+          ),
+          el('div', { class: 'grid' }, ...rows.map(card)),
+        ]),
+      );
     } catch (e) {
       results.replaceChildren(empty(e.message));
     }
+  }
+
+  function selectSearchType(type) {
+    state.searchType = type;
+    $$('#search-type button').forEach((b) => b.classList.toggle('active', b.dataset.type === type));
+    runSearch();
   }
 
   // ---------------------------------------------------------------- explore
@@ -2099,11 +2131,7 @@
     $$('.nav-item').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
     $('#search-form').addEventListener('submit', runSearch);
     $$('#search-type button').forEach((b) =>
-      b.addEventListener('click', () => {
-        state.searchType = b.dataset.type;
-        $$('#search-type button').forEach((x) => x.classList.toggle('active', x === b));
-        runSearch();
-      }),
+      b.addEventListener('click', () => selectSearchType(b.dataset.type)),
     );
     $$('#explore-tabs button').forEach((b) =>
       b.addEventListener('click', () => {

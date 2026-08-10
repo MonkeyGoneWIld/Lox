@@ -49,8 +49,11 @@
       <section class="view active" id="view-search">
         <form class="searchbar" id="search-form">
           <input type="search" id="search-input" placeholder="Search Deezer for an album, track or artist" autocomplete="off">
+          <!-- A filter, not a mode: searching a name and being shown only
+               albums hides the thing you wanted when it was an artist. -->
           <div class="segmented" id="search-type">
-            <button type="button" class="active" data-type="album">Albums</button>
+            <button type="button" class="active" data-type="all">All</button>
+            <button type="button" data-type="album">Albums</button>
             <button type="button" data-type="track">Tracks</button>
             <button type="button" data-type="artist">Artists</button>
           </div>

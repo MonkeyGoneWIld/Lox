@@ -328,6 +328,20 @@ button.ghost { background: none; }
 
 .section-title { margin: 4px 0 12px; font-size: 15px; font-weight: 650; }
 
+/* Unfiltered search: one section per kind, each with its own grid. */
+.search-sections { display: block; }
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.section-head .section-title { margin-bottom: 8px; }
+.section-head .link { font-size: 12px; }
+
 /* ---------- tables ---------- */
 
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
