@@ -100,6 +100,33 @@ seed from their own directory.
 **Hardlinks cannot cross filesystems.** `linking.link_dir` must be on the same volume as your downloads. If it isn't,
 lox fails loudly rather than silently making real copies — unless you set `linking.fallback_to_copy = true`.
 
+The seedbox entry that injects into your torrent client is tracker-aware: set `tracker = "RED"` to restrict an entry to
+one tracker, and use `{tracker}` in `directory` and `label` so one entry serves both with the right save path and
+category. Leaving `directory` empty derives it from `linking.link_dir` automatically.
+
+### Dry run
+
+```bash
+lox up "/music/Ana Vidal - Nocturne Variations" --dry-run
+```
+
+Or tick **Dry run** in the Uploads tab, or set `upload.dry_run = true` in config.
+
+Everything runs — tagging, renaming, spectral generation and upload, cover handling, description assembly, hardlinking,
+`.torrent` creation — except the two steps you cannot take back:
+
+| Step | Dry run |
+|---|---|
+| Post the torrent to the tracker | skipped, prints the payload it would have sent |
+| Fill a request | skipped (it rides along with the upload) |
+| File a lossy-master report | skipped |
+| Edit a torrent description | skipped |
+| Transfer to seedbox / add to download client | skipped, prints the save path and category it would have used |
+| Copy the URL to your clipboard | skipped |
+
+The `.torrent` is still written so you can inspect it, but its comment is left blank rather than stamped with a URL
+containing a placeholder torrent ID.
+
 ---
 
 ## Install

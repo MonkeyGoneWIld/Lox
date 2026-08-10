@@ -166,6 +166,12 @@ if TYPE_CHECKING:
     is_flag=True,
     help="Skip integrity check of audio files",
 )
+@click.option(
+    "--dry-run",
+    "-n",
+    is_flag=True,
+    help="Do everything except upload the torrent to the tracker and add it to the download client",
+)
 async def up(
     path: str,
     group_id: int | None,
@@ -186,10 +192,20 @@ async def up(
     skip_mqa: bool,
     skip_log_check: bool,
     skip_integrity_check: bool,
+    dry_run: bool,
 ) -> None:
     """Command to upload an album folder to a Gazelle Site."""
     if yyy:
         cfg.upload.yes_all = True
+    if dry_run:
+        cfg.upload.dry_run = True
+    if cfg.upload.dry_run:
+        click.secho(
+            "DRY RUN: everything runs except posting the torrent to the tracker and adding it to "
+            "the download client. Files will still be tagged, renamed, linked and a .torrent written.",
+            fg="yellow",
+            bold=True,
+        )
     gazelle_site = salmon.trackers.get_class(tracker)()
     if request:
         request = salmon.trackers.validate_request(gazelle_site, request)
@@ -1018,18 +1034,28 @@ async def upload_and_report(
     # Generate URL
     url = f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id}"
 
-    torrent_content.comment = url
-    torrent_content.write(torrent_path, overwrite=True)
+    if cfg.upload.dry_run:
+        # torrent_id is a placeholder, so do not stamp a bogus URL into the file.
+        torrent_content.write(torrent_path, overwrite=True)
+        click.secho(
+            f"[DRY RUN] Prepared {os.path.basename(path)} for {gazelle_site.site_string}. "
+            f"Torrent written to {torrent_path}, nothing uploaded.",
+            fg="yellow",
+            bold=True,
+        )
+    else:
+        torrent_content.comment = url
+        torrent_content.write(torrent_path, overwrite=True)
 
-    # Display success message
-    click.secho(
-        f"Successfully uploaded {url} ({os.path.basename(path)}).",
-        fg="green",
-        bold=True,
-    )
+        # Display success message
+        click.secho(
+            f"Successfully uploaded {url} ({os.path.basename(path)}).",
+            fg="green",
+            bold=True,
+        )
 
     # Copy URL to clipboard
-    if cfg.upload.description.copy_uploaded_url_to_clipboard:
+    if cfg.upload.description.copy_uploaded_url_to_clipboard and not cfg.upload.dry_run:
         pyperclip.copy(url)
 
     # Add to seedbox upload queue

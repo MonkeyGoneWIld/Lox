@@ -185,6 +185,20 @@ class UploadManager:
             click.secho("No upload tasks to execute", fg="yellow")
             return
 
+        if cfg.upload.dry_run:
+            click.secho(f"\n[DRY RUN] Not running {len(self.tasks)} seeding task(s):", fg="yellow", bold=True)
+            for seedbox, local_path, task_type, tracker in self.tasks:
+                directory = _expand_tracker(seedbox.directory, tracker) or _default_save_path(local_path, tracker)
+                label = _expand_tracker(seedbox.label, tracker)
+                click.secho(
+                    f"  {task_type:6} {os.path.basename(local_path)} -> {seedbox.name or seedbox.type}"
+                    f" at {directory}" + (f" [category: {label}]" if label else ""),
+                    fg="yellow",
+                )
+            click.secho("[DRY RUN] Nothing was transferred or added to the download client.\n", fg="yellow", bold=True)
+            self.tasks.clear()
+            return
+
         click.secho(f"Executing {len(self.tasks)} upload tasks", fg="cyan")
         for i, (seedbox, local_path, task_type, tracker) in enumerate(self.tasks, 1):
             click.secho(
