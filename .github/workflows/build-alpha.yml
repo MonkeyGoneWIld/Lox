@@ -3,7 +3,15 @@ name: Build Alpha Image
 on:
   push:
     branches:
-      - master
+      - main
+    # A multi-arch build takes tens of minutes under QEMU. Documentation-only
+    # changes should not spend that.
+    paths-ignore:
+      - "**.md"
+      - "docker-compose.yml"
+      - ".env.example"
+      - "config/**"
+  workflow_dispatch:
 
 jobs:
   build-alpha-image:
@@ -40,6 +48,8 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
+          # metadata-action lowercases this, which matters here: the owner has
+          # capitals and OCI image names must be lowercase.
           images: |
             ghcr.io/${{ github.repository }}
           flavor: |
