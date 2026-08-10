@@ -8,8 +8,8 @@ from aiohttp import web
 from aiohttp_jinja2 import render_template
 
 from lox import cfg
-from lox.config import find_config_path
 from lox.common import commandgroup
+from lox.config import find_config_path
 from lox.database import run_migrations
 from lox.errors import WebServerIsAlreadyRunning
 from lox.web import api, settings_api, spectrals

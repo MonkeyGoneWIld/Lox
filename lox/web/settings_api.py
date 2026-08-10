@@ -6,8 +6,8 @@ found — the Deezer account behind an ARL, the username behind a tracker sessio
 whether a hardlink can genuinely be made between two directories.
 """
 
+import contextlib
 import os
-import tempfile
 from typing import Any
 
 import aiohttp
@@ -209,16 +209,15 @@ async def _test_discogs(request: web.Request) -> web.Response:
     token = cfg.metadata.discogs_token
     if not token:
         return fail("No Discogs token set. Request track-count verification will be weaker without it.")
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-        async with session.get(
-            "https://api.discogs.com/releases/249504",
-            headers={"Authorization": f"Discogs token={token}", "User-Agent": "lox/1.0"},
-        ) as resp:
-            if resp.status == 401:
-                return fail("Discogs rejected the token.")
-            if resp.status != 200:
-                return fail(f"Discogs returned HTTP {resp.status}.")
-            data = msgspec.json.decode(await resp.read())
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session, session.get(
+        "https://api.discogs.com/releases/249504",
+        headers={"Authorization": f"Discogs token={token}", "User-Agent": "lox/1.0"},
+    ) as resp:
+        if resp.status == 401:
+            return fail("Discogs rejected the token.")
+        if resp.status != 200:
+            return fail(f"Discogs returned HTTP {resp.status}.")
+        data = msgspec.json.decode(await resp.read())
     return ok(f"Token works. Test lookup returned {len(data.get('tracklist') or [])} tracks.")
 
 
@@ -252,8 +251,10 @@ async def _test_discord(request: web.Request) -> web.Response:
     webhook = cfg.notifications.discord_webhook
     if not webhook:
         return fail("No webhook URL set.")
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-        async with session.post(webhook, json={"content": "lox test message — your webhook works."}) as resp:
+    async with (
+        aiohttp.ClientSession(timeout=TIMEOUT) as session,
+        session.post(webhook, json={"content": "lox test message — your webhook works."}) as resp,
+    ):
             if 200 <= resp.status < 300:
                 return ok("Test message delivered. Check your Discord channel.")
             return fail(f"Discord returned HTTP {resp.status}.")
@@ -273,14 +274,14 @@ async def _test_linking(request: web.Request) -> web.Response:
     if not os.path.isdir(download_dir):
         return fail(f"Download directory {download_dir} does not exist.")
 
-    source = tempfile.NamedTemporaryFile(dir=download_dir, prefix=".lox-linktest-", delete=False)
-    source.write(b"lox link test")
-    source.close()
+    source_path = os.path.join(download_dir, f".lox-linktest-{os.getpid()}")
+    with open(source_path, "wb") as handle:
+        handle.write(b"lox link test")
     target = os.path.join(link_dir, f".lox-linktest-{os.getpid()}")
     try:
         if cfg.linking.method == "hardlink":
-            os.link(source.name, target)
-            same_inode = os.stat(source.name).st_ino == os.stat(target).st_ino
+            os.link(source_path, target)
+            same_inode = os.stat(source_path).st_ino == os.stat(target).st_ino
             message = (
                 "Hardlinks work between the download and seeding directories. Uploading to two "
                 "trackers will not cost extra disk."
@@ -288,7 +289,7 @@ async def _test_linking(request: web.Request) -> web.Response:
                 else "A link was created but it is not the same inode — this will duplicate data."
             )
             return ok(message) if same_inode else fail(message)
-        os.symlink(source.name, target) if cfg.linking.method == "symlink" else None
+        os.symlink(source_path, target) if cfg.linking.method == "symlink" else None
         return ok(f"Method is '{cfg.linking.method}', which always works but does not save disk space.")
     except OSError as e:
         same_fs = os.stat(download_dir).st_dev == os.stat(link_dir).st_dev
@@ -299,11 +300,9 @@ async def _test_linking(request: web.Request) -> web.Response:
         )
         return fail(f"Could not link: {e}.{hint}")
     finally:
-        for path in (target, source.name):
-            try:
+        for path in (target, source_path):
+            with contextlib.suppress(OSError):
                 os.unlink(path)
-            except OSError:
-                pass
 
 
 async def _test_paths(request: web.Request) -> web.Response:

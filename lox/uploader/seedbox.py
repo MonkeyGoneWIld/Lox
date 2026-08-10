@@ -137,7 +137,8 @@ class UploadManager:
                 click.secho(f"Failed to configure {seedbox.type} uploader: {e}", fg="red")
 
         # Each task: (seedbox, local_path, task_type)
-        self.tasks: collections.deque[tuple[Seedbox, str, str]] = collections.deque()
+        # (seedbox, local path, task type, tracker code)
+        self.tasks: collections.deque[tuple[Seedbox, str, str, str | None]] = collections.deque()
 
     def _client(self, seedbox: Seedbox) -> TorrentClient:
         """Look up the cached torrent client for a seedbox entry.
