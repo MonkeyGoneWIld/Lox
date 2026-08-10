@@ -247,6 +247,11 @@ async def api_status(request: web.Request) -> web.Response:
                 "format": downloader.preferred_format,
             },
             "notifications": {"enabled": request.app["notifier"].enabled},
+            # The two upload switches worth flipping without leaving the page
+            # you flip them for. Polled, so changing one on the settings page
+            # moves the toggle here and vice versa -- there is one setting, not
+            # a copy per page.
+            "upload": {"dry_run": cfg.upload.dry_run, "yes_all": cfg.upload.yes_all},
             # Misconfiguration no longer stops the server starting, so it has to
             # be visible somewhere you will actually look.
             "problems": config_problems(),

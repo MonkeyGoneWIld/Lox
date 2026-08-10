@@ -139,6 +139,32 @@
     $('#downloads-dir').textContent = `Saving to ${status.downloads.directory} as ${status.downloads.format}`;
     $('#uploads-dir').textContent = status.downloads.directory;
     renderProblems(status.problems);
+    syncUploadToggles(status.upload);
+  }
+
+  // Reflect the stored setting, unless you are mid-click on the box itself --
+  // a poll landing at the wrong moment should not undo what you just did.
+  function syncUploadToggles(upload) {
+    if (!upload) return;
+    for (const [id, value] of [['upload-dry-run', upload.dry_run], ['upload-yes-all', upload.yes_all]]) {
+      const box = $(`#${id}`);
+      if (box && box !== document.activeElement) box.checked = !!value;
+    }
+  }
+
+  // Writes through to the one setting rather than keeping a per-page copy.
+  async function setUploadFlag(key, box, label) {
+    const value = box.checked;
+    box.disabled = true;
+    try {
+      await api('/api/settings', { method: 'PUT', body: { changes: { [key]: value } } });
+      toast(`${label} ${value ? 'on' : 'off'}`, 'ok');
+    } catch (e) {
+      box.checked = !value;
+      toast(e.message, 'bad');
+    } finally {
+      box.disabled = false;
+    }
   }
 
   // A misconfigured path no longer stops the server booting, so it has to be
@@ -2032,6 +2058,10 @@
       pollDownloads(true);
     });
     $('#folders-refresh').addEventListener('click', loadFolders);
+    $('#upload-dry-run').addEventListener('change', (e) =>
+      setUploadFlag('upload.dry_run', e.target, 'Dry run'));
+    $('#upload-yes-all').addEventListener('change', (e) =>
+      setUploadFlag('upload.yes_all', e.target, 'Auto-answer prompts'));
     $('#detail-close').addEventListener('click', () => ($('#detail').hidden = true));
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') $('#detail').hidden = true;

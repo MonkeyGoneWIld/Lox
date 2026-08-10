@@ -100,6 +100,22 @@ async def main() -> int:
                   f"tracker_budget={lox.cfg.checker.tracker_budget}")
             check("dry_run applied", lox.cfg.upload.dry_run is True)
 
+            # The uploads page carries its own toggles for these two. They have
+            # to be the same setting, not a copy, so the page reads them back
+            # from here rather than remembering what it last sent.
+            async with s.get(f"{BASE}/api/status", headers=h) as r:
+                data = await r.json()
+            check("status reports the upload switches",
+                  data.get("upload", {}).get("dry_run") is True, str(data.get("upload")))
+
+            async with s.put(f"{BASE}/api/settings", headers=h,
+                             json={"changes": {"upload.dry_run": False, "upload.yes_all": True}}) as r:
+                check("upload switches are writable", r.status == 200)
+            async with s.get(f"{BASE}/api/status", headers=h) as r:
+                data = await r.json()
+            check("a change on one page is visible to the other",
+                  data["upload"] == {"dry_run": False, "yes_all": True}, str(data.get("upload")))
+
             async with s.get(f"{BASE}/api/settings", headers=h) as r:
                 data = await r.json()
                 check("setting persisted and read back",

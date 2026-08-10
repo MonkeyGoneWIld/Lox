@@ -158,7 +158,15 @@
           <button id="folders-refresh">Refresh folders</button>
           <span class="hint">Upload to:</span>
           <div class="segmented" id="upload-tracker"></div>
-          <span class="tag dim" id="upload-dry-tag" hidden>dry run</span>
+          <!-- The same two settings as Settings → Uploading, not copies of
+               them: these write through to the config and are re-read from the
+               server, so the two pages cannot disagree. -->
+          <label class="check" title="Do everything except post to the tracker and add to the download client">
+            <input type="checkbox" id="upload-dry-run"> Dry run
+          </label>
+          <label class="check" title="Take the default answer to every prompt. The lossy-master question is still asked.">
+            <input type="checkbox" id="upload-yes-all"> Auto-answer prompts
+          </label>
           <span class="hint" id="uploads-dir"></span>
         </div>
         <p class="hint" id="linking-note"></p>
