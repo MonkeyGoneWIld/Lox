@@ -46,7 +46,7 @@ async def ui_cmd() -> None:
             bold=True,
         )
     elif api.auth_required():
-        click.secho("Auth token required. Open the UI with ?token=<your token> once to set the cookie.", fg="cyan")
+        click.secho("Auth token required. The UI will ask for it on first load.", fg="cyan")
 
     if not cfg.metadata.deezer.arl:
         click.secho(
@@ -97,6 +97,7 @@ def add_routes(app: web.Application) -> None:
     """
     app.router.add_static("/static", join(dirname(__file__), "static"), follow_symlinks=True)
     app.router.add_route("GET", "/", handle_app)
+    app.router.add_route("GET", "/login", handle_login)
     app.router.add_route("GET", "/legacy", handle_index)
     app.router.add_route("GET", "/spectrals", spectrals.handle_spectrals)
     app.router.add_routes(api.routes)
@@ -113,6 +114,23 @@ async def handle_app(request: web.Request) -> web.Response:
         The rendered application shell.
     """
     return render_template("app.html", request, {"static_root_url": web_cfg.static_root_url})
+
+
+async def handle_login(request: web.Request) -> web.Response:
+    """Serve the sign-in page.
+
+    Anyone already holding a valid session is sent straight to the app rather
+    than being asked again.
+
+    Args:
+        request: The aiohttp request object.
+
+    Returns:
+        The login page, or a redirect when a session already exists.
+    """
+    if not api.auth_required() or api.is_authenticated(request):
+        raise web.HTTPFound("/")
+    return render_template("login.html", request, {"static_root_url": web_cfg.static_root_url})
 
 
 async def handle_index(request: web.Request) -> web.Response:

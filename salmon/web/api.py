@@ -14,7 +14,9 @@ import secrets
 import shlex
 import shutil
 import sys
+import time
 from typing import Any
+from urllib.parse import quote
 
 import msgspec
 from aiohttp import web
@@ -37,6 +39,19 @@ routes = web.RouteTableDef()
 AUTH_COOKIE = "lox_token"
 AUTH_HEADER = "X-Auth-Token"
 
+# Reachable without a session: the login page itself, the endpoint that creates
+# the session, and static assets, which carry nothing sensitive.
+AUTH_EXEMPT_PATHS = frozenset({"/login", "/api/auth"})
+
+SESSION_DAYS = 30
+
+# Crude per-address throttle. The token guards tracker upload privileges, so an
+# open port should not allow unlimited guessing.
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+LOGIN_WINDOW = 300.0
+LOGIN_MAX_ATTEMPTS = 10
+LOGIN_FAIL_DELAY = 0.5
+
 
 def auth_required() -> bool:
     """True when an auth token is configured."""
@@ -51,34 +66,56 @@ def _token_ok(supplied: str | None) -> bool:
     return bool(supplied) and secrets.compare_digest(supplied, expected)
 
 
+def is_authenticated(request: web.Request) -> bool:
+    """True when the request carries a valid token by any accepted means."""
+    supplied = request.headers.get(AUTH_HEADER) or request.cookies.get(AUTH_COOKIE) or request.query.get("token")
+    return _token_ok(supplied)
+
+
+def _set_session(response: web.Response, token: str, remember: bool = True) -> None:
+    """Attach the session cookie to a response."""
+    response.set_cookie(
+        AUTH_COOKIE,
+        token,
+        httponly=True,
+        samesite="Strict",
+        max_age=60 * 60 * 24 * SESSION_DAYS if remember else None,
+    )
+
+
+def _throttled(address: str) -> bool:
+    """Record a failed attempt and report whether the caller is now locked out."""
+    now = time.monotonic()
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(address, []) if now - t < LOGIN_WINDOW]
+    attempts.append(now)
+    _LOGIN_ATTEMPTS[address] = attempts
+    return len(attempts) > LOGIN_MAX_ATTEMPTS
+
+
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
     """Gate every request on the configured shared secret.
 
     The API can spend tracker budget, read an authenticated Deezer session and
-    launch uploads, so on any non-loopback bind it must not be open. Static
-    assets are left unauthenticated because they carry nothing.
+    launch uploads, so on any non-loopback bind it must not be open. Browsers
+    get bounced to a login page; API clients get a 401 they can act on.
     """
-    if not auth_required() or request.path.startswith("/static"):
+    if not auth_required() or request.path.startswith("/static") or request.path in AUTH_EXEMPT_PATHS:
         return await handler(request)
 
-    supplied = request.headers.get(AUTH_HEADER) or request.cookies.get(AUTH_COOKIE) or request.query.get("token")
-    if _token_ok(supplied):
+    if is_authenticated(request):
         response = await handler(request)
-        # Let a ?token= link establish the session so the SPA's fetches work.
+        # A ?token= link still works, for bookmarks and scripts. Upgrade it to a
+        # cookie so the SPA's own fetches do not need to carry it.
         if request.query.get("token") and not request.cookies.get(AUTH_COOKIE):
-            response.set_cookie(
-                AUTH_COOKIE,
-                request.query["token"],
-                httponly=True,
-                samesite="Strict",
-                max_age=60 * 60 * 24 * 30,
-            )
+            _set_session(response, request.query["token"])
         return response
 
     if request.path.startswith("/api/"):
         return error("authentication required", status=401)
-    raise web.HTTPUnauthorized(text="Authentication required. Append ?token=<your token> to the URL.")
+
+    target = request.path_qs
+    raise web.HTTPFound(f"/login?next={quote(target, safe='')}" if target != "/" else "/login")
 
 
 def json_response(data: Any, status: int = 200) -> web.Response:
@@ -206,6 +243,47 @@ async def api_status(request: web.Request) -> web.Response:
             "notifications": {"enabled": request.app["notifier"].enabled},
         }
     )
+
+
+@routes.post("/api/auth")
+async def api_auth(request: web.Request) -> web.Response:
+    """Exchange the configured token for a session cookie.
+
+    This is what the login page posts to. It stays outside the auth middleware,
+    so it is the one place a wrong token can be submitted — hence the throttle.
+    """
+    if not auth_required():
+        return json_response({"ok": True, "auth_required": False})
+
+    address = request.remote or "unknown"
+    body = await request.json()
+    token = str(body.get("token") or "")
+
+    if _token_ok(token):
+        _LOGIN_ATTEMPTS.pop(address, None)
+        response = json_response({"ok": True})
+        _set_session(response, token, bool(body.get("remember", True)))
+        return response
+
+    if _throttled(address):
+        return error("Too many attempts. Wait a few minutes and try again.", status=429)
+    # Slow down guessing without holding a worker for long.
+    await asyncio.sleep(LOGIN_FAIL_DELAY)
+    return error("That token was not accepted.", status=401)
+
+
+@routes.post("/api/auth/logout")
+async def api_logout(request: web.Request) -> web.Response:
+    """Clear the session cookie."""
+    response = json_response({"ok": True})
+    response.del_cookie(AUTH_COOKIE)
+    return response
+
+
+@routes.get("/api/auth/status")
+async def api_auth_status(request: web.Request) -> web.Response:
+    """Report whether authentication is on, and whether this caller has it."""
+    return json_response({"auth_required": auth_required(), "authenticated": is_authenticated(request)})
 
 
 @routes.get("/api/trackers")

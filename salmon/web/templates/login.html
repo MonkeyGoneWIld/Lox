@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>lox — sign in</title>
+  <link rel="icon" href="{{ static_root_url }}/images/favicon.ico">
+  <link rel="stylesheet" href="{{ static_root_url }}/css/app.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <img src="{{ static_root_url }}/images/logo.png" alt="" class="login-logo">
+    <h1>lox</h1>
+    <p class="hint">
+      This interface can spend your tracker API budget, read your Deezer session and start uploads.
+      Enter the access token from your config to continue.
+    </p>
+
+    <form id="login-form" autocomplete="on">
+      <input
+        type="password"
+        id="token"
+        name="password"
+        placeholder="Access token"
+        autocomplete="current-password"
+        autofocus
+        required>
+      <label class="check">
+        <input type="checkbox" id="remember" checked> Stay signed in on this device for 30 days
+      </label>
+      <button type="submit" class="primary" id="submit">Sign in</button>
+    </form>
+
+    <p class="login-error" id="error" hidden></p>
+    <p class="hint login-foot">
+      The token is <code>upload.web_interface.auth_token</code> in your config.toml.
+    </p>
+  </main>
+
+  <script>
+    const form = document.getElementById('login-form');
+    const errorBox = document.getElementById('error');
+    const submit = document.getElementById('submit');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorBox.hidden = true;
+      submit.disabled = true;
+      submit.textContent = 'Checking…';
+
+      try {
+        const response = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: document.getElementById('token').value,
+            remember: document.getElementById('remember').checked,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok) {
+          // A ?next= param is set when a deep link bounced through here.
+          const next = new URLSearchParams(location.search).get('next');
+          location.replace(next && next.startsWith('/') ? next : '/');
+          return;
+        }
+
+        errorBox.textContent = data.error || 'That token was not accepted.';
+        errorBox.hidden = false;
+      } catch (e) {
+        errorBox.textContent = `Could not reach the server: ${e.message}`;
+        errorBox.hidden = false;
+      } finally {
+        submit.disabled = false;
+        submit.textContent = 'Sign in';
+        document.getElementById('token').select();
+      }
+    });
+  </script>
+</body>
+</html>

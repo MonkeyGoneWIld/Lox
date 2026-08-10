@@ -166,7 +166,9 @@ loud warning at startup if you bind publicly without one.
 
 **Put `/downloads` and `/links` on the same filesystem.** Different volumes means no hardlinks.
 
-Open the UI once with `?token=<your token>` to set the session cookie.
+On first load the UI asks for the token and stores an httpOnly session cookie for 30 days, so you only enter it once
+per browser. Sign out from Settings. A `?token=` query parameter still works for bookmarks and scripts, and the
+`X-Auth-Token` header works for API clients — that is what the compose healthcheck uses.
 
 ---
 
