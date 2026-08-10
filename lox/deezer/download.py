@@ -8,6 +8,7 @@ lox upload pipeline can pick up unchanged.
 
 import asyncio
 import contextlib
+import logging
 import os
 import re
 import time
@@ -20,7 +21,7 @@ import msgspec
 from mutagen.flac import FLAC, Picture
 from mutagen.id3 import APIC, ID3, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TSRC
 
-from lox import cfg
+from lox import cfg, debug
 from lox.deezer.crypto import CHUNK_SIZE, blowfish_key, decrypt_stripes
 from lox.deezer.gw import DeezerGW, DeezerGWError
 
@@ -264,6 +265,7 @@ class Downloader:
         """Download every track of one album."""
         job.status = "running"
         job.started = time.time()
+        debug.log("download start album=%s %s - %s", job.album_id, job.artist, job.title, level=logging.INFO)
         self._notify(job)
 
         try:
@@ -303,6 +305,11 @@ class Downloader:
             job.error = str(e)
         finally:
             job.finished = time.time()
+            debug.log(
+                "download %s album=%s tracks=%d/%d %s",
+                job.status, job.album_id, job.done_count, len(job.tracks), job.error or "",
+                level=logging.INFO,
+            )
             self._notify(job)
 
     @staticmethod

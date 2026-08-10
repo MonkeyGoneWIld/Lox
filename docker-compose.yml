@@ -43,6 +43,9 @@ services:
       LOX_TMP_DIR: "/config/spectrals"
       LOX_STATE_DIR: "/config/state"
       LOX_LOG_DIR: "/config/logs"
+      # The address you actually reach the UI on. LOX_HOST is the bind
+      # address, which is 0.0.0.0 here and useless in a link.
+      LOX_DISPLAY_HOST: "192.168.1.25"
       # Where the UI writes everything else.
       LOX_SETTINGS_DIR: "/config"
 

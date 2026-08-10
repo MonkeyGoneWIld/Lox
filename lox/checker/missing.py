@@ -574,7 +574,11 @@ class MissingScanner:
                 continue
 
             try:
-                verdict = await self._inspect(info, code)
+                # Stop at the first confirmed match. Continuing costs tracker
+                # budget to learn nothing: one match already answers "is it
+                # here?", and the rejected groups seen up to that point are
+                # still returned for review.
+                verdict = await self._inspect(info, code, collect_all=False)
             except Exception as e:  # noqa: BLE001 - one tracker failing must not hide the other
                 check.verdicts.append(TrackerVerdict(tracker=code, status="error", error=str(e)))
                 continue

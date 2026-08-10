@@ -155,13 +155,23 @@ def configure(force: bool | None = None) -> bool:
 
         _configured = True
 
-    # Third-party chatter is where the useful detail lives when a request fails.
-    for name in ("aiohttp.client", "aiohttp.access", "asyncio"):
+    # aiohttp.access logs one line per HTTP request. The UI polls several
+    # endpoints every second, so left at INFO it produces thousands of lines an
+    # hour and rotates everything useful out of the file. It is only ever
+    # interesting in debug mode.
+    for name in ("aiohttp.client", "aiohttp.server", "asyncio"):
         logging.getLogger(name).setLevel(logging.DEBUG if on else logging.WARNING)
         if on:
             for existing in logger().handlers:
                 if existing not in logging.getLogger(name).handlers:
                     logging.getLogger(name).addHandler(existing)
+
+    access = logging.getLogger("aiohttp.access")
+    access.setLevel(logging.INFO if on else logging.WARNING)
+    if on:
+        for existing in logger().handlers:
+            if existing not in access.handlers:
+                access.addHandler(existing)
 
     return on
 

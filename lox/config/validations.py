@@ -211,6 +211,10 @@ class UploadWebInterface(BaseStruct):
     host: str = "127.0.0.1"
     port: int = 5015
     static_root_url: str = "/static"
+    # Host used in links shown to you, e.g. the spectral viewer. `host` is what
+    # the socket binds to, which in a container is 0.0.0.0 - useless in a URL.
+    # Set this to the address you actually reach the UI on.
+    display_host: str = ""
     # Shared secret required by every API call. Unset means no authentication,
     # which is only safe while host stays on loopback: the API can spend tracker
     # budget, read your Deezer session and start uploads.
