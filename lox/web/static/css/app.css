@@ -609,24 +609,36 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .inspected .hitlist { padding-top: 8px; }
 
 /* Top right of the header. It was in the sidebar foot under the tracker
-   budgets, which is where you look for status, not for a control. */
+   budgets, which is where you look for status, not for a control.
+
+   Bare icon, no chrome. A permanently drawn box around a single icon reads as
+   an unpressed button competing with the page; the hit area is still 36px, it
+   just does not announce itself until you are on it. The negative margin puts
+   the glyph's edge on the same line as the content below rather than inset by
+   the button's own padding. */
 .theme-toggle {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
+  margin-right: -8px;
   padding: 0;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  font-size: 20px;
-  line-height: 1;
+  background: none;
+  border: 0;
+  border-radius: 50%;
   color: var(--text-dim);
   cursor: pointer;
   flex: none;
+  /* Background only. Transitioning `color` here left the icon stuck on the
+     previous theme's value: the colour comes from a custom property, and the
+     transition that the theme switch starts does not resolve to the new one --
+     so the icon stayed dark grey on the light background. The hover fade is
+     what this is for; a theme swap should be instant anyway. */
+  transition: background-color 0.15s ease;
 }
 
-.theme-toggle:hover { color: var(--text); border-color: var(--accent); }
+.theme-toggle svg { width: 20px; height: 20px; display: block; }
+.theme-toggle:hover { background: var(--bg-input); color: var(--text); }
 
 .icon-btn.upload { background: var(--ok); margin-left: 6px; }
 

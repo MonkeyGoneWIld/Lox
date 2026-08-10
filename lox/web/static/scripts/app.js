@@ -1752,7 +1752,22 @@
 
   // ---------------------------------------------------------------- wiring
 
-  const THEME_ICON = { dark: '☽', light: '☀', system: '◑' };
+  // Drawn rather than typed. The text glyphs these replaced (a crescent and a
+  // sun) come from whatever font happens to have them, so they arrived at
+  // different weights, different sizes and off the baseline. resolvedTheme only
+  // ever answers dark or light, so those are the only two needed.
+  const ICON = (paths) =>
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+
+  const THEME_ICON = {
+    dark: ICON('<path d="M20.5 14.8A8.5 8.5 0 1 1 9.2 3.5a7 7 0 0 0 11.3 11.3Z"/>'),
+    light: ICON(
+      '<circle cx="12" cy="12" r="4"/>' +
+        '<path d="M12 2.5v2M12 19.5v2M4.4 4.4l1.4 1.4M18.2 18.2l1.4 1.4' +
+        'M2.5 12h2M19.5 12h2M4.4 19.6l1.4-1.4M18.2 5.8l1.4-1.4"/>',
+    ),
+  };
 
   function resolvedTheme(theme) {
     if (theme !== 'system') return theme;
@@ -1767,7 +1782,7 @@
 
     const toggle = $('#theme-toggle');
     if (toggle) {
-      toggle.textContent = THEME_ICON[resolvedTheme(theme)];
+      toggle.innerHTML = THEME_ICON[resolvedTheme(theme)];
       toggle.title = `Theme: ${theme}. Click to switch.`;
     }
     $$('#theme-picker button').forEach((b) => b.classList.toggle('active', b.dataset.theme === theme));
