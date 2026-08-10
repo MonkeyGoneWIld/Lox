@@ -9,15 +9,23 @@ from salmon.trackers import dic, ops, red
 tracker_classes = {"RED": red.RedApi, "OPS": ops.OpsApi, "DIC": dic.DICApi}
 tracker_url_code_map = {"redacted.sh": "RED", "orpheus.network": "OPS", "dicmusic.com": "DIC"}
 
-# tracker_list is used to offer the user choices. Generated if not specified in the config.
+# Which trackers actually have credentials. Mutated in place rather than
+# rebound so anything holding a reference keeps seeing the current list; the
+# settings page calls refresh_tracker_list() after a save.
+#
+# Click decorators snapshot this at import for their help text, so CLI choices
+# still need a restart to pick up a newly configured tracker. The web UI does not.
 tracker_cfg = cfg.tracker
-tracker_list = []
-if tracker_cfg.red:
-    tracker_list.append("RED")
-if tracker_cfg.ops:
-    tracker_list.append("OPS")
-if tracker_cfg.dic:
-    tracker_list.append("DIC")
+tracker_list: list[str] = []
+
+
+def refresh_tracker_list() -> list[str]:
+    """Recompute the configured tracker list from the live config."""
+    tracker_list[:] = cfg.tracker.configured()
+    return tracker_list
+
+
+refresh_tracker_list()
 
 
 def get_class(site_code):

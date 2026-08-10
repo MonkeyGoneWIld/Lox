@@ -8,9 +8,10 @@ from aiohttp import web
 from aiohttp_jinja2 import render_template
 
 from salmon import cfg
+from salmon.config import find_config_path
 from salmon.common import commandgroup
 from salmon.errors import WebServerIsAlreadyRunning
-from salmon.web import api, spectrals
+from salmon.web import api, settings_api, spectrals
 
 web_cfg = cfg.upload.web_interface
 
@@ -101,7 +102,9 @@ def add_routes(app: web.Application) -> None:
     app.router.add_route("GET", "/legacy", handle_index)
     app.router.add_route("GET", "/spectrals", spectrals.handle_spectrals)
     app.router.add_routes(api.routes)
+    app.router.add_routes(settings_api.routes)
     app["static_root_url"] = web_cfg.static_root_url
+    app["config_path"] = find_config_path()
 
 
 async def handle_app(request: web.Request) -> web.Response:
