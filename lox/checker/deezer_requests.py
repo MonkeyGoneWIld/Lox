@@ -99,37 +99,144 @@ class DeezerRequestChecker:
         self.gateway = gateway
         self.store = store or CheckerStore()
 
-    async def search_requests(self, tracker: str, search: str = "", page: int = 1) -> list[dict[str, Any]]:
-        """List open requests on a tracker.
+    async def search_requests(
+        self,
+        tracker: str,
+        search: str = "",
+        page: int = 1,
+        *,
+        tags: str = "",
+        tags_all: bool = False,
+        show_filled: bool = False,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """List one page of requests on a tracker.
 
         Args:
             tracker: Tracker code.
-            search: Optional search string.
-            page: Result page.
+            search: Search string, matched against artist and title.
+            page: Result page, 1-based.
+            tags: Comma-separated tag list.
+            tags_all: Require every tag rather than any of them.
+            show_filled: Include requests that have already been filled.
 
         Returns:
-            Request summaries with ``id``, ``artist``, ``title``, ``bounty``.
+            The page's request summaries, and how many pages the tracker says
+            there are (0 when it does not say).
 
         Raises:
             TrackerBudgetExceeded: If the tracker's budget is spent.
         """
-        params: dict[str, Any] = {"page": page, "show_filled": "false"}
+        params: dict[str, Any] = {"page": page, "show_filled": "true" if show_filled else "false"}
         if search:
             params["search"] = search
+        if tags:
+            params["tags"] = tags
+            # Gazelle reads this as 0 = any of these tags, 1 = all of them.
+            params["tags_type"] = 1 if tags_all else 0
+
         data = await self.gateway.call_action(tracker, "requests", params)
         rows = (data or {}).get("results") or []
-        return [
-            {
-                "id": str(row.get("requestId") or row.get("id")),
-                "title": row.get("title", ""),
-                "artist": self._artist_of(row),
-                "year": str(row.get("year") or ""),
-                "bounty": format_bounty(row.get("totalBounty") or row.get("bounty")),
-                "url": self.gateway.request_url(tracker, int(row.get("requestId") or row.get("id") or 0)),
-            }
-            for row in rows
-            if row.get("requestId") or row.get("id")
-        ]
+        try:
+            pages = int((data or {}).get("pages") or 0)
+        except (TypeError, ValueError):
+            pages = 0
+
+        summaries = []
+        for row in rows:
+            request_id = self._id_of(row)
+            if request_id is None:
+                continue
+            summaries.append(
+                {
+                    "id": request_id,
+                    "title": row.get("title", ""),
+                    "artist": self._artist_of(row),
+                    "year": str(row.get("year") or ""),
+                    "bounty": format_bounty(row.get("totalBounty") or row.get("bounty")),
+                    "url": self.gateway.request_url(tracker, int(request_id)),
+                }
+            )
+        return summaries, pages
+
+    @staticmethod
+    def _id_of(row: dict) -> str | None:
+        """The request's ID, or None if the row has no usable one.
+
+        Tested for presence rather than truth: an ID of 0 is falsy, and a truth
+        test silently drops that row instead of listing it.
+        """
+        for key in ("requestId", "id"):
+            value = row.get(key)
+            if value is None or value == "":
+                continue
+            try:
+                return str(int(value))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    async def collect_requests(
+        self,
+        tracker: str,
+        search: str = "",
+        *,
+        tags: str = "",
+        tags_all: bool = False,
+        show_filled: bool = False,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        """Page through requests until ``limit`` of them are gathered.
+
+        The page size belongs to the tracker, not to us -- RED and OPS both
+        default to 25 -- so asking for more than that means more than one call.
+        Each page is one call against the budget, which is why the count is a
+        deliberate choice in the UI rather than something that creeps upward.
+
+        Args:
+            tracker: Tracker code.
+            search: Search string.
+            tags: Comma-separated tag list.
+            tags_all: Require every tag rather than any of them.
+            show_filled: Include filled requests.
+            limit: How many requests to gather.
+
+        Returns:
+            ``requests``, the number of ``calls`` spent, and ``complete``, which
+            is False when the tracker ran out of results before the limit.
+
+        Raises:
+            TrackerBudgetExceeded: If the budget runs out mid-collection.
+        """
+        gathered: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        calls = 0
+        page = 1
+        total_pages = 0
+
+        while len(gathered) < limit:
+            rows, pages = await self.search_requests(
+                tracker, search, page, tags=tags, tags_all=tags_all, show_filled=show_filled
+            )
+            calls += 1
+            total_pages = pages or total_pages
+            # A page that repeats what we already have means the tracker is
+            # ignoring the page parameter; stop rather than loop forever.
+            fresh = [row for row in rows if row["id"] not in seen]
+            seen.update(row["id"] for row in fresh)
+            gathered.extend(fresh)
+
+            if not rows or not fresh:
+                break
+            if total_pages and page >= total_pages:
+                break
+            page += 1
+
+        return {
+            "requests": gathered[:limit],
+            "calls": calls,
+            "complete": len(gathered) >= limit,
+            "pages": total_pages,
+        }
 
     @staticmethod
     def _artist_of(row: dict) -> str:

@@ -171,6 +171,12 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .toolbar { margin-bottom: 16px; }
 
+/* .hint carries the margins of a standalone paragraph sitting under a heading.
+   Used as an inline label beside a button those margins are asymmetric padding,
+   so the text sat above the button's centre line instead of on it. Inside a row
+   the flex gap already provides the spacing. */
+.row > .hint { margin: 0; }
+
 /* Everything that takes typing, by exclusion rather than by listing the types.
    An allowlist of [type="text"] and [type="search"] silently missed password
    and number fields, which then rendered as browser-default white boxes in the
@@ -549,6 +555,15 @@ select {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
   margin-top: 14px;
+}
+
+/* Same field layout as the settings page, reused wherever a form needs to say
+   what it accepts rather than expecting you to remember. */
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin: 12px 0 14px;
 }
 
 .setting { display: flex; flex-direction: column; gap: 5px; }

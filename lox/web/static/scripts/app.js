@@ -229,6 +229,8 @@
         ),
       ),
     );
+
+    requestsCost();
   }
 
   // ---------------------------------------------------------------- cards
@@ -1034,16 +1036,37 @@
 
   // ---------------------------------------------------------------- requests
 
+  // What a fetch will cost, before you spend it. The tracker pages at 25.
+  function requestsCost() {
+    const limit = Number($('#requests-limit').value) || 25;
+    const pages = Math.ceil(limit / 25);
+    const budget = state.trackers.find((t) => t.code === state.requestsTracker);
+    const note = `Costs up to ${pages} call${pages === 1 ? '' : 's'}`;
+    $('#requests-cost').textContent = budget ? `${note} of ${budget.remaining} left on ${budget.code}.` : `${note}.`;
+  }
+
   async function requestsFetch() {
     if (!state.requestsTracker) return toast('No tracker configured', 'bad');
+    const limit = Number($('#requests-limit').value) || 25;
     const container = $('#requests-results');
-    container.replaceChildren(spinner('Fetching open requests'));
+    container.replaceChildren(spinner(`Fetching up to ${limit} open requests`));
     try {
-      const params = new URLSearchParams({ tracker: state.requestsTracker, search: $('#requests-search').value });
-      const { requests } = await api(`/api/requests/list?${params}`);
+      const params = new URLSearchParams({
+        tracker: state.requestsTracker,
+        search: $('#requests-search').value,
+        tags: $('#requests-tags').value,
+        tags_all: $('#requests-tags-mode').value === 'all' ? '1' : '0',
+        show_filled: $('#requests-show-filled').checked ? '1' : '0',
+        limit: String(limit),
+      });
+      const { requests, calls, complete } = await api(`/api/requests/list?${params}`);
       state.requestRows = requests;
       state.selectedRequests = new Set(requests.map((r) => r.id));
       renderRequestRows();
+      // Say what was actually spent and whether the tracker ran dry, so a short
+      // list is not mistaken for a failed fetch.
+      const spent = `${requests.length} request(s) from ${calls} call${calls === 1 ? '' : 's'}`;
+      toast(complete ? spent : `${spent} — that is everything matching`, 'ok');
       refreshStatus();
     } catch (e) {
       container.replaceChildren(empty(e.message));
@@ -1821,6 +1844,9 @@
       renderCandidates();
     });
     $('#requests-fetch').addEventListener('click', requestsFetch);
+    $('#requests-limit').addEventListener('change', requestsCost);
+    $('#requests-search').addEventListener('keydown', (e) => e.key === 'Enter' && requestsFetch());
+    $('#requests-tags').addEventListener('keydown', (e) => e.key === 'Enter' && requestsFetch());
     $('#requests-check').addEventListener('click', requestsCheck);
     $('#requests-file').addEventListener('change', async (e) => {
       const file = e.target.files?.[0];

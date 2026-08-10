@@ -722,18 +722,33 @@ async def api_missing_check(request: web.Request) -> web.Response:
 
 @routes.get("/api/requests/list")
 async def api_requests_list(request: web.Request) -> web.Response:
-    """List open requests on a tracker. Spends one tracker call."""
+    """List open requests on a tracker.
+
+    Costs one tracker call per page. The tracker sets the page size (25 on both
+    RED and OPS), so asking for more than that costs more than one.
+    """
     tracker = request.query.get("tracker", "")
     if not tracker:
         return error("tracker is required")
+
+    try:
+        limit = max(1, min(500, int(request.query.get("limit", 25))))
+    except ValueError:
+        return error("limit must be a number")
+
     checker: DeezerRequestChecker = request.app["request_checker"]
     try:
-        rows = await checker.search_requests(
-            tracker, request.query.get("search", ""), int(request.query.get("page", 1))
+        found = await checker.collect_requests(
+            tracker,
+            request.query.get("search", ""),
+            tags=request.query.get("tags", ""),
+            tags_all=request.query.get("tags_all", "") in ("1", "true", "yes"),
+            show_filled=request.query.get("show_filled", "") in ("1", "true", "yes"),
+            limit=limit,
         )
     except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
         return error(str(e), status=502)
-    return json_response({"requests": rows})
+    return json_response(found)
 
 
 @routes.post("/api/requests/check")
