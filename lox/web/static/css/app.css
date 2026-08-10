@@ -171,14 +171,27 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .toolbar { margin-bottom: 16px; }
 
-textarea, input[type="search"], input[type="text"] {
+/* Everything that takes typing, by exclusion rather than by listing the types.
+   An allowlist of [type="text"] and [type="search"] silently missed password
+   and number fields, which then rendered as browser-default white boxes in the
+   dark theme -- unreadable, and only visible on the settings page where those
+   two types live. A new field kind should not be able to reintroduce that. */
+textarea,
+input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 9px 12px;
   width: 100%;
   resize: vertical;
+  color: var(--text);
 }
+
+/* Firefox and Chrome both draw the spinner and the calendar/reveal icons in a
+   fixed dark colour, which disappears against a dark field. */
+input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { appearance: none; margin: 0; }
 
 textarea { margin-bottom: 10px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12.5px; }
 
@@ -543,6 +556,11 @@ select {
 .setting-help { margin: 0; font-size: 11.5px; }
 .saved-tag { font-weight: 500; }
 
+/* A size, entered as a number and a unit. */
+.bytes-input { display: flex; gap: 8px; }
+.bytes-input .bytes-amount { flex: 1; min-width: 0; }
+.bytes-input .bytes-unit { width: auto; flex: none; }
+
 .test-btn { font-size: 12.5px; padding: 6px 13px; }
 
 .test-result {
@@ -590,18 +608,25 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .inspected summary { cursor: pointer; color: var(--text-dim); }
 .inspected .hitlist { padding-top: 8px; }
 
+/* Top right of the header. It was in the sidebar foot under the tracker
+   budgets, which is where you look for status, not for a control. */
 .theme-toggle {
-  background: none;
-  border: 0;
-  padding: 4px 6px;
-  font-size: 16px;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 20px;
   line-height: 1;
   color: var(--text-dim);
   cursor: pointer;
-  margin-bottom: 8px;
+  flex: none;
 }
 
-.theme-toggle:hover { color: var(--text); }
+.theme-toggle:hover { color: var(--text); border-color: var(--accent); }
 
 .icon-btn.upload { background: var(--ok); margin-left: 6px; }
 

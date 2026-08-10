@@ -1450,17 +1450,65 @@
     }
   }
 
+  const BYTE_UNITS = [
+    { name: 'B', factor: 1 },
+    { name: 'KB', factor: 1024 },
+    { name: 'MB', factor: 1024 ** 2 },
+    { name: 'GB', factor: 1024 ** 3 },
+  ];
+
+  // Show a stored byte count in the largest unit that divides it exactly, so
+  // 8388608 comes back as "8 MB" rather than "8192 KB" or "8.0 MB".
+  function splitBytes(bytes) {
+    const total = Number(bytes) || 0;
+    if (total <= 0) return [1, 'MB'];
+    for (const unit of [...BYTE_UNITS].reverse()) {
+      if (total >= unit.factor && total % unit.factor === 0) return [total / unit.factor, unit.name];
+    }
+    return [total, 'B'];
+  }
+
   function settingField(field, values, secretsSet) {
     const value = values[field.key];
     const isSecret = field.kind === 'secret';
     const configured = secretsSet.includes(field.key);
 
-    const onInput = (e) => {
-      const target = e.target;
-      state.pending[field.key] = target.type === 'checkbox' ? target.checked : target.value;
+    const markDirty = () => {
       $('#settings-save').disabled = false;
       $('#settings-dirty').textContent = `${Object.keys(state.pending).length} unsaved change(s)`;
     };
+
+    const onInput = (e) => {
+      const target = e.target;
+      state.pending[field.key] = target.type === 'checkbox' ? target.checked : target.value;
+      markDirty();
+    };
+
+    // A size is a number and a unit. Storing bytes is right; asking you to type
+    // 1073741824 and count the digits is not.
+    if (field.kind === 'bytes') {
+      const [amount, unit] = splitBytes(value);
+      const size = el('input', { type: 'number', min: '1', step: '1', value: amount, class: 'bytes-amount' });
+      const units = el(
+        'select',
+        { class: 'bytes-unit' },
+        ...BYTE_UNITS.map((u) => el('option', { value: u.name, selected: u.name === unit }, u.name)),
+      );
+      const push = () => {
+        const factor = BYTE_UNITS.find((u) => u.name === units.value).factor;
+        state.pending[field.key] = Math.max(1, Number(size.value) || 0) * factor;
+        markDirty();
+      };
+      size.addEventListener('input', push);
+      units.addEventListener('change', push);
+      return el(
+        'div',
+        { class: 'setting' },
+        el('label', {}, field.label),
+        el('div', { class: 'bytes-input' }, size, units),
+        field.help ? el('p', { class: 'hint setting-help' }, field.help) : null,
+      );
+    }
 
     let input;
     if (field.kind === 'bool') {
@@ -1725,7 +1773,7 @@
     $$('#theme-picker button').forEach((b) => b.classList.toggle('active', b.dataset.theme === theme));
   }
 
-  // The sidebar icon flips between the two you actually use; the three-way
+  // The topbar icon flips between the two you actually use; the three-way
   // choice including Auto lives in Settings.
   function toggleTheme() {
     applyTheme(resolvedTheme(localStorage.getItem('lox-theme') || 'system') === 'dark' ? 'light' : 'dark');

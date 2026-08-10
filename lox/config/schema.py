@@ -12,7 +12,9 @@ in, so they stay in config.toml — see BOOTSTRAP_KEYS.
 
 from typing import Any, Literal, NamedTuple
 
-FieldKind = Literal["text", "secret", "int", "float", "bool", "choice", "path", "list"]
+FieldKind = Literal["text", "secret", "int", "float", "bool", "choice", "path", "list", "bytes"]
+"""``bytes`` is stored as a plain integer count; the UI edits it as a number and
+a unit, because nobody should have to type 1073741824 and count the digits."""
 
 BOOTSTRAP_KEYS = (
     "upload.web_interface.host",
@@ -224,10 +226,10 @@ FIELDS: tuple[Field, ...] = (
           placeholder="192.168.1.25"),
     Field("logging.directory", "Log directory", "path", "debug",
           "Defaults to a logs folder beside settings.toml."),
-    Field("logging.max_file_bytes", "Maximum size per log file (bytes)", "int", "debug",
-          "8388608 is 8 MB.", minimum=65536),
-    Field("logging.max_total_bytes", "Maximum total log size (bytes)", "int", "debug",
-          "1073741824 is 1 GB. Older files are deleted to stay under it.", minimum=1048576),
+    Field("logging.max_file_bytes", "Maximum size per log file", "bytes", "debug",
+          "A log is rotated when it reaches this size.", minimum=65536),
+    Field("logging.max_total_bytes", "Maximum total log size", "bytes", "debug",
+          "Older files are deleted to stay under it.", minimum=1048576),
     Field("upload.update_notification", "Check for lox updates on startup", "bool", "upload"),
     Field("upload.compression.flac_compression_level", "FLAC compression level", "int", "upload",
           minimum=0, maximum=8),
