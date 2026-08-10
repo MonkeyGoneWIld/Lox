@@ -6,9 +6,22 @@ import asyncclick as click
 from platformdirs import user_data_dir
 
 from salmon.common import commandgroup
-from salmon.config import APPNAME
+from salmon.config import APPNAME, LEGACY_APPNAME
 
-DB_DIR = user_data_dir(appname=APPNAME)
+
+def _db_dir() -> str:
+    """Return the data directory, preferring an existing upstream one.
+
+    Renaming the app would otherwise orphan the database of anyone switching
+    from smoked-salmon, so the old location wins when it already has a db.
+    """
+    legacy = user_data_dir(appname=LEGACY_APPNAME)
+    if path.exists(path.join(legacy, "smoked.db")):
+        return legacy
+    return user_data_dir(appname=APPNAME)
+
+
+DB_DIR = _db_dir()
 DB_PATH = path.join(DB_DIR, "smoked.db")
 OLD_DB_PATH = path.abspath(path.join(path.dirname(path.dirname(__file__)), "smoked.db"))
 MIG_DIR = path.abspath(path.join(path.dirname(path.dirname(__file__)), "data", "migrations"))

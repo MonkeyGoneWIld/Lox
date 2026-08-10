@@ -179,7 +179,7 @@ class TrackCountVerifier:
         data, error = await self._json(
             f"https://musicbrainz.org/ws/2/release/{match[1]}",
             params={"fmt": "json", "inc": "recordings"},
-            headers={"User-Agent": "smoked-salmon-deezer/1.0 (request checker)"},
+            headers={"User-Agent": "lox/1.0 (request checker)"},
         )
         if error:
             return None, error

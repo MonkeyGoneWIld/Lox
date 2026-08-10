@@ -378,7 +378,7 @@ async def _test_seedbox_connections() -> None:
 
 @commandgroup.command()
 async def health() -> None:
-    """Check the status of smoked-salmon's config files and command line dependencies."""
+    """Check the status of lox's config files and command line dependencies."""
     try:
         config_path = find_config_path()
         click.echo(f"Config path: {config_path}")

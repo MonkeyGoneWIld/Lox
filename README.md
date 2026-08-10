@@ -147,6 +147,14 @@ Open the UI once with `?token=<your token>` to set the session cookie.
 
 Everything lives in `config.toml`, which is gitignored. No credential is ever written to the repo.
 
+It is looked for in this order:
+
+1. `config.toml` next to the repo root — handy for development, and the easiest thing to bind-mount into a container.
+2. `~/.config/lox/config.toml` (`%LOCALAPPDATA%\lox\config.toml` on Windows).
+3. `~/.config/smoked-salmon/config.toml` — upstream's location, still read so an existing smoked-salmon install keeps
+   working when you switch. Nothing new is ever written there. The database is handled the same way: an existing
+   `smoked-salmon` data directory wins over a fresh `lox` one, so switching does not orphan it.
+
 | Section | Key settings |
 |---|---|
 | `[metadata.deezer]` | `arl`, `download_dir`, `preferred_format`, `format_fallback`, `concurrent_downloads` |
