@@ -7,6 +7,8 @@ collect/check flow as a pasted URL, so a saved search never costs tracker budget
 on its own.
 """
 
+from __future__ import annotations
+
 import time
 import uuid
 from typing import Any, Literal
@@ -65,7 +67,7 @@ class WatchlistManager:
         self.explorer = Explorer(gw)
         self.store = store or CheckerStore()
 
-    def list(self) -> list[Watchlist]:
+    def saved(self) -> list[Watchlist]:
         """Return every saved watchlist, newest first."""
         entries = self.store.load(self.COLLECTION)
         lists: list[Watchlist] = []
@@ -169,7 +171,7 @@ class WatchlistManager:
             Mapping of watchlist ID to its albums.
         """
         out: dict[str, list[dict[str, Any]]] = {}
-        for watch in self.list():
+        for watch in self.saved():
             try:
                 out[watch.id] = await self.run(watch.id)
             except (DeezerGWError, KeyError):

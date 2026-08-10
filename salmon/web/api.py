@@ -537,7 +537,7 @@ async def api_releases(request: web.Request) -> web.Response:
 async def api_watchlists(request: web.Request) -> web.Response:
     """List saved Deezer searches."""
     manager: WatchlistManager = request.app["watchlists"]
-    return json_response({"watchlists": [w.as_dict() for w in manager.list()]})
+    return json_response({"watchlists": [w.as_dict() for w in manager.saved()]})
 
 
 @routes.post("/api/watchlists")
@@ -903,7 +903,7 @@ async def api_job_input(request: web.Request) -> web.Response:
 @routes.get("/api/jobs")
 async def api_jobs(request: web.Request) -> web.Response:
     """List background jobs, optionally filtered by kind."""
-    return json_response({"jobs": request.app["jobs"].list(request.query.get("kind"))})
+    return json_response({"jobs": request.app["jobs"].summaries(request.query.get("kind"))})
 
 
 @routes.get("/api/jobs/{job_id}")
