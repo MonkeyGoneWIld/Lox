@@ -13,6 +13,7 @@ from typing import Any
 
 import aiohttp
 
+from lox import debug
 from lox.deezer.gw import DeezerGW, DeezerGWError
 
 _APP_STATE_RE = re.compile(r"window\.__DZR_APP_STATE__\s*=\s*(\{.+?\})\s*;?\s*</script>", re.DOTALL)
@@ -21,6 +22,9 @@ _APP_STATE_RE = re.compile(r"window\.__DZR_APP_STATE__\s*=\s*(\{.+?\})\s*;?\s*</
 # a deezer.com path, so they are constrained rather than trusted.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$", re.IGNORECASE)
 _MODULE_RE = re.compile(r"^[0-9a-f-]{8,64}$", re.IGNORECASE)
+
+# The gateway wants a JSON blob describing the page it should render.
+_PAGE_INPUT = '{"page":"%s","lang":"en","supports":{"ads":false,"long_span":false}}'
 
 COVER_TEMPLATE = "https://e-cdns-images.dzcdn.net/images/{kind}/{code}/{size}x{size}-000000-80-0-0.jpg"
 
@@ -83,10 +87,54 @@ class Explorer:
     async def channels(self) -> list[dict[str, Any]]:
         """List the top-level channels shown on the Explore page.
 
+        Deezer removed the server-rendered /channels page, so scraping it
+        returns 404. This asks the gateway for the same page instead, and falls
+        back to editorial genres so the tab always shows something usable.
+
         Returns:
             Channel dicts with ``id``, ``title``, ``slug``, ``image`` and
             ``colour``.
         """
+        try:
+            results = await self.gw.call("page.get", {"gateway_input": _PAGE_INPUT % "channels/explore"})
+            channels = self._parse_channel_page(results)
+            if channels:
+                debug.log("explore: %d channels from gateway", len(channels), level=20)
+                return channels
+            debug.log("explore: gateway returned no channels, falling back to genres", level=30)
+        except DeezerGWError as e:
+            debug.log("explore: gateway channels failed (%s), falling back to genres", e, level=30)
+
+        genres = await self.genres()
+        return [
+            {"id": g["id"], "title": g["title"], "slug": f"genre:{g['id']}", "image": g["image"], "colour": None}
+            for g in genres
+        ]
+
+    @staticmethod
+    def _parse_channel_page(results: dict) -> list[dict[str, Any]]:
+        """Pull channel cards out of a gateway page payload."""
+        channels: list[dict[str, Any]] = []
+        for section in results.get("sections", []) or []:
+            for item in section.get("items", []) or []:
+                data = item.get("data") or item
+                slug = data.get("SLUG") or data.get("slug")
+                title = data.get("TITLE") or data.get("title")
+                if not slug or not title:
+                    continue
+                channels.append(
+                    {
+                        "id": str(data.get("CHANNEL_ID") or slug),
+                        "title": title,
+                        "slug": slug,
+                        "image": cover_url(data.get("PICTURE") or data.get("PIC_MD5"), "misc", 264),
+                        "colour": data.get("COLOR") or data.get("BACKGROUND_COLOR"),
+                    }
+                )
+        return channels
+
+    async def _legacy_channels(self) -> list[dict[str, Any]]:
+        """The old scrape, kept only so the parser has a caller in tests."""
         state = await self._page_state("/en/channels")
         channels: list[dict[str, Any]] = []
         for section in state.get("sections", []) or []:
@@ -262,9 +310,28 @@ class Explorer:
         }
 
     async def new_releases(self, genre_id: str | int = 0, limit: int = 50) -> list[dict[str, Any]]:
-        """Fetch editorial new releases for a genre."""
+        """Fetch new releases for a genre.
+
+        The editorial endpoint returns an empty list for many genres and
+        regions. Rather than showing "No new releases" when releases plainly
+        exist, fall back to the genre's album chart.
+
+        Args:
+            genre_id: Deezer genre ID, 0 for editorial's default selection.
+            limit: Maximum albums.
+
+        Returns:
+            Album cards, newest-first where the source provides an order.
+        """
         data = await self.gw.public(f"/editorial/{genre_id}/releases", {"limit": limit})
-        return [self.public_album(a) for a in data.get("data", [])]
+        albums = [self.public_album(a) for a in data.get("data", [])]
+        if albums:
+            debug.log("explore: %d editorial releases for genre %s", len(albums), genre_id, level=20)
+            return albums
+
+        debug.log("explore: editorial empty for genre %s, using the chart", genre_id, level=30)
+        chart = await self.gw.public(f"/chart/{genre_id}/albums", {"limit": limit})
+        return [self.public_album(a) for a in chart.get("data", [])]
 
     async def artist_albums(self, artist_id: str | int, limit: int = 100) -> list[dict[str, Any]]:
         """Fetch an artist's discography from the public API."""

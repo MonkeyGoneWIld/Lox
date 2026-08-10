@@ -30,8 +30,9 @@ from lox.checker.watchlists import WatchlistManager
 from lox.deezer.download import Downloader
 from lox.deezer.explore import Explorer
 from lox.deezer.gw import DeezerGW, DeezerGWError
+from lox.flow import FlowRegistry
 from lox.notify.discord import DiscordNotifier
-from lox.seeding.links import LinkError, link_release
+from lox.upload_flow import run_uploads
 from lox.web.jobs import JobRegistry
 
 routes = web.RouteTableDef()
@@ -199,6 +200,7 @@ async def setup_services(app: web.Application) -> None:
     app["watchlists"] = WatchlistManager(gw, store)
     app["notifier"] = DiscordNotifier()
     app["jobs"] = JobRegistry()
+    app["flows"] = FlowRegistry()
 
 
 async def teardown_services(app: web.Application) -> None:
@@ -820,13 +822,11 @@ async def _run_cli(job, args: list[str]) -> int:
 
 @routes.post("/api/upload")
 async def api_upload(request: web.Request) -> web.Response:
-    """Upload a release folder to one or more trackers.
+    """Start an upload as an interactive flow.
 
-    When ``linking.enabled`` is set, each tracker gets its own hardlinked copy
-    of the folder first and the torrent is built from that path, so both
-    trackers can seed the same bytes from separate directories — the cross-seed
-    layout. The CLI still drives the upload itself; the browser gets its stdout
-    and can answer prompts through :func:`api_job_input`.
+    The pipeline runs in this process with its prompts redirected into the
+    flow, so the browser answers questions with real controls instead of typing
+    into a terminal.
     """
     body = await request.json()
     try:
@@ -841,47 +841,65 @@ async def api_upload(request: web.Request) -> web.Response:
 
     source = body.get("source", "WEB")
     auto_rename = bool(body.get("auto_rename", True))
-    # One source of truth: the setting. The Uploads tab reflects it rather than
-    # carrying a second, unsynchronised switch.
-    dry_run = bool(body["dry_run"]) if "dry_run" in body else cfg.upload.dry_run
-    jobs: JobRegistry = request.app["jobs"]
+    flows: FlowRegistry = request.app["flows"]
 
-    async def run(job) -> None:
-        failures = 0
-        for tracker in trackers:
-            target = folder
-            if cfg.linking.enabled:
-                try:
-                    link = await asyncio.to_thread(link_release, folder, tracker)
-                except LinkError as e:
-                    job.write_log(f"[{tracker}] linking failed: {e}")
-                    job.emit("link_failed", {"tracker": tracker, "error": str(e)})
-                    failures += 1
-                    continue
-                target = link.destination
-                verb = "reused" if link.reused else link.method
-                job.write_log(f"[{tracker}] {verb} {link.files} file(s) -> {link.destination}")
-                job.emit("linked", link.as_dict())
-
-            args = ["up", target, "--source", source, "--tracker", tracker]
-            if auto_rename:
-                args.append("--auto-rename")
-            if dry_run:
-                args.append("--dry-run")
-            code = await _run_cli(job, args)
-            if code != 0:
-                job.write_log(f"[{tracker}] exited with code {code}")
-                failures += 1
-
-        job.status = "failed" if failures else "done"
-        if failures:
-            job.error = f"{failures} of {len(trackers)} tracker upload(s) failed"
-
-    verb = "Dry run of" if dry_run else "Uploading"
-    job = jobs.spawn("upload", f"{verb} {os.path.basename(folder)} to {', '.join(trackers)}", run)
-    return json_response(
-        {"job_id": job.id, "trackers": trackers, "linking": cfg.linking.enabled, "dry_run": dry_run}
+    label = f"{os.path.basename(folder)} to {', '.join(trackers)}"
+    flow = flows.start(
+        "upload",
+        f"{'Dry run of ' if cfg.upload.dry_run else 'Uploading '}{label}",
+        lambda f: run_uploads(f, folder, trackers, source=source, auto_rename=auto_rename),
     )
+    return json_response(
+        {"flow_id": flow.id, "trackers": trackers, "linking": cfg.linking.enabled, "dry_run": cfg.upload.dry_run}
+    )
+
+
+# ----------------------------------------------------------------------
+# Flows
+# ----------------------------------------------------------------------
+
+
+@routes.get("/api/flows")
+async def api_flows(request: web.Request) -> web.Response:
+    """List flows, newest first."""
+    return json_response({"flows": request.app["flows"].summaries(request.query.get("kind"))})
+
+
+@routes.get("/api/flows/{flow_id}")
+async def api_flow(request: web.Request) -> web.Response:
+    """Fetch one flow, including the question it is waiting on."""
+    flow = request.app["flows"].get(request.match_info["flow_id"])
+    if not flow:
+        return error("no such flow", status=404)
+    return json_response(flow.as_dict())
+
+
+@routes.post("/api/flows/{flow_id}/answer")
+async def api_flow_answer(request: web.Request) -> web.Response:
+    """Answer the question a flow is waiting on."""
+    flow = request.app["flows"].get(request.match_info["flow_id"])
+    if not flow:
+        return error("no such flow", status=404)
+    body = await request.json()
+    accepted = flow.answer(body.get("step_id", ""), body.get("value"))
+    if not accepted:
+        return error("that question has already been answered", status=409)
+    return json_response({"accepted": True})
+
+
+@routes.post("/api/flows/{flow_id}/cancel")
+async def api_flow_cancel(request: web.Request) -> web.Response:
+    """Abandon a flow."""
+    flow = request.app["flows"].get(request.match_info["flow_id"])
+    if not flow:
+        return error("no such flow", status=404)
+    return json_response({"cancelled": flow.cancel()})
+
+
+@routes.post("/api/flows/clear")
+async def api_flows_clear(request: web.Request) -> web.Response:
+    """Drop finished flows."""
+    return json_response({"cleared": request.app["flows"].clear_finished()})
 
 
 @routes.post("/api/jobs/{job_id}/input")

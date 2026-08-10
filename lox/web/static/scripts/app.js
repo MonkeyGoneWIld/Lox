@@ -32,7 +32,7 @@
     requestRows: [],
     selectedRequests: new Set(),
     trackers: [],
-    uploadJob: null,
+    flows: new Set(),
     pollers: new Map(),
   };
 
@@ -96,7 +96,7 @@
     if (view === 'explore') loadExplore();
     if (view === 'missing') loadWatchlists();
     if (view === 'downloads') pollDownloads(true);
-    if (view === 'uploads') loadFolders();
+    if (view === 'uploads') { loadFolders(); resumeFlows(); }
     if (view === 'settings') loadSettings();
   }
 
@@ -248,6 +248,18 @@
                   },
                 },
                 '↓',
+              ),
+              el(
+                'button',
+                {
+                  class: 'icon-btn upload',
+                  title: 'Download and upload',
+                  onclick: (e) => {
+                    e.stopPropagation();
+                    downloadAndUpload(albumId, item);
+                  },
+                },
+                '↑',
               ),
             )
           : null,
@@ -524,60 +536,65 @@
     const target = $('#album-check-body');
     if (!target || !check) return;
 
+    // Headline first: found or not. The groups it looked at are the evidence,
+    // not the answer, so they live behind a disclosure.
     const blocks = check.verdicts.map((v) => {
+      const verdictTag =
+        v.status === 'missing' ? ['ok', 'not on tracker'] :
+        v.status === 'found' ? ['dim', 'already there'] :
+        ['warn', v.status];
+
       const head = el(
         'div',
         { class: 'row verdict-head' },
         el('strong', {}, v.tracker),
-        el(
-          'span',
-          { class: `tag ${v.status === 'missing' ? 'ok' : v.status === 'found' ? 'dim' : 'warn'}` },
-          v.status === 'missing' ? 'not on tracker' : v.status,
-        ),
-        el('span', { class: 'card-sub' }, `${v.calls_used} call(s), ${v.queries.length} search(es)`),
-        v.artist_url ? el('a', { href: v.artist_url, target: '_blank', rel: 'noopener' }, 'artist page') : null,
+        el('span', { class: `tag ${verdictTag[0]}` }, verdictTag[1]),
+        v.match
+          ? el('a', { href: v.match.url, target: '_blank', rel: 'noopener' }, v.match.name || 'view group')
+          : null,
+        el('span', { class: 'card-sub' }, `${v.calls_used} call(s)`),
       );
 
       const inspected = v.inspected.length
         ? el(
-            'ul',
-            { class: 'hitlist' },
-            ...v.inspected.map((h) =>
-              el(
-                'li',
-                { class: h.matched ? 'hit matched' : 'hit' },
-                el('a', { href: h.url, target: '_blank', rel: 'noopener' }, `${h.artist} — ${h.name}${h.year ? ` (${h.year})` : ''}`),
-                el('span', { class: 'card-sub' }, h.matched ? 'matched' : h.reason),
-                h.formats.length ? el('span', { class: 'card-sub' }, h.formats.join(' · ')) : null,
+            'details',
+            { class: 'inspected' },
+            el('summary', {}, `What it looked at (${v.inspected.length})`),
+            el(
+              'ul',
+              { class: 'hitlist' },
+              ...v.inspected.map((h) =>
+                el(
+                  'li',
+                  { class: h.matched ? 'hit matched' : 'hit' },
+                  el('a', { href: h.url, target: '_blank', rel: 'noopener' },
+                    `${h.artist} — ${h.name}${h.year ? ` (${h.year})` : ''}`),
+                  el('span', { class: 'card-sub' }, h.matched ? 'matched' : h.reason),
+                ),
               ),
             ),
           )
-        : el('p', { class: 'hint' }, v.error || 'No groups came back from the search.');
+        : v.error
+          ? el('p', { class: 'hint' }, v.error)
+          : null;
 
       return el('div', { class: 'verdict' }, head, inspected);
     });
 
     const uploadable = check.uploadable_to || [];
-    const actions = el(
-      'div',
-      { class: 'row' },
-      uploadable.length
-        ? el(
-            'button',
-            { class: 'primary', onclick: () => uploadAlbum(album, uploadable) },
-            `Download & upload to ${uploadable.join(' + ')}`,
-          )
-        : el('span', { class: 'hint' }, 'Nothing to upload — every checked tracker already has it, or the check did not finish.'),
-    );
-
     target.replaceChildren(
-      el(
-        'p',
-        { class: 'hint' },
-        'Open the links and confirm the checker got it right before uploading. Rejected groups are listed with the reason.',
-      ),
       ...blocks,
-      actions,
+      el(
+        'div',
+        { class: 'row' },
+        uploadable.length
+          ? el(
+              'button',
+              { class: 'primary', onclick: () => uploadAlbum(album, uploadable) },
+              `Download & upload to ${uploadable.join(' + ')}`,
+            )
+          : el('span', { class: 'hint' }, 'Nothing to upload — every tracker checked already has it.'),
+      ),
     );
   }
 
@@ -688,6 +705,14 @@
     } catch (e) {
       toast(e.message, 'bad');
     }
+  }
+
+  // Queue the download, then hand off to Uploads with the trackers preselected.
+  async function downloadAndUpload(albumId, item) {
+    await download(albumId);
+    state.pendingUpload = { albumId, name: `${item?.artist || ''} - ${item?.title || ''}`.trim() };
+    toast('Downloading. It will appear under Uploads when it finishes.');
+    setView('downloads');
   }
 
   async function pollDownloads(immediate = false) {
@@ -1085,45 +1110,169 @@
     const targets = trackers && trackers.length ? trackers : [...state.uploadTrackers];
     if (!targets.length) return toast('Pick at least one tracker', 'bad');
 
-    const dryRun = $('#upload-dry-run').checked;
-    $('#upload-console-panel').hidden = false;
-    $('#upload-console').textContent = '';
     try {
-      const { job_id, linking } = await api('/api/upload', {
+      const { flow_id, dry_run } = await api('/api/upload', {
         method: 'POST',
-        body: { folder, trackers: targets, dry_run: dryRun },
+        body: { folder, trackers: targets },
       });
-      if (dryRun) toast('Dry run: nothing will reach the tracker or the download client.');
-      else if (linking && targets.length > 1) toast(`Hardlinking one folder per tracker: ${targets.join(', ')}`);
-      state.uploadJob = job_id;
-      followJob(job_id, {
-        interval: 700,
-        onUpdate: (job) => {
-          const console_ = $('#upload-console');
-          console_.textContent = job.log.join('\n');
-          console_.scrollTop = console_.scrollHeight;
-          $('#upload-input').disabled = !job.accepts_input;
-        },
-        onDone: (job) => {
-          state.uploadJob = null;
-          $('#upload-input').disabled = true;
-          toast(job.status === 'done' ? 'Upload finished' : job.error || 'Upload failed', job.status === 'done' ? 'ok' : 'bad');
-        },
-      });
+      if (dry_run) toast('Dry run: nothing reaches the tracker or the download client.');
+      state.flows.add(flow_id);
+      followFlow(flow_id);
     } catch (e) {
       toast(e.message, 'bad');
     }
   }
 
-  async function sendUploadInput(event) {
-    event.preventDefault();
-    if (!state.uploadJob) return;
-    const input = $('#upload-input');
+  // A flow is polled until it finishes. When it is waiting on a question the
+  // question is rendered as real controls; answering resumes the pipeline.
+  function followFlow(flowId) {
+    const tick = async () => {
+      let flow;
+      try {
+        flow = await api(`/api/flows/${flowId}`);
+      } catch (e) {
+        toast(e.message, 'bad');
+        return;
+      }
+      renderFlow(flow);
+      if (flow.state === 'running' || flow.state === 'waiting') {
+        setTimeout(tick, flow.state === 'waiting' ? 900 : 500);
+      } else {
+        refreshStatus();
+        loadFolders();
+      }
+    };
+    tick();
+  }
+
+  function flowStep(flow) {
+    const step = flow.step;
+    const send = async (value) => {
+      try {
+        await api(`/api/flows/${flow.id}/answer`, {
+          method: 'POST',
+          body: { step_id: step.id, value },
+        });
+      } catch (e) {
+        toast(e.message, 'bad');
+      }
+    };
+
+    const controls = [];
+    if (step.kind === 'confirm') {
+      controls.push(
+        el('button', { class: 'primary', onclick: () => send(true) }, 'Yes'),
+        el('button', { onclick: () => send(false) }, 'No'),
+      );
+    } else if (step.kind === 'choice') {
+      step.options.forEach((o) =>
+        controls.push(
+          el(
+            'button',
+            {
+              class: o.danger ? 'danger' : o.value === step.default ? 'primary' : '',
+              title: o.detail || '',
+              onclick: () => send(o.value),
+            },
+            o.label,
+          ),
+        ),
+      );
+    } else if (step.kind === 'multi') {
+      const picked = new Set(step.default || []);
+      step.options.forEach((o) =>
+        controls.push(
+          el(
+            'label',
+            { class: 'check' },
+            el('input', {
+              type: 'checkbox',
+              checked: picked.has(o.value),
+              onchange: (e) => (e.target.checked ? picked.add(o.value) : picked.delete(o.value)),
+            }),
+            o.label,
+          ),
+        ),
+      );
+      controls.push(el('button', { class: 'primary', onclick: () => send([...picked]) }, 'Continue'));
+    } else if (step.kind === 'review') {
+      controls.push(
+        el('button', { class: 'primary', onclick: () => send(true) }, 'Looks right, continue'),
+        el('button', { onclick: () => send(false) }, 'Stop'),
+      );
+    } else {
+      const field = el('input', { type: 'text', value: step.default ?? '', placeholder: 'Your answer' });
+      controls.push(
+        field,
+        el('button', { class: 'primary', onclick: () => send(field.value) }, 'Send'),
+      );
+    }
+
+    return el(
+      'div',
+      { class: 'step' },
+      el('div', { class: 'step-prompt' }, step.prompt),
+      step.detail ? el('p', { class: 'hint' }, step.detail) : null,
+      step.kind === 'review' && step.options.length
+        ? el(
+            'dl',
+            { class: 'meta' },
+            ...step.options.flatMap((r) => [el('dt', {}, r.label), el('dd', {}, String(r.value))]),
+          )
+        : null,
+      el('div', { class: 'row step-controls' }, ...controls),
+    );
+  }
+
+  function renderFlow(flow) {
+    const container = $('#upload-flows');
+    if (!container) return;
+    let card = $(`#flow-${flow.id}`);
+    if (!card) {
+      card = el('div', { class: 'panel flow-card', id: `flow-${flow.id}` });
+      container.prepend(card);
+    }
+
+    const stateTag = { waiting: 'warn', done: 'ok', failed: 'bad', cancelled: 'dim' }[flow.state] || 'dim';
+    const notes = flow.events.slice(-8);
+
+    card.replaceChildren(
+      el(
+        'div',
+        { class: 'row' },
+        el('h2', {}, flow.label),
+        el('span', { class: `tag ${stateTag}` }, flow.state === 'waiting' ? 'needs you' : flow.state),
+        flow.state === 'running' || flow.state === 'waiting'
+          ? el('button', { class: 'ghost', onclick: () => cancelFlow(flow.id) }, 'Cancel')
+          : null,
+      ),
+      flow.stage ? el('p', { class: 'hint' }, flow.stage) : null,
+      flow.percent !== null && flow.percent !== undefined
+        ? el('div', { class: 'bar' }, el('div', { class: 'bar-fill', style: `width:${flow.percent}%` }))
+        : null,
+      flow.step ? flowStep(flow) : null,
+      flow.error ? el('p', { class: 'test-result warn' }, flow.error) : null,
+      notes.length
+        ? el(
+            'details',
+            { class: 'flow-notes' },
+            el('summary', {}, `Details (${flow.events.length})`),
+            el('ul', { class: 'notelist' }, ...notes.map((n) => el('li', { class: n.level }, n.message))),
+          )
+        : null,
+    );
+  }
+
+  async function cancelFlow(flowId) {
+    await api(`/api/flows/${flowId}/cancel`, { method: 'POST' });
+  }
+
+  async function resumeFlows() {
     try {
-      await api(`/api/jobs/${state.uploadJob}/input`, { method: 'POST', body: { line: input.value } });
-      input.value = '';
-    } catch (e) {
-      toast(e.message, 'bad');
+      const { flows } = await api('/api/flows?kind=upload');
+      flows.filter((f) => f.state === 'running' || f.state === 'waiting').forEach((f) => followFlow(f.id));
+    } catch {
+      // nothing running
     }
   }
 
@@ -1340,7 +1489,11 @@
     box.replaceChildren(el('span', { class: 'spinner' }), ' Contacting…');
 
     try {
-      const result = await api(`/api/settings/test/${target}`, { method: 'POST' });
+      // Send whatever is typed but not yet saved, so Test works before Save.
+      const result = await api(`/api/settings/test/${target}`, {
+        method: 'POST',
+        body: { values: state.pending },
+      });
       box.className = `test-result ${result.ok ? 'pass' : 'warn'}`;
       const detail = result.detail && Object.keys(result.detail).length
         ? el(
@@ -1382,7 +1535,18 @@
 
   // ---------------------------------------------------------------- wiring
 
+  function applyTheme(choice) {
+    const theme = choice || localStorage.getItem('lox-theme') || 'system';
+    localStorage.setItem('lox-theme', theme);
+    if (theme === 'system') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', theme);
+    $$('#theme-picker button').forEach((b) => b.classList.toggle('active', b.dataset.theme === theme));
+  }
+
   function init() {
+    applyTheme();
+    $$('#theme-picker button').forEach((b) => b.addEventListener('click', () => applyTheme(b.dataset.theme)));
+
     $$('.nav-item').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
     $('#search-form').addEventListener('submit', runSearch);
     $$('#search-type button').forEach((b) =>
@@ -1425,7 +1589,6 @@
       pollDownloads(true);
     });
     $('#folders-refresh').addEventListener('click', loadFolders);
-    $('#upload-input-form').addEventListener('submit', sendUploadInput);
     $('#detail-close').addEventListener('click', () => ($('#detail').hidden = true));
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') $('#detail').hidden = true;

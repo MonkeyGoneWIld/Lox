@@ -18,7 +18,7 @@ import lox.trackers
 from lox import cfg, settings
 from lox import debug as debuglog
 from lox.config.schema import BOOTSTRAP_KEYS, sections_with_fields
-from lox.config.store import SettingsError
+from lox.config.store import SettingsError, coerce, get_value, set_value
 from lox.deezer.gw import DeezerGW, DeezerGWError
 
 routes = web.RouteTableDef()
@@ -116,6 +116,34 @@ async def api_settings_reset(request: web.Request) -> web.Response:
 # ----------------------------------------------------------------------
 
 
+@contextlib.contextmanager
+def _temporarily(values: dict[str, Any]):
+    """Apply unsaved settings for the duration of a test, then put them back.
+
+    Args:
+        values: Dotted keys to raw values, straight from the settings page.
+
+    Yields:
+        Nothing; the config is mutated for the body of the block.
+    """
+    if not values:
+        yield
+        return
+    previous: dict[str, Any] = {}
+    applied: list[str] = []
+    try:
+        for key, raw in values.items():
+            coerced = coerce(key, raw)
+            previous[key] = get_value(cfg, key)
+            set_value(cfg, key, coerced)
+            applied.append(key)
+        yield
+    finally:
+        for key in applied:
+            with contextlib.suppress(SettingsError):
+                set_value(cfg, key, previous[key])
+
+
 @routes.post("/api/settings/test/{target}")
 async def api_settings_test(request: web.Request) -> web.Response:
     """Run a live check for one settings section.
@@ -123,6 +151,8 @@ async def api_settings_test(request: web.Request) -> web.Response:
     Tests run against whatever is currently saved, so save before testing.
     """
     target = request.match_info["target"]
+    body = await request.json() if request.can_read_body else {}
+    pending = body.get("values") or {}
     handler = {
         "deezer": _test_deezer,
         "red": _test_red,
@@ -138,7 +168,13 @@ async def api_settings_test(request: web.Request) -> web.Response:
     if handler is None:
         return _json({"error": f"no test named {target}"}, status=404)
     try:
-        return await handler(request)
+        # Test what is on screen, not what was last saved. Anything typed but
+        # unsaved is applied for the call and rolled back afterwards, so a
+        # failed test never leaves the running config half-changed.
+        with _temporarily(pending):
+            return await handler(request)
+    except SettingsError as e:
+        return fail(str(e))
     except Exception as e:  # noqa: BLE001 - a failing test must report, not 500
         return fail(f"Test raised {type(e).__name__}: {e}")
 
