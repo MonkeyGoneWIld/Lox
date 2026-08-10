@@ -401,6 +401,48 @@ async def api_search(request: web.Request) -> web.Response:
     )
 
 
+async def _featured_artists(gw: DeezerGW, album_id: str, album_artist: str) -> dict[str, list[str]]:
+    """Map each track ID to the artists credited on it besides the main one.
+
+    Deezer's private records spell this two ways depending on the release, so
+    both are read: an explicit ``featured`` contributor list, and failing that
+    the full artist list minus whoever is billed as the main artist. Anything
+    unrecognised yields nothing rather than a guess.
+
+    Args:
+        gw: Authenticated Deezer client.
+        album_id: Album to read.
+        album_artist: The headline artist, excluded from every track's list.
+
+    Returns:
+        Track ID to featured artist names.
+    """
+    featured: dict[str, list[str]] = {}
+    for track in await gw.album_tracks(album_id):
+        track_id = str(track.get("SNG_ID") or "")
+        if not track_id:
+            continue
+
+        contributors = track.get("SNG_CONTRIBUTORS") or {}
+        names: list[str] = []
+        if isinstance(contributors, dict):
+            for role in ("featured", "featuring"):
+                value = contributors.get(role)
+                if isinstance(value, list):
+                    names.extend(str(v) for v in value if v)
+
+        if not names:
+            main = {album_artist.casefold(), str(track.get("ART_NAME") or "").casefold()}
+            for artist in track.get("ARTISTS") or []:
+                name = str(artist.get("ART_NAME") or "")
+                if name and name.casefold() not in main and name not in names:
+                    names.append(name)
+
+        if names:
+            featured[track_id] = names
+    return featured
+
+
 @routes.get("/api/album/{album_id}")
 async def api_album(request: web.Request) -> web.Response:
     """Return album detail plus the FLAC/streamability verdict."""
@@ -413,6 +455,7 @@ async def api_album(request: web.Request) -> web.Response:
 
     availability: dict[str, Any] | None = None
     availability_error: str | None = None
+    featured_by_track: dict[str, list[str]] = {}
     if gw.arl:
         try:
             result = await gw.availability(album_id)
@@ -422,6 +465,16 @@ async def api_album(request: web.Request) -> web.Response:
             availability = detail
         except DeezerGWError as e:
             availability_error = str(e)
+
+        # Who else is on each track. The public album endpoint names only the
+        # main artist per track, so a featured credit -- the thing you check a
+        # tracklist for -- is invisible there. The private records carry the
+        # full cast, at the cost of one more call, and only when there is an ARL
+        # to make it with.
+        try:
+            featured_by_track = await _featured_artists(gw, album_id, (meta.get("artist") or {}).get("name") or "")
+        except DeezerGWError as e:
+            debug.log("featured artists unavailable for album %s: %s", album_id, e, level=30)
 
     return json_response(
         {
@@ -456,6 +509,7 @@ async def api_album(request: web.Request) -> web.Response:
                     "number": t.get("track_position"),
                     "disc": t.get("disk_number"),
                     "explicit": t.get("explicit_lyrics"),
+                    "featured": featured_by_track.get(str(t.get("id")), []),
                 }
                 for t in (meta.get("tracks") or {}).get("data", [])
             ],
