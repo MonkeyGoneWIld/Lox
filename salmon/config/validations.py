@@ -114,12 +114,19 @@ class Seedbox(BaseStruct):
     enabled: bool = False
     url: str = ""  # Name of remote in rclone
     type: Literal["local", "rclone"] = "local"
-    directory: str = ""  # Directory when adding torrent to download client
+    # Directory when adding torrent to download client. Supports {tracker},
+    # which expands to the tracker code the upload went to (RED, OPS, DIC) -
+    # match this to linking.link_dir when per_tracker_dirs is on.
+    directory: str = ""
     flac_only: bool = False  # if true, only upload FLAC files
     extra_args: list[str] = msgspec.field(default_factory=list)  # pass these arguments to rclone
     torrent_client: str = ""
-    label: str = ""  # Label to apply to torrents in download client
+    # Category (qBittorrent) or label (Transmission/Deluge/ruTorrent) to apply.
+    # Also supports {tracker}.
+    label: str = ""
     add_paused: bool = False  # If true, add torrents to client in paused state
+    # Restrict this entry to one tracker. Unset means it handles every tracker.
+    tracker: Literal["RED", "OPS", "DIC"] | None = None
 
     def __post_init__(self):
         if self.type not in ("local", "rclone"):

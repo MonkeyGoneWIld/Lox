@@ -51,6 +51,46 @@ async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str)
         click.secho(f"Rclone upload failed with exit code {result.returncode}", fg="red")
 
 
+def _expand_tracker(value: str, tracker: str | None) -> str:
+    """Substitute {tracker} in a seedbox directory or label.
+
+    Args:
+        value: The configured string, possibly containing ``{tracker}``.
+        tracker: Tracker code the upload went to.
+
+    Returns:
+        The expanded string. With no tracker the placeholder is dropped and any
+        resulting doubled or trailing separator is cleaned up.
+    """
+    if not value or "{tracker}" not in value:
+        return value
+    if tracker:
+        return value.replace("{tracker}", tracker.upper())
+    return value.replace("{tracker}", "").replace("//", "/").rstrip("/")
+
+
+def _default_save_path(torrent_path: str, tracker: str | None) -> str:
+    """Work out where the torrent's content actually lives.
+
+    With linking enabled the release was hardlinked to
+    ``<link_dir>/<TRACKER>/<release>``, so the client's save path has to be that
+    per-tracker directory rather than the download directory. Falls back to the
+    download directory when linking is off.
+
+    Args:
+        torrent_path: Path of the .torrent file being added.
+        tracker: Tracker code the upload went to.
+
+    Returns:
+        An absolute save path for the download client.
+    """
+    if cfg.linking.enabled and cfg.linking.link_dir:
+        if cfg.linking.per_tracker_dirs and tracker:
+            return os.path.abspath(os.path.join(cfg.linking.link_dir, tracker.upper()))
+        return os.path.abspath(cfg.linking.link_dir)
+    return os.path.abspath(cfg.directory.download_directory)
+
+
 async def _add_to_downloader(
     client: TorrentClient,
     shell_path: str,
@@ -110,13 +150,16 @@ class UploadManager:
         """
         return self._client_cache[seedbox.torrent_client]
 
-    def add_upload_task(self, directory: str, task_type: str, is_flac: bool) -> None:
+    def add_upload_task(self, directory: str, task_type: str, is_flac: bool, tracker: str | None = None) -> None:
         """Queue upload tasks for a path across all configured seedboxes.
 
         Args:
             directory: Local folder path (for "folder" tasks) or .torrent file path (for "seed" tasks).
             task_type: Either "folder" to transfer files or "seed" to add to the download client.
             is_flac: Whether the release is FLAC; skips seedboxes with flac_only=True if False.
+            tracker: Tracker code this upload went to. Selects which seedbox
+                entries apply and fills the {tracker} placeholder in their
+                directory and label.
         """
         click.secho(f"Preparing upload tasks for: {directory}", fg="cyan")
         for seedbox in cfg.seedbox:
@@ -124,7 +167,9 @@ class UploadManager:
                 continue
             if seedbox.flac_only and not is_flac:
                 continue
-            task = (seedbox, directory, task_type)
+            if seedbox.tracker and tracker and seedbox.tracker.upper() != tracker.upper():
+                continue
+            task = (seedbox, directory, task_type, tracker)
             if task in self.tasks:
                 continue
             if task_type == "seed":
@@ -141,22 +186,25 @@ class UploadManager:
             return
 
         click.secho(f"Executing {len(self.tasks)} upload tasks", fg="cyan")
-        for i, (seedbox, local_path, task_type) in enumerate(self.tasks, 1):
+        for i, (seedbox, local_path, task_type, tracker) in enumerate(self.tasks, 1):
             click.secho(
-                f"\nTask {i}/{len(self.tasks)}: {task_type.upper()} - {os.path.basename(local_path)}",
+                f"\nTask {i}/{len(self.tasks)}: {task_type.upper()} - {os.path.basename(local_path)}"
+                + (f" [{tracker}]" if tracker else ""),
                 fg="cyan",
             )
+            directory = _expand_tracker(seedbox.directory, tracker)
+            label = _expand_tracker(seedbox.label, tracker)
             try:
                 if task_type == "folder":
                     if seedbox.type == "rclone":
-                        await _rclone_upload_folder(seedbox, seedbox.directory, local_path)
+                        await _rclone_upload_folder(seedbox, directory, local_path)
                 elif task_type == "seed":
                     client = self._client(seedbox)
                     if seedbox.type == "rclone":
-                        shell_path = _resolve_shell_path(seedbox.directory, seedbox.extra_args)
+                        shell_path = _resolve_shell_path(directory, seedbox.extra_args)
                     else:
-                        shell_path = seedbox.directory or os.path.abspath(cfg.directory.download_directory)
-                    await _add_to_downloader(client, shell_path, local_path, seedbox.label, seedbox.add_paused)
+                        shell_path = directory or _default_save_path(local_path, tracker)
+                    await _add_to_downloader(client, shell_path, local_path, label, seedbox.add_paused)
             except Exception as e:
                 click.secho(f"Critical error during task: {e}", fg="red")
 
