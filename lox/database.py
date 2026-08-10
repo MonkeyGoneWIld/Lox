@@ -9,22 +9,47 @@ from lox.common import commandgroup
 from lox.config import APPNAME, LEGACY_APPNAME
 
 
-def _db_dir() -> str:
-    """Return the data directory, preferring an existing upstream one.
+DB_FILENAME = "lox.db"
+LEGACY_DB_FILENAME = "smoked.db"
 
-    Renaming the app would otherwise orphan the database of anyone switching
-    from smoked-salmon, so the old location wins when it already has a db.
+
+def _db_dir() -> str:
+    """Return the data directory, preferring one that already holds a database.
+
+    Renaming the app would otherwise orphan an existing install, so an upstream
+    directory with a database in it wins over a fresh lox one.
     """
     legacy = user_data_dir(appname=LEGACY_APPNAME)
-    if path.exists(path.join(legacy, "smoked.db")):
+    if any(path.exists(path.join(legacy, name)) for name in (DB_FILENAME, LEGACY_DB_FILENAME)):
         return legacy
     return user_data_dir(appname=APPNAME)
 
 
 DB_DIR = _db_dir()
-DB_PATH = path.join(DB_DIR, "smoked.db")
-OLD_DB_PATH = path.abspath(path.join(path.dirname(path.dirname(__file__)), "smoked.db"))
+DB_PATH = path.join(DB_DIR, DB_FILENAME)
+# Upstream kept the database beside the package before it moved to a data dir.
+OLD_DB_PATH = path.abspath(path.join(path.dirname(path.dirname(__file__)), LEGACY_DB_FILENAME))
 MIG_DIR = path.abspath(path.join(path.dirname(path.dirname(__file__)), "data", "migrations"))
+
+
+def adopt_legacy_db() -> str | None:
+    """Move a pre-rename smoked.db onto the current path, if one exists.
+
+    Renaming the file would otherwise silently start a fresh database and lose
+    the upload history. Checked in both the data directory and the old
+    beside-the-package location.
+
+    Returns:
+        The path the database was moved from, or None if nothing was adopted.
+    """
+    if path.exists(DB_PATH):
+        return None
+    for candidate in (path.join(DB_DIR, LEGACY_DB_FILENAME), OLD_DB_PATH):
+        if path.exists(candidate):
+            makedirs(DB_DIR, exist_ok=True)
+            shutil.move(candidate, DB_PATH)
+            return candidate
+    return None
 
 
 @commandgroup.command()
@@ -38,9 +63,9 @@ def migrate(list):
     current_version = get_current_version()
     ran_once = False
     makedirs(DB_DIR, exist_ok=True)
-    if path.exists(OLD_DB_PATH):
-        click.secho(f"Moving existing smoked.db to {DB_PATH}...", fg="yellow")
-        shutil.move(OLD_DB_PATH, DB_PATH)
+    adopted = adopt_legacy_db()
+    if adopted:
+        click.secho(f"Moved existing database from {adopted} to {DB_PATH}...", fg="yellow")
     else:
         click.secho(f"Connecting to database at {DB_PATH}...", fg="yellow")
     with sqlite3.connect(DB_PATH) as conn:
@@ -97,8 +122,10 @@ def list_migrations():
 def get_current_version():
     current_path = DB_PATH
     if not path.isfile(current_path):
-        if path.isfile(OLD_DB_PATH):
-            current_path = OLD_DB_PATH
+        for candidate in (path.join(DB_DIR, LEGACY_DB_FILENAME), OLD_DB_PATH):
+            if path.isfile(candidate):
+                current_path = candidate
+                break
         else:
             return 0
     with sqlite3.connect(current_path) as conn:
@@ -128,12 +155,11 @@ def run_migrations() -> bool:
     Returns:
         True if anything was applied.
     """
+    adopt_legacy_db()
     if not migration_pending():
         return False
     current_version = get_current_version()
     makedirs(DB_DIR, exist_ok=True)
-    if path.exists(OLD_DB_PATH):
-        shutil.move(OLD_DB_PATH, DB_PATH)
     applied = False
     with sqlite3.connect(DB_PATH) as conn:
         for migration in sorted(f for f in listdir(MIG_DIR) if f.endswith(".sql")):
