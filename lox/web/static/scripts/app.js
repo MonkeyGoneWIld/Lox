@@ -38,6 +38,8 @@
     linking: false,
     requestRows: [],
     selectedRequests: new Set(),
+    // Check results by request id, so the split view can show what was found.
+    requestMatches: new Map(),
     trackers: [],
     flows: new Set(),
     pollers: new Map(),
@@ -1362,6 +1364,10 @@
             return toast(job.error, 'bad');
           }
           log.textContent = `${state.candidates.length} album(s) after the Deezer-side filters.`;
+          // Seeded once, here. Deriving it inside the render meant unticking
+          // "select all" emptied the set and the next render immediately
+          // refilled it, so the control appeared to do nothing.
+          state.selectedCandidates = new Set(state.candidates.map((c) => c.album_id));
           renderCandidates();
           if (!state.candidates.length) {
             $('#missing-scan').disabled = false;
@@ -1377,14 +1383,29 @@
     }
   }
 
+  // The tick in a table header, with the third state that makes it honest: all,
+  // none, or a dash for some. It reports what the rows say rather than being a
+  // switch with its own opinion, so it cannot claim everything is selected when
+  // it is not.
+  function selectAllBox(allIds, selected, onChange) {
+    const box = el('input', {
+      type: 'checkbox',
+      title: 'Select all',
+      onchange: (e) => {
+        selected.clear();
+        if (e.target.checked) allIds.forEach((id) => selected.add(id));
+        onChange();
+      },
+    });
+    box.checked = allIds.length > 0 && selected.size === allIds.length;
+    box.indeterminate = selected.size > 0 && selected.size < allIds.length;
+    return box;
+  }
+
   function renderCandidates() {
     const panel = $('#missing-candidates-panel');
     panel.hidden = state.candidates.length === 0;
     if (!state.candidates.length) return;
-
-    state.selectedCandidates = new Set(
-      state.selectedCandidates.size ? state.selectedCandidates : state.candidates.map((c) => c.album_id),
-    );
 
     const trackers = [...state.missingTrackers];
     $('#missing-cost').textContent =
@@ -1396,7 +1417,17 @@
       el(
         'thead',
         {},
-        el('tr', {}, el('th', {}, ''), el('th', {}, 'Album'), el('th', {}, 'Year'), el('th', {}, 'Tracks'), el('th', {}, 'Source'), el('th', {}, 'Result')),
+        el(
+          'tr',
+          {},
+          el('th', {}, selectAllBox(
+            state.candidates.map((c) => c.album_id),
+            state.selectedCandidates,
+            () => renderCandidates(),
+          )),
+          el('th', {}, 'Album'), el('th', {}, 'Year'), el('th', {}, 'Tracks'),
+          el('th', {}, 'Source'), el('th', {}, 'Result'),
+        ),
       ),
       el(
         'tbody',
@@ -1721,7 +1752,16 @@
       el(
         'table',
         { class: 'table' },
-        el('thead', {}, el('tr', {}, el('th', {}, ''), el('th', {}, 'Request'), el('th', {}, 'Year'), el('th', {}, 'Bounty'), el('th', {}, 'Result'))),
+        el('thead', {}, el(
+          'tr',
+          {},
+          el('th', {}, selectAllBox(
+            state.requestRows.map((r) => r.id),
+            state.selectedRequests,
+            () => renderRequestRows(),
+          )),
+          el('th', {}, 'Request'), el('th', {}, 'Year'), el('th', {}, 'Bounty'), el('th', {}, 'Result'),
+        )),
         el(
           'tbody',
           {},
@@ -1737,11 +1777,16 @@
                   checked: state.selectedRequests.has(r.id),
                   onchange: (e) => {
                     e.target.checked ? state.selectedRequests.add(r.id) : state.selectedRequests.delete(r.id);
-                    $('#requests-selected-count').textContent = `${state.selectedRequests.size} selected`;
+                    renderRequestRows();
                   },
                 }),
               ),
-              el('td', {}, el('a', { href: r.url, target: '_blank', rel: 'noopener' }, `${r.artist} — ${r.title}`)),
+              el('td', {}, el('a', {
+                class: 'rowlink',
+                href: r.url,
+                title: 'Open the request beside the Deezer release',
+                onclick: (e) => { e.preventDefault(); openRequest(r); },
+              }, `${r.artist} — ${r.title}`)),
               el('td', {}, r.year || ''),
               el('td', {}, r.bounty || ''),
               el('td', { class: 'result' }, el('span', { class: 'tag dim' }, 'not checked')),
@@ -1804,13 +1849,90 @@
       cell.replaceChildren(el('span', { class: 'tag dim', title: match.reason || '' }, match.reason || match.status));
       return;
     }
+    state.requestMatches.set(String(match.request_id), match);
     cell.replaceChildren(
       el('span', { class: 'tag ok' }, `${(match.confidence * 100).toFixed(0)}% match`),
       ' ',
-      el('a', { href: match.deezer_url, target: '_blank', rel: 'noopener' }, match.deezer_title || 'Deezer'),
+      // Opens both sides rather than throwing you at Deezer: deciding whether
+      // this fills that request means reading them together.
+      el('button', { class: 'link', onclick: () => openRequest({ id: match.request_id, url: match.request_url }) },
+         match.deezer_title || 'Compare'),
       ' ',
       el('button', { class: 'ghost', onclick: () => download(match.deezer_id) }, 'Download'),
     );
+  }
+
+  // ------------------------------------------------------- request compare
+
+  // The request and the release it might fill, side by side. The tracker page
+  // is not embedded -- Gazelle sends X-Frame-Options and an iframe would show
+  // an empty box -- so its side carries what lox already knows about the
+  // request plus a button that opens the real page in a tab.
+  async function openRequest(row) {
+    const match = state.requestMatches.get(String(row.id));
+    const panel = $('#request-split');
+    panel.hidden = false;
+    panel.replaceChildren(spinner('Loading'));
+
+    const tracker = state.requestsTracker || '';
+    const left = el('div', { class: 'split-side' });
+    const right = el('div', { class: 'split-side' });
+    panel.replaceChildren(
+      el('div', { class: 'row split-head' },
+        el('h2', {}, 'Request and release'),
+        el('button', { class: 'ghost', onclick: () => (panel.hidden = true) }, 'Close')),
+      el('div', { class: 'split' }, left, right),
+    );
+
+    left.replaceChildren(
+      el('h3', { class: 'section-title' }, `Request on ${tracker}`),
+      el('p', { class: 'album-title-sm' }, `${row.artist || match?.artist || ''} — ${row.title || match?.album || ''}`),
+      el('dl', { class: 'meta' },
+        ...[
+          ['Year', row.year || match?.year],
+          ['Bounty', row.bounty || match?.bounty],
+          ['Formats', (match?.formats || []).join(', ')],
+          ['Media', (match?.media || []).join(', ')],
+          ['Encodings', (match?.bitrates || []).join(', ')],
+        ].filter(([, v]) => v).flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, String(v))])),
+      el('a', { class: 'linkbtn', href: row.url || match?.request_url, target: '_blank', rel: 'noopener' },
+         `Open on ${tracker} ↗`),
+    );
+
+    if (!match?.deezer_id) {
+      right.replaceChildren(
+        el('h3', { class: 'section-title' }, 'Deezer release'),
+        empty('No Deezer match yet. Check this request to find one.'),
+      );
+      return;
+    }
+
+    right.replaceChildren(spinner('Loading release'));
+    try {
+      const album = await api(`/api/album/${match.deezer_id}`);
+      const availability = album.availability;
+      right.replaceChildren(
+        el('h3', { class: 'section-title' }, 'Deezer release'),
+        el('div', { class: 'row' },
+          album.cover ? el('img', { class: 'split-art', src: album.cover, alt: '' }) : null,
+          el('div', {},
+            el('p', { class: 'album-title-sm' }, album.title || ''),
+            el('p', { class: 'album-facts' }, [album.artist, album.release_date, `${album.nb_tracks} tracks`]
+              .filter(Boolean).join(' · ')),
+            availability
+              ? el('span', { class: `tag ${availability.uploadable ? 'ok' : 'bad'}` },
+                   availability.uploadable ? 'All FLAC, all streamable' : availability.reason || 'Not uploadable')
+              : null)),
+        el('div', { class: 'row' },
+          el('button', { class: 'primary', onclick: () => download(album.id) }, 'Download'),
+          el('button', { onclick: () => downloadAndUpload(album.id, album) }, 'Download & upload'),
+          el('button', { class: 'ghost', onclick: () => openAlbum(album.id) }, 'Full album page')),
+        el('ol', { class: 'split-tracks' },
+          ...(album.tracks || []).map((t) => el('li', {}, t.title || ''))),
+      );
+    } catch (e) {
+      right.replaceChildren(el('h3', { class: 'section-title' }, 'Deezer release'), empty(e.message));
+    }
   }
 
   // ---------------------------------------------------------------- uploads
@@ -2624,10 +2746,6 @@
     // Re-checks whatever is ticked in the results, which is the only place a
     // subset makes sense.
     $('#missing-check').addEventListener('click', () => missingCheck());
-    $('#missing-select-all').addEventListener('change', (e) => {
-      state.selectedCandidates = e.target.checked ? new Set(state.candidates.map((c) => c.album_id)) : new Set();
-      renderCandidates();
-    });
     $('#requests-fetch').addEventListener('click', requestsFetch);
     $('#requests-check').addEventListener('click', requestsCheck);
     $('#requests-file').addEventListener('change', async (e) => {
