@@ -28,6 +28,8 @@
     requestFilters: null,
     requestFiltersFor: null,
     album: null,
+    // Panes you can go back to, innermost last.
+    paneStack: [],
     // Releases ticked for a batch action, by album id.
     picked: new Map(),
     uploadTrackers: new Set(),
@@ -449,6 +451,32 @@
     return pane;
   }
 
+  // Opening a release replaces the results you opened it from, so the way back
+  // is kept: the actual nodes, not a note to re-run the search. Restoring them
+  // brings back the scroll position, the selection ticks and the section you
+  // were in, and costs no API calls.
+  function pushPane() {
+    const pane = $('#search-results');
+    if (!pane.childNodes.length) return;
+    state.paneStack.push({ cls: pane.className, nodes: [...pane.childNodes], scroll: window.scrollY });
+    if (state.paneStack.length > 12) state.paneStack.shift();
+  }
+
+  function popPane() {
+    const previous = state.paneStack.pop();
+    if (!previous) return;
+    const pane = $('#search-results');
+    pane.className = previous.cls;
+    pane.replaceChildren(...previous.nodes);
+    window.scrollTo(0, previous.scroll);
+  }
+
+  // Shown only when there is somewhere to go back to.
+  function backButton() {
+    if (!state.paneStack.length) return null;
+    return el('button', { class: 'ghost back-btn', onclick: popPane }, '← Back');
+  }
+
   // ---------------------------------------------------------------- search
 
   const SECTION_LABEL = { album: 'Albums', track: 'Tracks', artist: 'Artists' };
@@ -460,6 +488,8 @@
     // Unfiltered results stack as sections, each holding its own grid; a single
     // kind is just a grid.
     const single = state.searchType !== 'all';
+    // A new search is a new root, so there is nothing behind it any more.
+    state.paneStack.length = 0;
     const results = searchPane(single ? 'grid' : 'search-sections');
     results.replaceChildren(spinner('Searching Deezer'));
     try {
@@ -619,6 +649,8 @@
 
   async function openArtist(artistId) {
     setView('search');
+    pushPane();
+    const back = backButton();
     // Its own sections, each with an inner grid, so the pane itself is a plain
     // block here.
     const results = searchPane('artist-page');
@@ -628,6 +660,7 @@
       const total = artist.groups.reduce((n, g) => n + g.albums.length, 0);
 
       results.replaceChildren(
+        back,
         el(
           'div',
           { class: 'artist-head' },
@@ -661,7 +694,7 @@
         ]),
       );
     } catch (e) {
-      results.replaceChildren(empty(e.message));
+      results.replaceChildren(...[back, empty(e.message)].filter(Boolean));
     }
   }
 
@@ -679,6 +712,8 @@
   // side rather than a 380px column you scroll through a slot at a time.
   async function openAlbum(albumId) {
     setView('search');
+    pushPane();
+    const back = backButton();
     const pane = searchPane('album-page');
     pane.replaceChildren(spinner('Loading album'));
 
@@ -707,6 +742,7 @@
       ].filter(Boolean);
 
       pane.replaceChildren(
+        back,
         el(
           'div',
           { class: 'album-head' },
@@ -779,13 +815,14 @@
                     el('span', { class: 'track-title' }, tr.title || ''),
                     tr.explicit ? el('span', { class: 'tag dim explicit-tag' }, 'E') : null,
                   ),
-                  // The private records name the whole cast; the public ones
-                  // name only the headline act, so this is blank without an ARL.
+                  // The private records name the whole cast and carry their
+                  // ids, so each credit goes to that artist. The public ones
+                  // name only the headline act, so this falls back to the
+                  // track artist without an ARL.
                   el(
                     'td',
                     { class: 'featured-col' },
-                    (tr.featured || []).join(', ')
-                      || (tr.artist && tr.artist !== album.artist ? tr.artist : '—'),
+                    ...featuredCredits(tr, album, artistLink),
                   ),
                   el('td', { class: 'dur-col' }, duration(tr.duration)),
                 ),
@@ -795,8 +832,23 @@
         ),
       );
     } catch (e) {
-      pane.replaceChildren(empty(e.message));
+      pane.replaceChildren(...[back, empty(e.message)].filter(Boolean));
     }
+  }
+
+  // Every credit on a track, comma separated, each one a link when Deezer gave
+  // an id for it. A name without an id stays plain text rather than becoming a
+  // link to nowhere.
+  function featuredCredits(track, album, artistLink) {
+    const people = track.featured || [];
+    if (!people.length) {
+      const fallback = track.artist && track.artist !== album.artist ? track.artist : '';
+      return [fallback ? artistLink(track.artist_id, fallback) : '—'];
+    }
+    return people.flatMap((person, i) => [
+      i ? el('span', {}, ', ') : null,
+      person.id ? artistLink(person.id, person.name) : el('span', {}, person.name),
+    ]).filter(Boolean);
   }
 
   // Trackers to ask, from the pickers the rest of the app already uses.

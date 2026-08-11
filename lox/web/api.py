@@ -401,13 +401,14 @@ async def api_search(request: web.Request) -> web.Response:
     )
 
 
-async def _featured_artists(gw: DeezerGW, album_id: str, album_artist: str) -> dict[str, list[str]]:
+async def _featured_artists(gw: DeezerGW, album_id: str, album_artist: str) -> dict[str, list[dict[str, str]]]:
     """Map each track ID to the artists credited on it besides the main one.
 
-    Deezer's private records spell this two ways depending on the release, so
-    both are read: an explicit ``featured`` contributor list, and failing that
-    the full artist list minus whoever is billed as the main artist. Anything
-    unrecognised yields nothing rather than a guess.
+    The per-track artist list is preferred over the contributor roles because
+    it carries Deezer IDs, which is what makes a featured credit somewhere you
+    can click through to rather than just a name. The role list is the fallback
+    for releases that only spell it that way, and those names come back without
+    an ID rather than with a guessed one.
 
     Args:
         gw: Authenticated Deezer client.
@@ -415,31 +416,36 @@ async def _featured_artists(gw: DeezerGW, album_id: str, album_artist: str) -> d
         album_artist: The headline artist, excluded from every track's list.
 
     Returns:
-        Track ID to featured artist names.
+        Track ID to a list of ``{"id", "name"}``, the id possibly empty.
     """
-    featured: dict[str, list[str]] = {}
+    featured: dict[str, list[dict[str, str]]] = {}
     for track in await gw.album_tracks(album_id):
         track_id = str(track.get("SNG_ID") or "")
         if not track_id:
             continue
 
-        contributors = track.get("SNG_CONTRIBUTORS") or {}
-        names: list[str] = []
-        if isinstance(contributors, dict):
-            for role in ("featured", "featuring"):
-                value = contributors.get(role)
-                if isinstance(value, list):
-                    names.extend(str(v) for v in value if v)
+        main = {album_artist.casefold(), str(track.get("ART_NAME") or "").casefold()}
+        people: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for artist in track.get("ARTISTS") or []:
+            name = str(artist.get("ART_NAME") or "")
+            if not name or name.casefold() in main or name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            people.append({"id": str(artist.get("ART_ID") or ""), "name": name})
 
-        if not names:
-            main = {album_artist.casefold(), str(track.get("ART_NAME") or "").casefold()}
-            for artist in track.get("ARTISTS") or []:
-                name = str(artist.get("ART_NAME") or "")
-                if name and name.casefold() not in main and name not in names:
-                    names.append(name)
+        if not people:
+            contributors = track.get("SNG_CONTRIBUTORS") or {}
+            if isinstance(contributors, dict):
+                for role in ("featured", "featuring"):
+                    for value in contributors.get(role) or []:
+                        name = str(value or "")
+                        if name and name.casefold() not in seen:
+                            seen.add(name.casefold())
+                            people.append({"id": "", "name": name})
 
-        if names:
-            featured[track_id] = names
+        if people:
+            featured[track_id] = people
     return featured
 
 
@@ -455,7 +461,7 @@ async def api_album(request: web.Request) -> web.Response:
 
     availability: dict[str, Any] | None = None
     availability_error: str | None = None
-    featured_by_track: dict[str, list[str]] = {}
+    featured_by_track: dict[str, list[dict[str, str]]] = {}
     if gw.arl:
         try:
             result = await gw.availability(album_id)
