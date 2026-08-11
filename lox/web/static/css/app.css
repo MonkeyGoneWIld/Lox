@@ -714,6 +714,15 @@ select {
   border-radius: 10px;
 }
 
+/* The whole card answers the question, so it has to look like it does: it
+   lifts under the pointer and takes a focus ring, and there is no separate
+   button to aim at. */
+.match-pick { cursor: pointer; transition: border-color 0.12s, box-shadow 0.12s; }
+.match-pick:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.match-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The link out is the one thing in the card that is not "pick this". */
+.match-pick .filebtn { cursor: pointer; }
+
 .match-body { min-width: 0; flex: 1 1 340px; }
 .match-title { font-size: 13.5px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
 .match-sub { color: var(--text-dim); font-size: 11.5px; margin-top: 3px; }
