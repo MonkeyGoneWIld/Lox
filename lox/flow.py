@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
-StepKind = Literal["notice", "confirm", "choice", "multi", "text", "number", "review"]
+StepKind = Literal["notice", "confirm", "choice", "multi", "text", "number", "review", "edit"]
 FlowState = Literal["running", "waiting", "done", "failed", "cancelled"]
 
 MAX_EVENTS = 500
@@ -56,6 +56,7 @@ class Step:
         danger: bool = False,
         images: list[dict[str, Any]] | None = None,
         tables: list[dict[str, Any]] | None = None,
+        edit_shape: str = "",
     ) -> None:
         """Initialize a step."""
         self.id = uuid.uuid4().hex[:8]
@@ -73,6 +74,10 @@ class Step:
         # Structured evidence the answer depends on: the tag diff, the metadata
         # comparison. Prose is fine to read and terrible to check.
         self.tables = tables or []
+        # For an ``edit`` step: which form to render. The pipeline edits several
+        # different things through one editor call, and they are not the same
+        # shape -- a list of credits with roles is not a list of genres.
+        self.edit_shape = edit_shape
         self.asked = time.time()
 
     def as_dict(self) -> dict[str, Any]:
@@ -87,6 +92,7 @@ class Step:
             "danger": self.danger,
             "images": self.images,
             "tables": self.tables,
+            "edit_shape": self.edit_shape,
         }
 
 

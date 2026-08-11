@@ -525,6 +525,57 @@ async def api_album(request: web.Request) -> web.Response:
     )
 
 
+@routes.get("/api/found")
+async def api_found(request: web.Request) -> web.Response:
+    """Everything a check has matched to a Deezer release. No tracker calls.
+
+    Scans and request checks both end up knowing "this release exists on Deezer
+    and is not on that tracker", and both threw it away as soon as you left the
+    tab. Kept here so the work already paid for is somewhere you can act on.
+    """
+    store: CheckerStore = request.app["store"]
+    rows: list[dict[str, Any]] = []
+
+    for album_id, entry in (store.load("albums") or {}).items():
+        if not entry.get("missing_from"):
+            continue
+        rows.append(
+            {
+                "kind": "scan",
+                "id": album_id,
+                "album_id": album_id,
+                "title": entry.get("title") or "",
+                "artist": entry.get("artist") or "",
+                "missing_from": entry.get("missing_from") or [],
+                "found_on": entry.get("found_on") or [],
+                "checked_at": entry.get("checked_at"),
+                "url": f"https://www.deezer.com/album/{album_id}",
+            }
+        )
+
+    for request_id, entry in (store.load("requests") or {}).items():
+        if not entry.get("deezer_id"):
+            continue
+        rows.append(
+            {
+                "kind": "request",
+                "id": request_id,
+                "album_id": str(entry.get("deezer_id")),
+                "title": entry.get("album") or entry.get("deezer_title") or "",
+                "artist": entry.get("artist") or entry.get("deezer_artist") or "",
+                "tracker": entry.get("tracker") or "",
+                "bounty": entry.get("bounty") or "",
+                "confidence": entry.get("confidence"),
+                "request_url": entry.get("request_url") or "",
+                "checked_at": entry.get("checked_at"),
+                "url": entry.get("deezer_url") or "",
+            }
+        )
+
+    rows.sort(key=lambda r: r.get("checked_at") or 0, reverse=True)
+    return json_response({"found": rows})
+
+
 @routes.get("/api/album/{album_id}/check")
 async def api_album_check_saved(request: web.Request) -> web.Response:
     """Return the last stored check for an album. Contacts no tracker.

@@ -30,6 +30,8 @@
     album: null,
     // Panes you can go back to, innermost last.
     paneStack: [],
+    found: [],
+    selectedFound: new Set(),
     // Releases ticked for a batch action, by album id.
     picked: new Map(),
     uploadTrackers: new Set(),
@@ -104,6 +106,7 @@
     $('#view-title').textContent = $(`.nav-item[data-view="${view}"]`).textContent.trim();
     if (view === 'explore') loadExplore();
     if (view === 'missing') loadWatchlists();
+    if (view === 'found') loadFound();
     if (view === 'requests' && state.requestFiltersFor !== state.requestsTracker) loadRequestFilters();
     if (view === 'downloads') pollDownloads(true);
     if (view === 'uploads') { loadFolders(); resumeFlows(); }
@@ -1935,6 +1938,94 @@
     }
   }
 
+  // ------------------------------------------------------------------ found
+
+  // What earlier checks already established. A scan or a request check pays
+  // tracker budget to learn "this exists on Deezer and is not on RED", and both
+  // used to throw that away the moment you left the tab.
+  async function loadFound() {
+    const body = $('#found-body');
+    body.replaceChildren(spinner('Loading'));
+    try {
+      const { found } = await api('/api/found');
+      state.found = found;
+      state.selectedFound = new Set(found.map((f) => f.id));
+      renderFound();
+    } catch (e) {
+      body.replaceChildren(empty(e.message));
+    }
+  }
+
+  function renderFound() {
+    const body = $('#found-body');
+    if (!state.found.length) {
+      body.replaceChildren(empty('Nothing yet. Run a scan or check some requests.'));
+      $('#found-count').textContent = '';
+      return;
+    }
+    $('#found-count').textContent = `${state.selectedFound.size} of ${state.found.length} selected`;
+    body.replaceChildren(
+      el(
+        'table',
+        { class: 'table' },
+        el('thead', {}, el('tr', {},
+          el('th', {}, selectAllBox(state.found.map((f) => f.id), state.selectedFound, renderFound)),
+          el('th', {}, 'Release'), el('th', {}, 'Where'), el('th', {}, 'From'), el('th', {}, 'When'))),
+        el('tbody', {}, ...state.found.map((f) =>
+          el('tr', {},
+            el('td', {}, el('input', {
+              type: 'checkbox',
+              checked: state.selectedFound.has(f.id),
+              onchange: (e) => {
+                e.target.checked ? state.selectedFound.add(f.id) : state.selectedFound.delete(f.id);
+                renderFound();
+              },
+            })),
+            el('td', {}, el('a', {
+              href: '#',
+              onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
+            }, `${f.artist || ''} — ${f.title || ''}`)),
+            el('td', {}, (f.missing_from || []).length
+              ? el('span', { class: 'tag ok' }, `not on ${f.missing_from.join(', ')}`)
+              : el('span', { class: 'tag warn' }, `fills a ${f.tracker || ''} request`)),
+            el('td', {}, f.kind === 'request'
+              ? el('a', { href: f.request_url, target: '_blank', rel: 'noopener' }, 'request')
+              : 'scan'),
+            el('td', { class: 'card-sub' }, ago(f.checked_at)),
+          ))),
+      ),
+    );
+  }
+
+  const foundSelection = () => state.found.filter((f) => state.selectedFound.has(f.id));
+
+  // Ask the trackers again about the selection. Costs budget, so it is a button
+  // rather than something that happens when the tab opens.
+  async function recheckFound() {
+    const picked = foundSelection();
+    if (!picked.length) return toast('Nothing selected', 'bad');
+    const trackers = checkTrackers();
+    if (!trackers.length) return toast('No tracker configured', 'bad');
+
+    const candidates = picked.map((f) => ({
+      album_id: f.album_id, title: f.title, artist: f.artist, source: 'found',
+    }));
+    const body = $('#found-body');
+    try {
+      const { job_id } = await api('/api/missing/check', { method: 'POST', body: { candidates, trackers } });
+      body.before(jobCancel(job_id, 'Stop re-checking'));
+      followJob(job_id, {
+        onDone: (job) => {
+          refreshStatus();
+          toast(job.error || `Re-checked ${job.result_count} release(s)`, job.error ? 'bad' : 'ok');
+          loadFound();
+        },
+      });
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
   // ---------------------------------------------------------------- uploads
 
   async function loadFolders() {
@@ -2096,6 +2187,7 @@
     // multi-value field twice -- once as an empty label, once as a group
     // header over its own values.
     if (table.kind === 'previous' || table.kind === 'pending') return metaTable(table);
+    if (table.kind === 'renames') return renameTable(table);
     // Rows can be grouped -- by filename for a tag diff, by field for a
     // metadata list -- so a group header is emitted whenever it changes.
     const rows = [];
@@ -2138,7 +2230,8 @@
     const rows = table.rows.filter((r) => r.label || r.before);
     return el(
       'details',
-      { class: 'diff meta-block', open: true },
+      // Closed by default: it is context for the question, not the question.
+      { class: 'diff meta-block' },
       el('summary', {}, table.title, el('span', { class: 'card-sub' }, ` — ${rows.length} fields`)),
       el(
         'table',
@@ -2156,6 +2249,172 @@
           ),
         ),
       ),
+    );
+  }
+
+  const ARTIST_ROLES = ['main', 'guest', 'composer', 'conductor', 'dj', 'remixer', 'producer', 'arranger'];
+
+  // Editing metadata as a form. The pipeline does this by opening $EDITOR,
+  // which in a container is vim with no terminal -- it blocks forever. Each
+  // thing it edits has a known shape, so each gets the controls it deserves:
+  // credits are rows with a role, a genre list is a list, a title is a field.
+  function editorStep(step, send) {
+    const rows = (step.options || []).map((r) => ({ ...r }));
+    const body = el('div', { class: 'editor-rows' });
+
+    const draw = () => {
+      if (step.edit_shape === 'artists') {
+        body.replaceChildren(
+          ...rows.map((row, i) =>
+            el(
+              'div',
+              { class: 'editor-row' },
+              el('input', {
+                type: 'text', value: row.name || '', placeholder: 'Artist name',
+                oninput: (e) => (row.name = e.target.value),
+              }),
+              el(
+                'select',
+                { onchange: (e) => (row.role = e.target.value) },
+                ...ARTIST_ROLES.map((role) =>
+                  el('option', { value: role, selected: (row.role || 'main') === role },
+                     role === 'dj' ? 'DJ / Compiler' : role[0].toUpperCase() + role.slice(1))),
+              ),
+              el('button', { class: 'danger row-drop', title: 'Remove',
+                             onclick: () => { rows.splice(i, 1); draw(); } }, '−'),
+            ),
+          ),
+          el('button', { class: 'ghost',
+                         onclick: () => { rows.push({ name: '', role: 'main' }); draw(); } }, '+ Add artist'),
+        );
+        return;
+      }
+
+      if (step.edit_shape === 'aliases') {
+        body.replaceChildren(
+          ...rows.map((row) =>
+            el(
+              'div',
+              { class: 'editor-row' },
+              el('span', { class: 'editor-fixed' }, row.name || ''),
+              el('span', { class: 'editor-arrow' }, '→'),
+              el('input', {
+                type: 'text', value: row.alias || '', placeholder: 'Leave blank to keep as is',
+                oninput: (e) => (row.alias = e.target.value),
+              }),
+              el('label', { class: 'check' },
+                 el('input', { type: 'checkbox', onchange: (e) => (row.drop = e.target.checked) }), 'Drop'),
+            ),
+          ),
+        );
+        return;
+      }
+
+      if (step.edit_shape === 'json') {
+        const area = el('textarea', { rows: '14', spellcheck: 'false' });
+        area.value = rows[0]?.value || '';
+        area.addEventListener('input', () => (rows[0].value = area.value));
+        body.replaceChildren(area);
+        return;
+      }
+
+      if (step.edit_shape === 'title') {
+        const field = el('input', { type: 'text', value: rows[0]?.value || '' });
+        field.addEventListener('input', () => (rows[0].value = field.value));
+        body.replaceChildren(field);
+        return;
+      }
+
+      // A plain list: genres, urls.
+      body.replaceChildren(
+        ...rows.map((row, i) =>
+          el(
+            'div',
+            { class: 'editor-row' },
+            el('input', {
+              type: 'text', value: row.value || '',
+              oninput: (e) => (row.value = e.target.value),
+            }),
+            el('button', { class: 'danger row-drop', title: 'Remove',
+                           onclick: () => { rows.splice(i, 1); draw(); } }, '−'),
+          ),
+        ),
+        el('button', { class: 'ghost', onclick: () => { rows.push({ value: '' }); draw(); } }, '+ Add'),
+      );
+    };
+    draw();
+
+    const answer = () => {
+      if (['json', 'title'].includes(step.edit_shape)) return rows[0]?.value ?? '';
+      return rows;
+    };
+
+    return el(
+      'div',
+      { class: 'step' },
+      el('div', { class: 'step-prompt' }, step.prompt),
+      step.detail ? el('p', { class: 'hint' }, step.detail) : null,
+      body,
+      el(
+        'div',
+        { class: 'row step-controls' },
+        el('button', { class: 'primary', onclick: () => send(answer()) }, 'Save'),
+        // null is what click.edit returns when you quit without saving, and the
+        // pipeline reads it as "leave this alone".
+        el('button', { onclick: () => send(null) }, 'Cancel'),
+      ),
+    );
+  }
+
+  // What the files are about to be called. Two columns, open by default,
+  // because the question that follows is whether to accept it.
+  function renameTable(table) {
+    return el(
+      'details',
+      { class: 'diff', open: true },
+      el('summary', {}, table.title,
+         el('span', { class: 'card-sub' }, ` — ${table.rows.length} file${table.rows.length === 1 ? '' : 's'}`)),
+      el('div', { class: 'table-scroll' },
+        el('table', { class: 'table diff-table' },
+          el('thead', {}, el('tr', {}, el('th', {}, 'Now'), el('th', {}, 'After'))),
+          el('tbody', {},
+            ...table.rows.map((r) =>
+              el('tr', {},
+                el('td', { class: 'diff-before' }, r.before || ''),
+                el('td', { class: 'diff-after' }, r.after || '')))))),
+    );
+  }
+
+  // What the run actually did, or in a dry run would have done. The point of a
+  // dry run is the answer to "what would this have posted", and that answer was
+  // only ever visible as a few lines scrolling past in the log.
+  function flowResult(result) {
+    const parts = [];
+    (result.outcomes || []).forEach((o) => {
+      const rows = Object.entries(o.would_post || {});
+      parts.push(
+        el(
+          'div',
+          { class: 'result-block' },
+          el('div', { class: 'row' },
+             el('strong', {}, o.tracker),
+             el('span', { class: `tag ${o.ok ? 'ok' : 'bad'}` },
+                o.ok ? (result.dry_run ? 'would upload' : 'uploaded') : (o.error || 'failed'))),
+          o.folder ? el('p', { class: 'hint' }, `Seeded from ${o.folder}`) : null,
+          rows.length
+            ? el('table', { class: 'table meta-table' },
+                el('tbody', {}, ...rows.map(([k, v]) =>
+                  el('tr', {}, el('td', { class: 'meta-field' }, k), el('td', { class: 'meta-value' }, v)))))
+            : null,
+        ),
+      );
+    });
+    return el(
+      'div',
+      { class: 'flow-result' },
+      el('h3', { class: 'section-title' },
+         result.dry_run ? 'Dry run — nothing was posted or seeded' : 'Result'),
+      ...parts,
     );
   }
 
@@ -2239,6 +2498,8 @@
         el('button', { class: 'primary', onclick: () => send(true) }, 'Looks right, continue'),
         el('button', { onclick: () => send(false) }, 'Stop'),
       );
+    } else if (step.kind === 'edit') {
+      return editorStep(step, send);
     } else {
       const field = el('input', { type: 'text', value: step.default ?? '', placeholder: 'Your answer' });
       controls.push(
@@ -2290,7 +2551,12 @@
         el('div', { class: 'bar flow-bar', hidden: true }, el('div', { class: 'bar-fill' })),
         el('div', { class: 'flow-step' }),
         el('div', { class: 'flow-error' }),
-        el('div', { class: 'flow-notes' }, el('ul', { class: 'notelist' })),
+        el('div', { class: 'flow-summary' }),
+        // Behind a disclosure: the running commentary is for when something
+        // looks wrong, not something to read past on every question.
+        el('details', { class: 'flow-notes' },
+           el('summary', {}, 'Log'),
+           el('ul', { class: 'notelist' })),
       );
       container.prepend(card);
     }
@@ -2342,12 +2608,19 @@
     const shown = Number(notes.dataset.count || 0);
     const events = flow.events.slice(-25);
     if (events.length !== shown || list.childElementCount !== events.length) {
-      const atBottom = notes.scrollHeight - notes.scrollTop - notes.clientHeight < 24;
+      const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 24;
       notes.dataset.count = String(events.length);
       list.replaceChildren(...events.map((n) => el('li', { class: n.level }, n.message)));
-      if (atBottom) notes.scrollTop = notes.scrollHeight;
+      if (atBottom) list.scrollTop = list.scrollHeight;
     }
     notes.hidden = !events.length;
+
+    // What the flow produced, once it has produced it.
+    const summary = card.querySelector('.flow-summary');
+    if (flow.result && summary.dataset.done !== 'yes') {
+      summary.dataset.done = 'yes';
+      summary.replaceChildren(flowResult(flow.result));
+    }
   }
 
   async function cancelFlow(flowId) {
@@ -2765,6 +3038,11 @@
       await api('/api/downloads/clear', { method: 'POST' });
       pollDownloads(true);
     });
+    $('#found-download').addEventListener('click', () =>
+      bulkDownload(foundSelection().map((f) => ({ id: f.album_id, item: f }))));
+    $('#found-upload').addEventListener('click', () =>
+      bulkDownloadAndUpload(foundSelection().map((f) => ({ id: f.album_id, item: f }))));
+    $('#found-recheck').addEventListener('click', recheckFound);
     $('#folders-refresh').addEventListener('click', loadFolders);
     $('#upload-dry-run').addEventListener('change', (e) =>
       setUploadFlag('upload.dry_run', e.target, 'Dry run'));
