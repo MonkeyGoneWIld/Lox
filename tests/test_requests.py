@@ -201,6 +201,29 @@ async def main() -> int:
           plain("Erd&#337;k") == "Erdők", plain("Erd&#337;k"))
     check("nothing in, empty string out", plain(None) == "" and plain("") == "")
 
+    # --- a group's artist comes from either of two shapes -----------------
+    # browse returns a flat "artist"; torrentgroup, which an album check reads,
+    # returns musicInfo with no flat field at all. Missing the second left the
+    # artist blank, so a group rendered as "— Bedtime Stories (1994)".
+    from lox.checker.missing import _group_artist, _release_type_name
+
+    check("a flat artist field is used", _group_artist({"artist": "Madonna"}) == "Madonna")
+    check("musicInfo is read when there is no flat field",
+          _group_artist({"musicInfo": {"artists": [{"name": "Madonna"}]}}) == "Madonna")
+    check("several artists are joined",
+          _group_artist({"musicInfo": {"artists": [{"name": "A"}, {"name": "B"}]}}) == "A & B")
+    check("entities decode here too",
+          _group_artist({"musicInfo": {"artists": [{"name": "Zsoldos &Aacute;rp&aacute;d"}]}})
+          == "Zsoldos Árpád")
+    check("an unknown cast yields nothing, not a separator", _group_artist({}) == "")
+
+    # Release-type numbers differ per tracker, so they resolve per tracker.
+    check("release type resolves on RED", _release_type_name("RED", 1) == "Album")
+    check("17 is Demo on RED but DJ Mix on OPS",
+          _release_type_name("RED", 17) == "Demo" and _release_type_name("OPS", 17) == "DJ Mix")
+    check("an unmapped tracker names nothing", _release_type_name("DIC", 1) == "")
+    check("a missing release type names nothing", _release_type_name("RED", None) == "")
+
     check("rows carry an id, title and link",
           row["id"] == "0" and row["title"] == "Album 0" and "id=0" in row["url"], str(row))
     check("bounty is human readable", row["bounty"] == "1.00 GB", row["bounty"])

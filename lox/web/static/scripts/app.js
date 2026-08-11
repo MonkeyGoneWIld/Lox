@@ -884,6 +884,18 @@
     }
   }
 
+  // Titled the way the tracker titles it: "Madonna – Bedtime Stories [1994
+  // Album]". Every part is optional, and a missing one is left out rather than
+  // leaving its separator behind -- an unknown artist used to render as
+  // "— Bedtime Stories (1994)", which reads as though the dash were the name.
+  function groupTitle(hit) {
+    const bracket = [hit.year, hit.release_type].filter(Boolean).join(' ');
+    return [
+      [hit.artist, hit.name].filter(Boolean).join(' – '),
+      bracket ? `[${bracket}]` : '',
+    ].filter(Boolean).join(' ');
+  }
+
   function renderAlbumCheck(album, check) {
     const target = $('#album-check-body');
     if (!target || !check) return;
@@ -902,7 +914,8 @@
         el('strong', {}, v.tracker),
         el('span', { class: `tag ${verdictTag[0]}` }, verdictTag[1]),
         v.match
-          ? el('a', { href: v.match.url, target: '_blank', rel: 'noopener' }, v.match.name || 'view group')
+          ? el('a', { href: v.match.url, target: '_blank', rel: 'noopener' },
+               groupTitle(v.match) || 'view group')
           : null,
         el('span', { class: 'card-sub' }, `${v.calls_used} call(s)`),
       );
@@ -919,8 +932,7 @@
                 el(
                   'li',
                   { class: h.matched ? 'hit matched' : 'hit' },
-                  el('a', { href: h.url, target: '_blank', rel: 'noopener' },
-                    `${h.artist} — ${h.name}${h.year ? ` (${h.year})` : ''}`),
+                  el('a', { href: h.url, target: '_blank', rel: 'noopener' }, groupTitle(h)),
                   el('span', { class: 'card-sub' }, h.matched ? 'matched' : h.reason),
                 ),
               ),
