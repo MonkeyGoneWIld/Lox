@@ -6,6 +6,8 @@ import asyncclick as click
 
 from lox import cfg
 from lox.common.files import process_files
+from lox.common.prompts import confirm as ask_confirm
+from lox.errors import IntegrityCheckError
 
 FLAC_IMPORTANT_REGEXES = [
     re.compile(r"(.+\.flac: testing,.*)\x08ok"),
@@ -57,7 +59,7 @@ async def handle_integrity_check(path: str) -> None:
         if (
             not result[0]
             and path.lower().endswith(".flac")
-            and click.confirm(click.style("\nWould you like to sanitize the file?", fg="magenta"))
+            and await ask_confirm(click.style("\nWould you like to sanitize the file?", fg="magenta"))
         ):
             click.secho("\nSanitizing file...", fg="cyan", bold=True)
             if await sanitize_integrity(path):
@@ -68,7 +70,7 @@ async def handle_integrity_check(path: str) -> None:
         result = await check_integrity(path)
         click.echo(format_integrity(result))
 
-        if not result[0] and click.confirm(
+        if not result[0] and await ask_confirm(
             click.style("\nWould you like to sanitize the failed FLAC files?", fg="magenta")
         ):
             click.secho("\nSanitizing FLAC files...", fg="cyan", bold=True)
@@ -77,7 +79,7 @@ async def handle_integrity_check(path: str) -> None:
             else:
                 click.secho("Some files failed sanitization", fg="red", bold=True)
     else:
-        raise click.Abort
+        raise IntegrityCheckError(f"Nothing to check at {path}")
 
 
 async def check_integrity(path: str, _: int | None = None) -> tuple[bool, str]:
@@ -91,7 +93,7 @@ async def check_integrity(path: str, _: int | None = None) -> tuple[bool, str]:
         Tuple of (all_passed, details_output).
 
     Raises:
-        click.Abort: If no audio files found or path is invalid.
+        IntegrityCheckError: If there is nothing here to check.
     """
     if path.lower().endswith(".flac"):
         return await _check_flac_integrity(path)
@@ -106,14 +108,17 @@ async def check_integrity(path: str, _: int | None = None) -> tuple[bool, str]:
                 if any(f.lower().endswith(ext) for ext in [".mp3", ".flac"]):
                     audio_files.append(os.path.join(root, f))
         if not audio_files:
-            click.secho("No audio files found in directory", fg="red", bold=True)
-            raise click.Abort
+            # Was a bare click.Abort after a secho, which in the web UI is an
+            # upload that stops with nothing on screen saying why.
+            raise IntegrityCheckError(f"No audio files to check in {path}")
         results = await process_files(audio_files, check_integrity, "Checking audio files")
         for integrity, integrity_out in results:
             integrities = integrities and integrity
             integrities_out.append(integrity_out)
         return integrities, "\n".join(integrities_out)
-    raise click.Abort
+    raise IntegrityCheckError(
+        f"Cannot check {path}: it is not a FLAC file, an MP3 file, or a directory that still exists"
+    )
 
 
 async def _check_flac_integrity(path: str) -> tuple[bool, str]:
@@ -191,7 +196,7 @@ async def sanitize_integrity(path: str, _: int | None = None) -> bool:
         for integrity in results:
             integrities = integrities and integrity
         return integrities
-    raise click.Abort
+    raise IntegrityCheckError(f"Nothing to sanitize at {path}")
 
 
 async def _sanitize_flac(path: str) -> bool:
@@ -203,17 +208,18 @@ async def _sanitize_flac(path: str) -> bool:
     Returns:
         True if sanitization succeeded, False otherwise.
     """
+    backup_path = path + ".corrupted"
     try:
-        os.rename(path, path + ".corrupted")
+        os.rename(path, backup_path)
         result = await anyio.run_process(
-            ["flac", f"-{cfg.upload.compression.flac_compression_level}", path + ".corrupted", "-o", path],
+            ["flac", f"-{cfg.upload.compression.flac_compression_level}", backup_path, "-o", path],
             check=False,
         )
         if result.returncode != 0:
             stderr_text = result.stderr.decode() if result.stderr else ""
             stdout_text = result.stdout.decode() if result.stdout else ""
             raise Exception(f"FLAC encoding failed:\n{stdout_text}\n{stderr_text}")
-        os.remove(path + ".corrupted")
+        os.remove(backup_path)
         result = await anyio.run_process(
             ["metaflac", "--dont-use-padding", "--remove", "--block-type=PADDING,PICTURE", path],
             check=False,
@@ -229,7 +235,24 @@ async def _sanitize_flac(path: str) -> bool:
         return True
     except Exception as e:
         click.secho(f"Failed to sanitize {path}, {e}", fg="red", bold=True)
+        # Put the original back. Without this a failed re-encode left the track
+        # as "<name>.flac.corrupted" with no .flac beside it -- the release lost
+        # a file, and the next integrity check on that folder found one fewer
+        # (or, if every track failed, none at all, which aborts).
+        _restore(backup_path, path)
         return False
+
+
+def _restore(backup_path: str, path: str) -> None:
+    """Move a .corrupted backup back over the file it replaced."""
+    if not os.path.exists(backup_path):
+        return
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+        os.rename(backup_path, path)
+    except OSError as e:
+        click.secho(f"Could not restore {backup_path}: {e}", fg="red", bold=True)
 
 
 async def _sanitize_mp3(path: str) -> bool:

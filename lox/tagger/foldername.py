@@ -1,3 +1,4 @@
+import contextlib
 import os
 import re
 import shutil
@@ -8,6 +9,8 @@ import asyncclick as click
 
 from lox import cfg
 from lox.common import strip_template_keys
+from lox.common.prompts import confirm as ask_confirm
+from lox.common.prompts import edit as ask_edit
 from lox.constants import (
     BLACKLISTED_CHARS,
     BLACKLISTED_FULLWIDTH_REPLACEMENTS,
@@ -15,7 +18,7 @@ from lox.constants import (
 from lox.errors import UploadError
 
 
-def rename_folder(path, metadata, auto_rename, check=True):
+async def rename_folder(path, metadata, auto_rename, check=True):
     """
     Create a revised folder name from the new metadata and present it to the
     user. Have them decide whether or not to accept the folder name.
@@ -35,17 +38,27 @@ def rename_folder(path, metadata, auto_rename, check=True):
         click.echo(f"Old folder name        : {old_base}")
         click.echo(f"New pending folder name: {new_base}")
 
-        user_rename_choice = cfg.upload.yes_all or click.confirm(
+        user_rename_choice = cfg.upload.yes_all or await ask_confirm(
             click.style("\nWould you like to replace the original folder name?",
                         fg="magenta"),
             default=True,
         )
 
-        new_base = _edit_folder_interactive(new_base, auto_rename) if auto_rename or user_rename_choice else old_base
+        new_base = (
+            await _edit_folder_interactive(new_base, auto_rename)
+            if auto_rename or user_rename_choice
+            else old_base
+        )
 
-    new_path = os.path.join(cfg.directory.download_directory, new_base)
+    # Renamed where it stands, not moved into the download directory. With
+    # per-tracker linking the release lives in <link_dir>/<TRACKER>/, and
+    # relocating it from there tore the seeding layout apart: the files ended
+    # up back in the download directory, the client was still told to seed from
+    # the tracker folder, and the emptied tracker folder was then deleted by the
+    # cleanup below.
+    new_path = os.path.join(os.path.dirname(os.path.abspath(path)), new_base)
     if os.path.isdir(new_path) and not os.path.samefile(path, new_path):
-        if not check or cfg.upload.yes_all or click.confirm(
+        if not check or cfg.upload.yes_all or await ask_confirm(
             click.style(
                 f"A folder already exists with the new folder name '{new_path}', "
                 "would you like to replace it?",
@@ -66,12 +79,7 @@ def rename_folder(path, metadata, auto_rename, check=True):
     else:
         shutil.move(path, new_path)
         click.secho(f"Moved folder to '{new_path}'.", fg="yellow")
-
-        # Remove the source parent directory if it is now empty
-        source_parent = os.path.dirname(path)
-        if os.path.isdir(source_parent) and not os.listdir(source_parent):
-            os.rmdir(source_parent)
-            click.secho(f"Removed empty source parent directory '{source_parent}'.", fg="yellow")
+        _remove_empty_source_parent(path, new_path)
 
     # Also rename spectrals folder in TMP_DIR if it exists
     if cfg.directory.tmp_dir and os.path.exists(cfg.directory.tmp_dir):
@@ -87,6 +95,48 @@ def rename_folder(path, metadata, auto_rename, check=True):
             click.secho(f"Moved temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
 
     return new_path
+
+
+def _protected_roots() -> set[str]:
+    """Directories that exist because they are configured, not because of a release.
+
+    A release folder is disposable; the directory it sits in is not. Deleting
+    one takes the next upload's destination with it.
+    """
+    roots = [cfg.directory.download_directory, cfg.directory.tmp_dir, cfg.linking.link_dir]
+    if cfg.linking.link_dir and cfg.linking.per_tracker_dirs:
+        # <link_dir>/<TRACKER> is created per tracker and is equally not ours to remove.
+        with contextlib.suppress(OSError):
+            roots += [
+                os.path.join(cfg.linking.link_dir, name)
+                for name in os.listdir(cfg.linking.link_dir)
+                if os.path.isdir(os.path.join(cfg.linking.link_dir, name))
+            ]
+    return {os.path.abspath(r) for r in roots if r}
+
+
+def _remove_empty_source_parent(path: str, new_path: str) -> None:
+    """Tidy away the directory a moved release left behind, if it was only a wrapper.
+
+    This deleted ``<link_dir>/RED`` in production: the release was moved out of
+    the tracker's seeding directory, that directory was then empty, and it went
+    too -- so the client had nothing to seed from and the next upload had
+    nowhere to link into. It only ever meant to clean up a wrapper folder a
+    download arrived in, so it now refuses to touch a configured root, and does
+    nothing at all when the move stayed inside the same parent.
+    """
+    source_parent = os.path.abspath(os.path.dirname(path))
+    if source_parent == os.path.abspath(os.path.dirname(new_path)):
+        return
+    if source_parent in _protected_roots():
+        return
+    if not os.path.isdir(source_parent) or os.listdir(source_parent):
+        return
+    try:
+        os.rmdir(source_parent)
+        click.secho(f"Removed empty source parent directory '{source_parent}'.", fg="yellow")
+    except OSError as e:
+        click.secho(f"Could not remove '{source_parent}': {e}", fg="yellow")
 
 
 def generate_folder_name(metadata):
@@ -146,20 +196,20 @@ def _fix_format(metadata, keys):
     return sub_metadata
 
 
-def _edit_folder_interactive(foldername, auto_rename):
-    """Allow the user to edit the pending folder name in a text editor."""
+async def _edit_folder_interactive(foldername, auto_rename):
+    """Allow the user to edit the pending folder name."""
     if auto_rename:
         return foldername
-    if not cfg.upload.yes_all and not click.confirm(
+    if not cfg.upload.yes_all and not await ask_confirm(
         click.style("Is the new folder name acceptable? ([n] to edit)", fg="magenta"),
         default=True,
     ):
-        newname = click.edit(foldername, editor=cfg.upload.default_editor)
+        newname = await ask_edit(foldername, editor=cfg.upload.default_editor)
         while True:
             if newname is None:
                 return foldername
             elif re.search(BLACKLISTED_CHARS, newname):
-                if not click.confirm(
+                if not await ask_confirm(
                     click.style(
                         "Folder name contains invalid characters, retry?",
                         fg="magenta",
@@ -167,8 +217,11 @@ def _edit_folder_interactive(foldername, auto_rename):
                     ),
                     default=True,
                 ):
-                    exit()
+                    # Abort the upload rather than exit() the process -- this
+                    # runs inside a web request, where exit() takes the server
+                    # down with it.
+                    raise click.Abort
             else:
                 return newname.strip().replace("\n", "")
-            newname = click.edit(foldername, editor=cfg.upload.default_editor)
+            newname = await ask_edit(foldername, editor=cfg.upload.default_editor)
     return foldername

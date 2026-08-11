@@ -4,6 +4,7 @@ import shutil
 import asyncclick as click
 
 from lox import cfg
+from lox.common.prompts import confirm as ask_confirm
 from lox.constants import ALLOWED_EXTENSIONS
 from lox.errors import NoncompliantFolderStructure
 
@@ -41,7 +42,7 @@ async def check_folder_structure(path: str, scene: bool) -> None:
                     bold=True,
                 )
                 raise click.Abort() from None
-            click.confirm(
+            await ask_confirm(
                 click.style(
                     "You need to manually fix the issues present in the upload's folder? "
                     "Send a [Y] once you have done so, or a [N] to abort.",

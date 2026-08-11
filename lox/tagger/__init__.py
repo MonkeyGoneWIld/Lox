@@ -102,12 +102,12 @@ async def tag(path: str, source: str, encoding: str | None, overwrite: bool, aut
 
     metadata, _ = await get_metadata(path, tags, rls_data)
     metadata = await review_metadata(metadata, metadata_validator_base)
-    tag_files(path, tags, metadata, auto_rename)
+    await tag_files(path, tags, metadata, auto_rename)
 
     await download_cover_if_nonexistent(path, metadata["cover"])
     tags = check_tags(path)
-    path = rename_folder(path, metadata, auto_rename)
-    rename_files(path, tags, metadata, auto_rename, None)
+    path = await rename_folder(path, metadata, auto_rename)
+    await rename_files(path, tags, metadata, auto_rename, None)
     await check_folder_structure(path, scene=False)
     click.secho(f"\nProcessed {path}", fg="cyan", bold=True)
 

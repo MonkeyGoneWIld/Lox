@@ -6,6 +6,7 @@ from mutagen import File as MutagenFile
 
 from lox import cfg
 from lox.common import get_audio_files
+from lox.common.prompts import confirm as ask_confirm
 from lox.tagger.tagfile import TagFile
 
 STANDARDIZED_TAGS = {
@@ -87,7 +88,7 @@ async def prompt_editor(path: str) -> bool:
     Returns:
         True if the editor was opened, False if tags were accepted.
     """
-    if not click.confirm(
+    if not await ask_confirm(
         click.style("\nAre the above tags acceptable? ([n] to open in tag editor)", fg="magenta"),
         default=True,
     ):

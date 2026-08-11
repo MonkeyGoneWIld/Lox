@@ -4,6 +4,7 @@ from collections import defaultdict
 import asyncclick as click
 
 from lox import cfg
+from lox.common.prompts import confirm as ask_confirm
 from lox.constants import RELEASE_TYPES
 from lox.errors import InvalidMetadataError
 from lox.tagger.metadata import _print_metadata
@@ -53,7 +54,7 @@ async def review_metadata(metadata, validator):
         try:
             validator(metadata)
         except InvalidMetadataError as e:
-            click.confirm(
+            await ask_confirm(
                 click.style(str(e) + " Revisit metadata step?", fg="magenta"),
                 default=True,
                 abort=True,
@@ -112,7 +113,7 @@ async def _edit_artists(metadata):
 
             return
         except (ValueError, KeyError, TypeError) as e:
-            click.confirm(
+            await ask_confirm(
                 click.style(f"The tracks file is invalid ({type(e)}: {e}), retry?", fg="red"),
                 default=True,
                 abort=True,
@@ -144,7 +145,7 @@ async def _alias_artists(metadata):
                         artists_to_delete.append(existing.lower())
             break
         except (IndexError, ValueError):
-            click.confirm(
+            await ask_confirm(
                 click.style("Invalid artist list. Retry?", fg="red"),
                 default=True,
                 abort=True,
@@ -230,7 +231,7 @@ async def _edit_years(metadata):
             metadata["group_year"] = group_year_match[1]
             return
         except (TypeError, KeyError, ValueError):
-            click.confirm(
+            await ask_confirm(
                 click.style(
                     "Invalid values or formatting in the years file. Retry?",
                     fg="magenta",
@@ -277,7 +278,7 @@ async def _edit_edition_info(metadata):
             metadata["upc"] = upc_match[1] or None
             return
         except (TypeError, KeyError, ValueError):
-            click.confirm(
+            await ask_confirm(
                 click.style(
                     "Invalid values or formatting in the editions file. Retry?",
                     fg="magenta",
@@ -332,7 +333,7 @@ async def _edit_tracks(metadata):
             metadata["artists"], metadata["tracks"] = generate_artists(metadata["tracks"])
             return
         except (TypeError, ValueError, KeyError) as e:
-            click.confirm(
+            await ask_confirm(
                 click.style(f"The tracks file is invalid ({type(e)}: {e}), retry?", fg="red"),
                 default=True,
                 abort=True,

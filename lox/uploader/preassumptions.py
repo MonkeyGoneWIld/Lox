@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 import asyncclick as click
 
 from lox import cfg
+from lox.common.prompts import confirm as ask_confirm
 from lox.errors import RequestError, UploadError
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ source: str | None) -> None:
         source: Media source filter.
     """
     await print_group_info(gazelle_site, group_id, source)
-    if not cfg.upload.yes_all and not click.confirm(
+    if not cfg.upload.yes_all and not await ask_confirm(
         click.style("\nWould you like to continue to upload to this group?", 
 fg="magenta"),
         default=True,

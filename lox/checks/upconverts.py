@@ -8,6 +8,7 @@ import msgspec
 from mutagen import MutagenError, flac
 
 from lox.common.files import process_files
+from lox.common.prompts import confirm as ask_confirm
 from lox.errors import UpconvertCheckError
 
 
@@ -31,7 +32,7 @@ async def upload_upconvert_test(path: str) -> None:
     """
     any_upconverts = await test_upconverted(path)
     if any_upconverts:
-        if click.confirm(
+        if await ask_confirm(
             click.style(
                 "Possible upconverts detected. Would you like to quit uploading?",
                 fg="red",

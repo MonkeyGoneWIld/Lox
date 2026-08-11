@@ -65,6 +65,12 @@ jobs:
       - name: Request collection and filters
         run: uv run python tests/test_requests.py
 
+      - name: Upload prompts, folder rename and integrity
+        # The upload's questions have to reach the browser rather than answer
+        # themselves. Includes a source scan, so a call site no test reaches is
+        # still caught.
+        run: uv run python tests/test_upload_prompts.py
+
       - name: Request detail and BBCode rendering
         # The tracker refuses to be framed, so this code renders the request
         # itself -- which puts it between someone else's BBCode and the page.
