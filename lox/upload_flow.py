@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # Upstream writes choices as "[y]es, [N]o, [a]bort". The capitalised initial is
 # the default.
-_BRACKET = re.compile(r"\[([A-Za-z])\]([A-Za-z]*)")
+_BRACKET = re.compile(r"([A-Za-z]*)\[([A-Za-z])\]([A-Za-z]*)")
 # The dupe checker prints candidates as " 01 >> 1605624 | Artist - Title ... | https://..."
 # with the id and the url on the same logical line. Capturing them turns
 # "paste a URL" into a row of buttons.
@@ -92,6 +92,31 @@ _TORRENT_LINE = re.compile(r"^>\s*(\d{4})\s*/\s*(.+)$")
 # contents: "Selected ID: 2617840 | Taylor Swift - The Life of a Showgirl (2025)".
 _SELECTED_GROUP = re.compile(r"^Selected ID:\s*(\d+)\s*\|\s*(.+?)\s*$", re.IGNORECASE)
 _SPECTRAL_EXT = (".png", ".jpg", ".jpeg")
+
+_STAGES: tuple[tuple[str, str], ...] = (
+    ("checking for mqa", "Checking for MQA"),
+    ("results matching this release", "Looking for an existing group"),
+    ("searching for", "Searching for metadata"),
+    ("checking metadata", "Checking metadata"),
+    ("checking lossy master", "Generating spectrals"),
+    ("finished generating spectrals", "Compressing spectrals"),
+    ("finished compressing spectrals", "Waiting on the spectral check"),
+    ("uploading to a new torrent group", "Preparing a new group"),
+    ("selected id", "Using an existing group"),
+    ("proposed tag changes", "Reviewing tags"),
+    ("proposed filename changes", "Reviewing filenames"),
+    ("checking folder structure", "Checking the folder"),
+    ("generating torrent file", "Making the torrent"),
+    ("uploading torrent", "Uploading the torrent"),
+    ("processing:", "Transcoding"),
+    ("transcode completed", "Transcoded"),
+    ("generated description", "Writing the description"),
+    ("no requests were found", "Checking requests"),
+    ("adding to", "Handing to the download client"),
+    ("done uploading this release", "Done"),
+)
+"""What the pipeline says as it enters each phase, and what to call it. Matched
+against the line it just printed, longest-lived phase last."""
 
 
 def _spectrals_module() -> Any:
@@ -247,8 +272,11 @@ def parse_options(text: str) -> list[dict[str, Any]]:
     """
     options: list[dict[str, Any]] = []
     for match in _BRACKET.finditer(text):
-        letter, rest = match[1], match[2]
-        label = (letter + rest).strip()
+        head, letter, rest = match[1], match[2], match[3]
+        # The bracket often sits inside a word rather than in front of it --
+        # "artist a[l]iases", "trac[k]s" -- so the letters before it are part of
+        # the label too. Without them these read "Liases" and "Ks".
+        label = (head + letter + rest).strip()
 
         # The word after the bracket is often only the first of several --
         # "[r]elease type", "[d]elete music folder" -- and the rest of it sits
@@ -280,8 +308,8 @@ def parse_options(text: str) -> list[dict[str, Any]]:
 def default_letter(text: str) -> str | None:
     """Return the capitalised bracket letter, which upstream means as default."""
     for match in _BRACKET.finditer(text):
-        if match[1].isupper():
-            return match[1].lower()
+        if match[2].isupper():
+            return match[2].lower()
     return None
 
 
@@ -473,9 +501,25 @@ class FlowPrompts:
         if "spectrals are available" in text.lower():
             self._spectrals_ready = True
 
+        self._report_stage(text)
+
         if self._capture_block(text):
             return
         self.flow.note(text)
+
+    def _report_stage(self, text: str) -> None:
+        """Say what the pipeline is doing, from what it just said it did.
+
+        A running upload showed a blank card with the last stage set at the
+        start, so the only way to know whether it was hashing, transcoding or
+        stuck was to open the log. The pipeline announces each phase as it
+        enters it; these are those announcements, shortened.
+        """
+        lowered = text.lower()
+        for needle, stage in _STAGES:
+            if needle in lowered:
+                self.flow.progress(stage)
+                return
 
     def _capture_block(self, text: str) -> bool:
         """Fold tag diffs and metadata listings into structured tables.
@@ -773,7 +817,38 @@ class FlowPrompts:
             if answer is not None:
                 metadata["comment"] = str(answer.get("comment", "")).strip() or None
 
+        async def edit_release_type(metadata: dict) -> None:
+            from lox.constants import RELEASE_TYPES
+
+            answer = await self.flow.choose(
+                "Release type",
+                [{"value": r, "label": r} for r in RELEASE_TYPES],
+                default=metadata.get("rls_type") or "Album",
+            )
+            if answer:
+                metadata["rls_type"] = answer
+
+        async def edit_tracks(metadata: dict) -> None:
+            # One row per track, which is what the pipeline's text blob was
+            # describing the long way round.
+            rows = [
+                {"key": f"{disc}/{num}", "label": f"Disc {disc} track {num}", "kind": "text",
+                 "value": track.get("title") or ""}
+                for disc, tracks in metadata["tracks"].items()
+                for num, track in tracks.items()
+            ]
+            answer = await self._form("Track titles", "form", rows)
+            if not answer:
+                return
+            for key, value in answer.items():
+                disc, _, num = key.partition("/")
+                title = str(value).strip()
+                if title and disc in metadata["tracks"] and num in metadata["tracks"][disc]:
+                    metadata["tracks"][disc][num]["title"] = title
+
         return {
+            "_edit_release_type": edit_release_type,
+            "_edit_tracks": edit_tracks,
             "_edit_artists": edit_artists,
             "_alias_artists": alias_artists,
             "_edit_title": edit_title,
