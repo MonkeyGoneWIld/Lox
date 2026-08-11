@@ -17,6 +17,7 @@ import msgspec
 from lox import cfg
 from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import build_search_queries, evaluate_group
+from lox.checker.request_filters import for_tracker
 from lox.checker.store import CheckerStore
 from lox.deezer.gw import DeezerGW, DeezerGWError, parse_module_id, parse_playlist_id
 
@@ -42,6 +43,47 @@ class Candidate(msgspec.Struct):
         return msgspec.to_builtins(self)
 
 
+def _group_artist(info: dict) -> str:
+    """The billed artist for a torrent group.
+
+    ``browse`` returns a flat ``artist`` string, but ``torrentgroup`` -- which
+    is what an album check reads -- returns ``musicInfo`` with the cast split by
+    role and no flat field at all. Reading only the flat one left the artist
+    empty, so the group rendered as "— Bedtime Stories (1994)" with the
+    separator leading and nobody named.
+    """
+    flat = plain(info.get("artist"))
+    if flat:
+        return flat
+
+    music = info.get("musicInfo") or {}
+    for role in ("artists", "with", "composers", "conductor", "dj"):
+        people = music.get(role) or []
+        names = [plain(p.get("name")) for p in people if isinstance(p, dict) and p.get("name")]
+        if names:
+            return " & ".join(names[:3]) + (" et al." if len(names) > 3 else "")
+    return ""
+
+
+def _release_type_name(code: str, value: Any) -> str:
+    """Turn a numeric release type into its name, using that tracker's table.
+
+    The numbers differ per tracker -- 17 is Demo on RED and DJ Mix on OPS -- so
+    the vocabulary transcribed from their own search pages is what resolves it.
+    An unknown number yields nothing rather than another tracker's word for it.
+    """
+    if value is None:
+        return ""
+    spec = for_tracker(code)
+    if spec is None:
+        return ""
+    try:
+        wanted = int(value)
+    except (TypeError, ValueError):
+        return ""
+    return next((name for name, number in spec.release_types.items() if number == wanted), "")
+
+
 class GroupHit(msgspec.Struct):
     """One tracker torrent group that was inspected, and why it did or did not match.
 
@@ -58,6 +100,7 @@ class GroupHit(msgspec.Struct):
     matched: bool
     reason: str
     formats: list[str] = msgspec.field(default_factory=list)
+    release_type: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         """Serialize for the web API."""
@@ -527,12 +570,13 @@ class MissingScanner:
         return GroupHit(
             group_id=group_id,
             name=plain(info.get("name")),
-            artist=plain(info.get("artist")),
+            artist=_group_artist(info),
             year=info.get("year"),
             url=f"{self.gateway.api(code).base_url}/torrents.php?id={group_id}",
             matched=matched,
             reason=reason,
             formats=formats[:8],
+            release_type=_release_type_name(code, info.get("releaseType")),
         )
 
     async def check_album(self, album_id: str, trackers: list[str]) -> AlbumCheck:
