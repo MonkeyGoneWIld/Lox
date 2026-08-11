@@ -2310,6 +2310,21 @@
         return;
       }
 
+      // A named set of fields: title, years, edition info, comment.
+      if (step.edit_shape === 'form') {
+        body.replaceChildren(
+          ...rows.map((row) => {
+            const control = row.kind === 'textarea'
+              ? el('textarea', { rows: '4' })
+              : el('input', { type: row.kind === 'number' ? 'number' : 'text' });
+            control.value = row.value ?? '';
+            control.addEventListener('input', () => (row.value = control.value));
+            return el('div', { class: 'setting' }, el('label', {}, row.label || row.key), control);
+          }),
+        );
+        return;
+      }
+
       if (step.edit_shape === 'json') {
         const area = el('textarea', { rows: '14', spellcheck: 'false' });
         area.value = rows[0]?.value || '';
@@ -2346,6 +2361,9 @@
 
     const answer = () => {
       if (['json', 'title'].includes(step.edit_shape)) return rows[0]?.value ?? '';
+      if (step.edit_shape === 'form') {
+        return Object.fromEntries(rows.map((r) => [r.key, r.value ?? '']));
+      }
       return rows;
     };
 
@@ -2456,7 +2474,7 @@
                 { class: 'match-actions' },
                 o.url
                   ? el('a', { class: 'filebtn', href: o.url, target: '_blank', rel: 'noopener noreferrer' },
-                      'Open on tracker ↗')
+                      o.link_label || 'Open on tracker ↗')
                   : null,
                 el('button', { class: 'primary', onclick: () => send(o.value) }, 'Use this group'),
               ),

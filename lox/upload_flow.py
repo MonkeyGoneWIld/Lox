@@ -132,6 +132,29 @@ _EDIT_HELP = {
 }
 
 
+_RESULT_YEAR = re.compile(r"\((\d{4})\)")
+_RESULT_TRACKS = re.compile(r"\{Tracks:\s*(\d+)\}", re.IGNORECASE)
+
+
+def _result_detail(description: str, url: str | None) -> str:
+    """The facts worth seeing under a metadata candidate.
+
+    The pipeline writes them into the line -- "(2026)", "{Tracks: 18}" -- where
+    they are easy to miss. Pulled out, they are what tells one edition of a
+    release from another.
+    """
+    parts = []
+    year = _RESULT_YEAR.search(description)
+    if year:
+        parts.append(year[1])
+    tracks = _RESULT_TRACKS.search(description)
+    if tracks:
+        parts.append(f"{tracks[1]} tracks")
+    if url:
+        parts.append(url.split("/")[-1] if "/" in url else url)
+    return " · ".join(parts)
+
+
 def _editor_shape(text: str, extension: str) -> tuple[str, list[dict[str, Any]]]:
     """Work out what kind of thing is being edited, and its current contents.
 
@@ -431,8 +454,18 @@ class FlowPrompts:
             menu = _MENU_LINE.match(text)
             if result:
                 index, description, url = result[1], result[2].strip(), result[3]
+                # Same card as a tracker group: this is a release you are
+                # choosing between, so it gets room for its track count and
+                # year, and a link to check it on Deezer before committing.
                 self._candidates.append(
-                    {"value": str(int(index)), "label": description[:90], "detail": url or ""}
+                    {
+                        "value": str(int(index)),
+                        "label": description,
+                        "detail": _result_detail(description, url),
+                        "url": url or "",
+                        "kind": "group",
+                        "link_label": "Open on Deezer ↗",
+                    }
                 )
             elif menu and len(text) < 60:
                 self._candidates.append({"value": menu[1], "label": menu[2][:60], "detail": ""})
@@ -618,6 +651,138 @@ class FlowPrompts:
         if answer is None:
             return None
         return _editor_text(shape, answer, original)
+
+    async def _form(self, title: str, shape: str, rows: list[dict[str, Any]], detail: str = "") -> Any:
+        """Ask one metadata form and return its answer, or None if cancelled."""
+        return await self.flow.ask(
+            Step("edit", title, detail=detail, options=rows, edit_shape=shape)
+        )
+
+    def _metadata_editors(self) -> dict[str, Any]:
+        """Replacements for the pipeline's editor-based metadata screens.
+
+        Each one is an ``async def _edit_x(metadata)`` that mutates the dict in
+        place, so replacing them is enough -- the pipeline calls them and reads
+        the dict afterwards either way. Doing it here rather than through
+        ``click.edit`` matters for two reasons: ``click.edit`` is synchronous,
+        so an async replacement returns a coroutine the pipeline never awaits,
+        and the metadata is already structured, so round-tripping it through
+        text to parse it back was work with nothing to show for it.
+        """
+
+        async def edit_artists(metadata: dict) -> None:
+            rows = [{"name": name, "role": role} for name, role in metadata["artists"]]
+            answer = await self._form("Artists", "artists", rows,
+                                      "Add, remove or re-credit. Roles are the ones the trackers accept.")
+            if answer is None:
+                return
+            people = [
+                (str(r.get("name", "")).strip(), str(r.get("role") or "main").strip().lower())
+                for r in answer
+                if str(r.get("name", "")).strip()
+            ]
+            if not people:
+                return
+            metadata["artists"] = people
+            roles = dict(people)
+            for disc in metadata["tracks"].values():
+                for track in disc.values():
+                    track["artists"] = [(n, roles.get(n, r)) for n, r in track["artists"]]
+
+        async def alias_artists(metadata: dict) -> None:
+            rows = [{"name": name, "alias": "", "drop": False} for name in {a for a, _ in metadata["artists"]}]
+            answer = await self._form("Artist aliases", "aliases", rows,
+                                      "Rename an artist for this upload, or drop the credit entirely.")
+            if answer is None:
+                return
+            renames = {
+                str(r["name"]).lower(): str(r.get("alias", "")).strip()
+                for r in answer
+                if str(r.get("alias", "")).strip()
+            }
+            dropped = {str(r["name"]).lower() for r in answer if r.get("drop")}
+            if not renames and not dropped:
+                return
+
+            def apply(pairs: list) -> list:
+                out = []
+                for name, role in pairs:
+                    key = name.lower()
+                    if key in dropped:
+                        continue
+                    out.append((renames.get(key, name), role))
+                return out
+
+            metadata["artists"] = apply(metadata["artists"])
+            for disc in metadata["tracks"].values():
+                for track in disc.values():
+                    track["artists"] = apply(track["artists"])
+
+        async def edit_title(metadata: dict) -> None:
+            answer = await self._form("Album title", "form", [
+                {"key": "title", "label": "Title", "kind": "text", "value": metadata["title"] or ""},
+            ])
+            if answer:
+                metadata["title"] = str(answer.get("title", "")).strip() or metadata["title"]
+
+        async def edit_years(metadata: dict) -> None:
+            answer = await self._form("Years", "form", [
+                {"key": "year", "label": "Edition year", "kind": "number", "value": metadata["year"]},
+                {"key": "group_year", "label": "Original release year", "kind": "number",
+                 "value": metadata["group_year"]},
+            ], "The original year is the group's; the edition year is this pressing's.")
+            if not answer:
+                return
+            for key in ("year", "group_year"):
+                value = str(answer.get(key, "")).strip()
+                if re.fullmatch(r"\d{4}", value):
+                    metadata[key] = value
+
+        async def edit_genres(metadata: dict) -> None:
+            answer = await self._form("Genres", "list",
+                                      [{"value": g} for g in metadata["genres"]], "One per line.")
+            if answer is not None:
+                picked = [str(r.get("value", "")).strip() for r in answer if str(r.get("value", "")).strip()]
+                if picked:
+                    metadata["genres"] = picked
+
+        async def edit_urls(metadata: dict) -> None:
+            answer = await self._form("URLs", "list", [{"value": u} for u in metadata["urls"]])
+            if answer is not None:
+                metadata["urls"] = [
+                    str(r.get("value", "")).strip() for r in answer if str(r.get("value", "")).strip()
+                ]
+
+        async def edit_edition_info(metadata: dict) -> None:
+            answer = await self._form("Edition", "form", [
+                {"key": "edition_title", "label": "Edition title", "kind": "text",
+                 "value": metadata["edition_title"] or ""},
+                {"key": "label", "label": "Record label", "kind": "text", "value": metadata["label"] or ""},
+                {"key": "catno", "label": "Catalogue number", "kind": "text", "value": metadata["catno"] or ""},
+                {"key": "upc", "label": "UPC", "kind": "text", "value": metadata["upc"] or ""},
+            ])
+            if not answer:
+                return
+            for key in ("edition_title", "label", "catno", "upc"):
+                metadata[key] = str(answer.get(key, "")).strip() or None
+
+        async def edit_comment(metadata: dict) -> None:
+            answer = await self._form("Comment", "form", [
+                {"key": "comment", "label": "Comment", "kind": "textarea", "value": metadata["comment"] or ""},
+            ])
+            if answer is not None:
+                metadata["comment"] = str(answer.get("comment", "")).strip() or None
+
+        return {
+            "_edit_artists": edit_artists,
+            "_alias_artists": alias_artists,
+            "_edit_title": edit_title,
+            "_edit_years": edit_years,
+            "_edit_genres": edit_genres,
+            "_edit_urls": edit_urls,
+            "_edit_edition_info": edit_edition_info,
+            "_edit_comment": edit_comment,
+        }
 
     async def _view_spectrals(self, spectrals_path: str, _all_spectral_ids: dict[int, str]) -> None:
         """Stand in for the pipeline's spectral viewer.
