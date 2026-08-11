@@ -25,6 +25,7 @@ os.environ.update(
 os.makedirs(os.environ["LOX_DOWNLOAD_DIR"], exist_ok=True)
 
 from lox.checker.bbcode import render, strip  # noqa: E402
+from lox.checker.html_clean import looks_like_html, sanitize  # noqa: E402
 from lox.checker.request_detail import request_detail  # noqa: E402
 
 results: list[tuple[str, bool, str]] = []
@@ -165,6 +166,37 @@ async def main() -> int:
     check("strip leaves the words only", strip("[b]Hello[/b] [i]there[/i]") == "Hello there",
           strip("[b]Hello[/b] [i]there[/i]"))
 
+    # --- HTML the tracker already rendered is cleaned, not escaped ---
+    # RED renders the description before sending it. Escaping that showed the
+    # reader "<a rel=... href=...>" as text instead of a link.
+    pre = '<a rel="noreferrer" target="_blank" href="https://www.deezer.com/en/album/880644682">an album</a>'
+    check("a tracker's own markup is recognised", looks_like_html(pre), pre[:30])
+    cleaned = sanitize(pre)
+    check("its link survives as a link", cleaned.startswith("<a ") and "an album</a>" in cleaned, cleaned)
+    check("and it is not shown as text", "&lt;a" not in cleaned, cleaned[:40])
+    check("links are forced to open safely",
+          'target="_blank"' in cleaned and 'rel="noopener noreferrer"' in cleaned, cleaned)
+
+    check("scripts go, contents and all",
+          sanitize("before<script>alert(1)</script>after") == "beforeafter",
+          sanitize("before<script>alert(1)</script>after"))
+    check("so do iframes", "<iframe" not in sanitize('<iframe src="https://x.invalid"></iframe>'),
+          sanitize('<iframe src="https://x.invalid"></iframe>'))
+    handler = sanitize('<img src="https://a.invalid/x.png" onerror="alert(1)">')
+    check("event handlers are stripped", "onerror" not in handler, handler)
+    check("a javascript href is dropped", "javascript:" not in sanitize('<a href="javascript:alert(1)">x</a>'),
+          sanitize('<a href="javascript:alert(1)">x</a>'))
+    check("url() in a style is dropped",
+          "url(" not in sanitize('<span style="background-color: url(javascript:x)">y</span>'),
+          sanitize('<span style="background-color: url(javascript:x)">y</span>'))
+    check("a colour in a style is kept",
+          'style="color: #ff0000"' in sanitize('<span style="color: #ff0000">red</span>'),
+          sanitize('<span style="color: #ff0000">red</span>'))
+    check("stray end tags cannot break out",
+          sanitize("</div></div>text") == "text", sanitize("</div></div>text"))
+    check("unclosed tags are closed", sanitize("<b>bold") == "<b>bold</b>", sanitize("<b>bold"))
+    check("plain BBCode is not mistaken for html", not looks_like_html("[b]hi[/b] see [url]x[/url]"), "")
+
     # --- the whole record, laid out ---
     gateway = FakeGateway(RAW)
     d = await request_detail(gateway, "RED", 41688)
@@ -215,6 +247,50 @@ async def main() -> int:
 
     # --- nothing the tracker sent is thrown away ---
     check("unknown fields are carried through", d["extra"].get("someNewField") == "surprise", str(d["extra"]))
+
+    # --- RED's shape: rendered description, BBCode alongside, numeric type ---
+    red = await request_detail(
+        FakeGateway({
+            **RAW,
+            "releaseType": 11,
+            "releaseName": "Live album",
+            "description": '<a rel="noreferrer" href="https://www.deezer.com/en/album/880644682">link</a>',
+            "bbDescription": "released July 31, 2026",
+            "groupId": 0,
+            "comments": [{"postId": 1, "name": "someone", "addedTime": "2026-01-01 00:00:00",
+                          "comment": "<strong>already</strong> html"}],
+        }),
+        "RED", 41688,
+    )
+    check("the release type is a name, not a number", red["release_type"] == "Live album", red["release_type"])
+    check("the BBCode form wins when both are sent",
+          red["description_html"] == "released July 31, 2026", red["description_html"])
+    check("a comment that is already html stays html",
+          red["comments"][0]["html"] == "<strong>already</strong> html", red["comments"][0]["html"])
+    check("internal ids do not become facts",
+          "groupId" not in red["extra"] and "bbDescription" not in red["extra"], str(red["extra"]))
+
+    # A tracker that sends only rendered HTML, with no BBCode to prefer.
+    html_only = await request_detail(
+        FakeGateway({**RAW, "description": '<b>bold</b> and <a href="https://x.invalid">a link</a>',
+                     "bbDescription": ""}),
+        "OPS", 1,
+    )
+    check("html-only descriptions are cleaned and kept",
+          "<b>bold</b>" in html_only["description_html"] and "&lt;b&gt;" not in html_only["description_html"],
+          html_only["description_html"])
+
+    # And one that sends BBCode in the field RED puts HTML in.
+    bb_only = await request_detail(
+        FakeGateway({**RAW, "description": "[b]bold[/b]", "bbDescription": ""}), "OPS", 1)
+    check("BBCode in the same field still renders",
+          bb_only["description_html"] == "<strong>bold</strong>", bb_only["description_html"])
+
+    # A numeric release type with no name beside it resolves from the tracker's
+    # own table, where the same number means different things.
+    numeric = await request_detail(FakeGateway({**RAW, "releaseType": 11, "releaseName": ""}), "RED", 1)
+    check("a bare release type number is resolved", numeric["release_type"] not in ("", "11"),
+          numeric["release_type"])
 
     # --- a filled request ---
     filled = await request_detail(
