@@ -376,8 +376,16 @@ async def main() -> int:
     with p11:
         check("the terminal spectral viewer is replaced while a flow runs",
               spectrals_module.view_spectrals is not original_viewer)
-        await spectrals_module.view_spectrals("/config/spectrals/spectrals_Some Release", {1: "01.flac"})
+        await spectrals_module.view_spectrals("/config/spectrals/spectrals_Some Release",
+                                              {1: "01. Beyoulolek Eih.flac"})
         check("the stand-in does not raise where the real one would", True)
+        # The viewer is handed the track names, and they are what the pairs are
+        # captioned with -- a bare "01" tells you nothing about which track you
+        # are looking at.
+        check("spectrals are captioned with the track they came from",
+              p11._track_label("01") == "01. Beyoulolek Eih.flac", p11._track_label("01"))
+        check("a track the viewer never saw still gets a caption",
+              p11._track_label("07") == "07", p11._track_label("07"))
     check("the original viewer is restored afterwards",
           spectrals_module.view_spectrals is original_viewer)
 
