@@ -366,6 +366,9 @@ button.ghost { background: none; }
 .album-page { display: block; }
 .back-btn { margin-bottom: 14px; }
 
+/* Sits next to whatever is reporting progress, and goes when the work does. */
+.job-cancel { font-size: 12.5px; padding: 5px 12px; margin-top: 8px; }
+
 /* A credit you can follow, but only where there is somewhere to follow it to. */
 .featured-col a { color: var(--text); }
 .featured-col a:hover { color: var(--accent); }

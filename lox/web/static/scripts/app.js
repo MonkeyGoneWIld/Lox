@@ -916,6 +916,7 @@
 
     try {
       const { job_id } = await api(`/api/album/${album.id}/check`, { method: 'POST', body: { trackers } });
+      target.replaceChildren(workingOn(`Asking ${trackers.join(' and ')}`, job_id));
       followJob(job_id, {
         onUpdate: (job) => {
           if (job.results.length) state.albumCheck = job.results[job.results.length - 1];
@@ -1232,7 +1233,9 @@
           el(
             'div',
             { class: 'row dl-actions' },
-            job.status === 'queued'
+            // Running downloads are cancellable too, not just queued ones --
+            // a 30-track album you picked by mistake should not have to finish.
+            job.status === 'queued' || job.status === 'running'
               ? el('button', { class: 'ghost', onclick: () => cancelDownload(job.id) }, 'Cancel')
               : el('span', { class: `tag ${cls === 'done' ? 'ok' : cls === 'failed' ? 'bad' : 'dim'}` }, `${job.percent}%`),
             // Only once there is something on disk to remove.
@@ -1272,9 +1275,48 @@
       seen += job.results.length;
       onUpdate?.(job);
       if (job.status === 'running') setTimeout(tick, interval);
-      else onDone?.(job);
+      else {
+        clearJobCancel(jobId);
+        onDone?.(job);
+      }
     };
     tick();
+  }
+
+  // Anything that keeps working after you press it can be stopped. Scans and
+  // checks spend tracker budget per album, so being unable to call one off
+  // means watching it spend the rest.
+  function jobCancel(jobId, label = 'Cancel') {
+    const button = el(
+      'button',
+      {
+        class: 'ghost job-cancel',
+        'data-job': jobId,
+        onclick: async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Stopping…';
+          try {
+            await api(`/api/jobs/${jobId}/cancel`, { method: 'POST' });
+          } catch (err) {
+            toast(err.message, 'bad');
+            e.target.disabled = false;
+            e.target.textContent = label;
+          }
+        },
+      },
+      label,
+    );
+    return button;
+  }
+
+  function clearJobCancel(jobId) {
+    $$(`.job-cancel[data-job="${jobId}"]`).forEach((b) => b.remove());
+  }
+
+  // A spinner you can call off, for the moment between pressing and finishing.
+  function workingOn(message, jobId) {
+    return el('p', { class: 'empty' },
+      el('span', { class: 'spinner' }), ` ${message} `, jobCancel(jobId));
   }
 
   function jobLine(job) {
@@ -1300,6 +1342,9 @@
         method: 'POST',
         body: { sources, skip_known: $('#missing-skip-known').checked },
       });
+      // Beside the log rather than inside it: the log is written with
+      // textContent, which would wipe a child button on the next tick.
+      log.after(jobCancel(job_id, 'Stop collecting'));
       followJob(job_id, {
         onUpdate: (job) => {
           state.candidates.push(...job.results);
@@ -1388,6 +1433,7 @@
 
     try {
       const { job_id } = await api('/api/missing/check', { method: 'POST', body: { candidates, trackers } });
+      log.after(jobCancel(job_id, 'Stop checking'));
       followJob(job_id, {
         onUpdate: (job) => {
           log.textContent = jobLine(job);
@@ -1710,6 +1756,7 @@
         method: 'POST',
         body: { tracker: state.requestsTracker, request_ids: ids },
       });
+      log.after(jobCancel(job_id, 'Stop checking'));
       followJob(job_id, {
         onUpdate: (job) => {
           log.textContent = jobLine(job);

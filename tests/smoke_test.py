@@ -192,6 +192,48 @@ async def main() -> int:
             check("it says when it was checked", isinstance(stored.get("checked_at"), int | float),
                   str(stored.get("checked_at")))
 
+            # --- cancelling work that is already under way ---------------
+            import asyncio
+
+            jobs = runner.app["jobs"]
+
+            started = asyncio.Event()
+
+            async def slow(job):
+                started.set()
+                await asyncio.sleep(30)
+
+            running = jobs.spawn("test", "Something slow", slow)
+            await asyncio.wait_for(started.wait(), timeout=2)
+
+            async with s.post(f"{BASE}/api/jobs/{running.id}/cancel", headers=h) as r:
+                data = await r.json()
+                check("a running job can be cancelled", r.status == 200 and data.get("cancelled") is True, str(data))
+            await asyncio.sleep(0.1)
+            check("it stops and says so", running.status == "cancelled", running.status)
+
+            async with s.post(f"{BASE}/api/jobs/{running.id}/cancel", headers=h) as r:
+                data = await r.json()
+                check("cancelling a stopped job is a no-op", data.get("cancelled") is False, str(data))
+
+            # A download already in flight, not merely queued.
+            downloader = runner.app["downloader"]
+            live = asyncio.Event()
+
+            async def never_ends(job):
+                job.status = "running"
+                live.set()
+                await asyncio.sleep(30)
+
+            downloader._run_job = never_ends  # noqa: SLF001 - standing in for a real transfer
+            await downloader.start()
+            job = await downloader.enqueue("1")
+            await asyncio.wait_for(live.wait(), timeout=3)
+            check("the download is running", job.status == "running", job.status)
+            check("cancelling a running download reports success", downloader.cancel(job.id) is True)
+            await asyncio.sleep(0.2)
+            check("the running download stops", job.status == "cancelled", job.status)
+
             # --- deleting a release folder ------------------------------
             import os
 
