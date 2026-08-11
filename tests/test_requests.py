@@ -188,6 +188,19 @@ async def main() -> int:
     gw = FakeGateway(total=1)
     found = await checker_for(gw).collect_requests("RED", limit=25)
     row = found["requests"][0]
+    # --- tracker text arrives HTML-escaped -------------------------------
+    # Gazelle escapes its JSON strings for a web page, so rendering them as
+    # text -- the only safe way -- showed the entities themselves.
+    from lox.checker.gateway import plain
+
+    check("an escaped apostrophe decodes",
+          plain("Live Beginnings &#39;88") == "Live Beginnings '88", plain("Live Beginnings &#39;88"))
+    check("named entities decode",
+          plain("Zsoldos &Aacute;rp&aacute;d") == "Zsoldos Árpád", plain("Zsoldos &Aacute;rp&aacute;d"))
+    check("numeric entities decode",
+          plain("Erd&#337;k") == "Erdők", plain("Erd&#337;k"))
+    check("nothing in, empty string out", plain(None) == "" and plain("") == "")
+
     check("rows carry an id, title and link",
           row["id"] == "0" and row["title"] == "Album 0" and "id=0" in row["url"], str(row))
     check("bounty is human readable", row["bounty"] == "1.00 GB", row["bounty"])

@@ -1364,11 +1364,25 @@
     state.requestFilters = spec;
 
     const fields = [
-      filterField(
-        'requests-search',
-        'Search',
+      el(
+        'div',
+        { class: 'setting' },
+        el('label', { for: 'requests-search' }, 'Search'),
         el('input', { type: 'search', id: 'requests-search', placeholder: 'Artist, album or both' }),
-        'Matched against artist and title. Blank lists everything open.',
+        // RED keeps this beside its own search box, and it only widens what the
+        // search string is matched against -- with the box empty it does
+        // nothing at all, which is impossible to guess from a lone toggle
+        // sitting under "Options".
+        spec.descriptions
+          ? el(
+              'label',
+              { class: 'check strict-check', title: 'Only affects what the search text above matches' },
+              el('input', { type: 'checkbox', id: 'requests-descriptions' }),
+              'Also search descriptions and comments',
+            )
+          : null,
+        el('p', { class: 'hint setting-help' },
+           'Matched against artist and title. Blank lists everything open.'),
       ),
       filterField(
         'requests-tags',
@@ -1441,16 +1455,6 @@
     if (spec.include_old) {
       toggles.push(
         el('label', { class: 'check' }, el('input', { type: 'checkbox', id: 'requests-include-old' }), 'Include old'),
-      );
-    }
-    if (spec.descriptions) {
-      toggles.push(
-        el(
-          'label',
-          { class: 'check' },
-          el('input', { type: 'checkbox', id: 'requests-descriptions' }),
-          'Search descriptions too',
-        ),
       );
     }
 

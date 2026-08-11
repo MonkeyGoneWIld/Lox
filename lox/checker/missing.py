@@ -15,7 +15,7 @@ from typing import Any
 import msgspec
 
 from lox import cfg
-from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable
+from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import build_search_queries, evaluate_group
 from lox.checker.store import CheckerStore
 from lox.deezer.gw import DeezerGW, DeezerGWError, parse_module_id, parse_playlist_id
@@ -526,8 +526,8 @@ class MissingScanner:
         )
         return GroupHit(
             group_id=group_id,
-            name=info.get("name") or "",
-            artist=info.get("artist") or "",
+            name=plain(info.get("name")),
+            artist=plain(info.get("artist")),
             year=info.get("year"),
             url=f"{self.gateway.api(code).base_url}/torrents.php?id={group_id}",
             matched=matched,

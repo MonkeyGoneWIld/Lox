@@ -16,7 +16,7 @@ from typing import Any
 import msgspec
 
 from lox import cfg
-from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable
+from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import MIN_TOTAL_SCORE, find_best_deezer_match
 from lox.checker.request_filters import build_params
 from lox.checker.store import CheckerStore
@@ -140,8 +140,8 @@ class DeezerRequestChecker:
             summaries.append(
                 {
                     "id": request_id,
-                    "title": row.get("title", ""),
-                    "artist": self._artist_of(row),
+                    "title": plain(row.get("title")),
+                    "artist": plain(self._artist_of(row)),
                     "year": str(row.get("year") or ""),
                     "bounty": format_bounty(row.get("totalBounty") or row.get("bounty")),
                     "url": self.gateway.request_url(tracker, int(request_id)),
