@@ -525,6 +525,18 @@ async def api_album(request: web.Request) -> web.Response:
     )
 
 
+@routes.get("/api/album/{album_id}/check")
+async def api_album_check_saved(request: web.Request) -> web.Response:
+    """Return the last stored check for an album. Contacts no tracker.
+
+    A check costs budget, and the answer to "is this already on RED" does not
+    change minute to minute, so once it has been asked the answer is kept and
+    shown again for free. Asking again stays a deliberate press.
+    """
+    scanner: MissingScanner = request.app["scanner"]
+    return json_response({"check": scanner.saved_album_check(request.match_info["album_id"])})
+
+
 @routes.post("/api/album/{album_id}/check")
 async def api_album_check(request: web.Request) -> web.Response:
     """Check one album against the trackers, keeping every group it inspected.

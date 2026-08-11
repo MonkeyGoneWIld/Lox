@@ -651,10 +651,18 @@ class MissingScanner:
                 "found_on": check.found_on,
                 "missing_from": check.missing_from,
                 "source": "album check",
+                # The verdicts too, not just the summary. Re-opening the album
+                # should show the groups it found and what it rejected without
+                # spending the budget again to learn the same thing.
+                "verdicts": [v.as_dict() for v in check.verdicts],
             },
             flush=True,
         )
         return check
+
+    def saved_album_check(self, album_id: str) -> dict[str, Any] | None:
+        """The last stored check for an album, or None. Costs no tracker calls."""
+        return self.store.get("albums", str(album_id))
 
     @staticmethod
     def _status_for(result: ScanResult, trackers: list[str]) -> str:
