@@ -25,6 +25,7 @@ from lox import cfg, debug
 from lox.checker.deezer_requests import DeezerRequestChecker
 from lox.checker.gateway import TrackerGateway
 from lox.checker.missing import Candidate, MissingScanner
+from lox.checker.request_detail import request_detail
 from lox.checker.request_filters import schema as filter_schema
 from lox.checker.store import CheckerStore
 from lox.checker.watchlists import WatchlistManager
@@ -915,6 +916,31 @@ async def api_requests_list(request: web.Request) -> web.Response:
     except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
         return error(str(e), status=502)
     return json_response(found)
+
+
+@routes.get("/api/requests/detail")
+async def api_request_detail(request: web.Request) -> web.Response:
+    """Everything one request says, for the half of the split that shows it.
+
+    Costs one tracker call. The tracker's own page would be the obvious thing
+    to show and cannot be: RED and OPS both send ``X-Frame-Options``, so a
+    browser will not render it inside another page no matter what we do. This
+    returns the same record that page is built from instead.
+    """
+    tracker = request.query.get("tracker", "")
+    raw_id = request.query.get("id", "")
+    if not tracker or not raw_id:
+        return error("tracker and id are required")
+    try:
+        request_id = int(raw_id)
+    except ValueError:
+        return error("id must be a number")
+
+    gateway: TrackerGateway = request.app["gateway"]
+    try:
+        return json_response(await request_detail(gateway, tracker, request_id))
+    except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
+        return error(str(e), status=502)
 
 
 @routes.get("/api/requests/filters")
