@@ -830,11 +830,14 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 
 .spectral-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: center;
   gap: 10px;
-  padding: 8px 0;
+  padding: 6px 0;
   border-bottom: 1px solid var(--border);
 }
+
+.spectrals { display: flex; flex-direction: column; align-items: stretch; }
 
 .spectral-num {
   flex: none;
@@ -848,7 +851,8 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 /* Both images the same height, as upstream's page has them: the zoom is a
    detail of the full view, and two different heights make them read as two
    unrelated pictures. Width follows from the aspect ratio. */
-.spectral-pair { display: flex; gap: 8px; flex: 1; min-width: 0; align-items: flex-start; }
+.spectral-pair { display: flex; gap: 8px; flex: 1; min-width: 0; align-items: flex-start;
+                 justify-content: center; }
 .spectral-full, .spectral-zoom { min-width: 0; display: block; }
 .spectral-pair img {
   height: 280px;

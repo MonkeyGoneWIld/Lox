@@ -399,6 +399,77 @@ async def main() -> int:
         "Is this release lossy mastered? [y]es, [N]o, [r]eopen spectrals, [a]bort")]
     check("the reopen button is not offered", "r" not in lossy_options, str(lossy_options))
 
+    # --- the metadata screens are forms that write to the metadata ----
+    # They replace async functions that mutate the dict, rather than going
+    # through click.edit -- which is synchronous, so an async replacement for it
+    # returns a coroutine the pipeline never awaits, and the edit silently did
+    # nothing at all.
+    flow11 = Flow("upload", "meta-edit")
+    p11 = FlowPrompts(flow11, "")
+    editors = p11._metadata_editors()
+
+    meta = {
+        "artists": [("Mohamed Hamaki", "main"), ("Sherine", "main")],
+        "tracks": {"1": {"1": {"artists": [("Mohamed Hamaki", "main"), ("Sherine", "main")]}}},
+        "title": "Sammaouny", "year": "2026", "group_year": "2026",
+        "genres": ["Pop"], "urls": [], "label": None, "catno": None,
+        "edition_title": None, "upc": None, "comment": None,
+    }
+
+    async def answer_next(value):
+        while flow11.step is None:
+            await asyncio.sleep(0.01)
+        flow11.answer(flow11.step.id, value)
+
+    async def run_editor(name, value):
+        task = asyncio.create_task(editors[name](meta))
+        asyncio.create_task(answer_next(value))
+        await asyncio.wait_for(task, timeout=2)
+
+    await run_editor("_edit_artists",
+                     [{"name": "Mohamed Hamaki", "role": "main"}, {"name": "Sherine", "role": "guest"}])
+    check("a role change lands in the metadata",
+          meta["artists"] == [("Mohamed Hamaki", "main"), ("Sherine", "guest")], str(meta["artists"]))
+    check("and follows through to the tracks",
+          meta["tracks"]["1"]["1"]["artists"] == [("Mohamed Hamaki", "main"), ("Sherine", "guest")],
+          str(meta["tracks"]["1"]["1"]["artists"]))
+
+    await run_editor("_edit_years", {"year": "2025", "group_year": "1994"})
+    check("both years are editable", (meta["year"], meta["group_year"]) == ("2025", "1994"),
+          f'{meta["year"]}/{meta["group_year"]}')
+
+    await run_editor("_edit_edition_info",
+                     {"edition_title": "Deluxe", "label": "Rotana", "catno": "R123", "upc": ""})
+    check("edition fields are separate inputs",
+          (meta["edition_title"], meta["label"], meta["catno"], meta["upc"]) == ("Deluxe", "Rotana", "R123", None),
+          str([meta["edition_title"], meta["label"], meta["catno"], meta["upc"]]))
+
+    await run_editor("_edit_genres", [{"value": "Pop"}, {"value": "Arabic"}, {"value": "  "}])
+    check("a list drops its blank rows", meta["genres"] == ["Pop", "Arabic"], str(meta["genres"]))
+
+    await run_editor("_edit_title", None)
+    check("cancelling changes nothing", meta["title"] == "Sammaouny", meta["title"])
+
+    # --- metadata candidates are cards, with the year and a link ------
+    flow12 = Flow("upload", "meta-pick")
+    p12 = FlowPrompts(flow12)
+
+    async def pick():
+        p12._echo("Results for Deezer:")
+        p12._echo("> 01 Mohamed Hamaki - Sammaouny (2026) {Tracks: 18} | https://www.deezer.com/album/997507401")
+        return await p12._prompt("Which metadata results would you like to use? Other options: [m]anual, [a]")
+
+    task12 = asyncio.create_task(pick())
+    step12 = await wait_for_step(flow12)
+    card = step12.options[0]
+    check("a metadata result is a card, not a bare button", card.get("kind") == "group", str(card))
+    check("it links to Deezer", card.get("url") == "https://www.deezer.com/album/997507401", str(card.get("url")))
+    check("the year and track count are pulled out",
+          "2026" in card["detail"] and "18 tracks" in card["detail"], card["detail"])
+    check("the label is not truncated", "Sammaouny" in card["label"], card["label"])
+    flow12.answer(step12.id, "1")
+    await asyncio.wait_for(task12, timeout=2)
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:
