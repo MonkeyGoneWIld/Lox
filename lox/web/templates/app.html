@@ -21,7 +21,7 @@
       <ul class="nav" role="tablist">
         <li><button class="nav-item active" data-view="search" role="tab">Search</button></li>
         <li><button class="nav-item" data-view="explore" role="tab">Explore</button></li>
-        <li><button class="nav-item" data-view="missing" role="tab">Missing</button></li>
+        <li><button class="nav-item" data-view="missing" role="tab">Scan</button></li>
         <li><button class="nav-item" data-view="requests" role="tab">Requests</button></li>
         <li><button class="nav-item" data-view="downloads" role="tab">Downloads <span class="badge" id="dl-badge" hidden></span></button></li>
         <li><button class="nav-item" data-view="uploads" role="tab">Uploads</button></li>
@@ -97,25 +97,26 @@
         </div>
 
         <div class="panel">
-          <h2>1 &middot; Collect from Deezer</h2>
-          <p class="hint">Paste playlist URLs, channel module URLs or album URLs, one per line. This step is free.</p>
+          <h2>Scan Deezer against your trackers</h2>
+          <p class="hint">Paste playlist URLs, channel module URLs or album URLs, one per line. Expanding them
+            is free; checking each album against a tracker is not.</p>
           <textarea id="missing-sources" rows="4" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-..."></textarea>
           <div class="row">
+            <div class="segmented" id="missing-trackers"></div>
             <label class="check"><input type="checkbox" id="missing-skip-known" checked> Skip albums already resolved</label>
-            <button class="primary" id="missing-collect">Collect albums</button>
+            <button class="primary" id="missing-scan">Scan</button>
           </div>
+          <p class="hint" id="missing-cost"></p>
           <div class="joblog" id="missing-collect-log" hidden></div>
+          <div class="joblog" id="missing-check-log" hidden></div>
         </div>
 
         <div class="panel" id="missing-candidates-panel" hidden>
-          <h2>2 &middot; Check the trackers</h2>
-          <p class="hint" id="missing-cost"></p>
+          <h2>Results</h2>
           <div class="row">
-            <div class="segmented" id="missing-trackers"></div>
             <label class="check"><input type="checkbox" id="missing-select-all" checked> Select all</label>
-            <button class="primary" id="missing-check">Check trackers</button>
+            <button id="missing-check">Check again</button>
           </div>
-          <div class="joblog" id="missing-check-log" hidden></div>
           <table class="table" id="missing-table"></table>
         </div>
       </section>
