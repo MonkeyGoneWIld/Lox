@@ -84,7 +84,10 @@ async def main() -> int:
     # --- confirm maps to a yes/no ------------------------------------
     flow3 = Flow("upload", "test3")
     prompts3 = FlowPrompts(flow3)
-    task3 = asyncio.create_task(prompts3._confirm("Would you like to rename the files?", default=True))
+    # ensure_future, not create_task: a confirm is an awaitable object rather
+    # than a coroutine, so that it also has a truth value for the call sites
+    # upstream never awaits.
+    task3 = asyncio.ensure_future(prompts3._confirm("Would you like to rename the files?", default=True))
     step3 = await wait_for_step(flow3)
     check("confirm becomes a confirm step", step3.kind == "confirm" and step3.default is True)
     flow3.answer(step3.id, False)
