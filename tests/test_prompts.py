@@ -1,12 +1,47 @@
 """Check the CLI-prompt to UI-control bridge against real pipeline output."""
 
 import asyncio
+import contextlib
 import sys
+import types
 
 from lox.flow import Flow
 from lox.upload_flow import FlowPrompts, default_letter, parse_extra_options, parse_options, strip_ansi
 
 results: list[tuple[str, bool, str]] = []
+
+
+@contextlib.contextmanager
+def stub_spectrals():
+    """Make lox.uploader.spectrals importable without the audio stack.
+
+    FlowPrompts swaps the spectral viewer out, so entering it needs that module
+    to exist -- and it needs numpy and av, which are not installed on every
+    Python this test has to run on. Where the real one imports, it is used.
+    """
+    try:
+        import lox.uploader.spectrals  # noqa: F401
+
+        yield
+        return
+    except ImportError:
+        pass
+
+    parent = sys.modules.get("lox.uploader") or types.ModuleType("lox.uploader")
+    module = types.ModuleType("lox.uploader.spectrals")
+    module.view_spectrals = lambda *_a, **_k: None
+    parent.spectrals = module
+    saved = {name: sys.modules.get(name) for name in ("lox.uploader", "lox.uploader.spectrals")}
+    sys.modules["lox.uploader"] = parent
+    sys.modules["lox.uploader.spectrals"] = module
+    try:
+        yield
+    finally:
+        for name, original in saved.items():
+            if original is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -452,6 +487,60 @@ async def main() -> int:
 
     await run_editor("_edit_title", None)
     check("cancelling changes nothing", meta["title"] == "Sammaouny", meta["title"])
+
+    # --- and the pipeline actually reaches them -----------------------
+    # The forms above passed their tests while doing nothing at all in
+    # production: they were built, but __enter__ only patched click, so the
+    # pipeline ran its own _edit_artists, which called the patched click.edit
+    # and tried to .split() the coroutine that came back. So run the real
+    # review_metadata, through the real context manager, and let it dispatch.
+    import lox.tagger.review as review
+
+    original_editor = review._edit_artists
+    with stub_spectrals():
+        flow13 = Flow("upload", "meta-dispatch")
+        live = {
+            "artists": [("Mohamed Hamaki", "main")],
+            "tracks": {"1": {"1": {"title": "Beyoulolek Eih", "artists": [("Mohamed Hamaki", "main")]}}},
+            "title": "Sammaouny", "year": "2026", "group_year": "2026",
+            "genres": ["Pop"], "urls": [], "label": None, "catno": None,
+            "edition_title": None, "upc": None, "comment": None, "rls_type": "Album",
+        }
+        with FlowPrompts(flow13, "") as p13:
+            check("the editors are installed, not just defined",
+                  review._edit_artists is not original_editor, review._edit_artists.__qualname__)
+            task13 = asyncio.create_task(review.review_metadata(live, lambda _m: None))
+
+            step13 = await wait_for_step(flow13)
+            check("the field menu is a set of buttons",
+                  "a" in [o["value"] for o in step13.options], str([o["value"] for o in step13.options]))
+            flow13.answer(step13.id, "a")
+
+            step13b = await wait_for_step(flow13)
+            check("choosing artists opens the form, not an editor", step13b.kind == "edit", step13b.kind)
+            check("and it is the artist form", step13b.edit_shape == "artists", str(step13b.edit_shape))
+            flow13.answer(step13b.id, [{"name": "Mohamed Hamaki", "role": "main"},
+                                       {"name": "Sherine", "role": "guest"}])
+
+            step13c = await wait_for_step(flow13)
+            flow13.answer(step13c.id, "n")
+            await asyncio.wait_for(task13, timeout=2)
+
+            # "Manual" metadata is the other editor-backed screen. Left alone
+            # it hands click.edit's coroutine to a JSON parser, fails, and
+            # reopens the editor forever.
+            import lox.tagger.metadata as tagger_metadata
+
+            manual = tagger_metadata._get_manual_metadata({"genres": "Pop", "title": "Sammaouny"})
+            check("manual metadata comes back as data, not a coroutine",
+                  isinstance(manual, dict), type(manual).__name__)
+            check("a single genre is still a list", manual["genres"] == ["Pop"], str(manual["genres"]))
+
+        check("the edit reached the metadata the pipeline kept",
+              live["artists"] == [("Mohamed Hamaki", "main"), ("Sherine", "guest")], str(live["artists"]))
+        check("the flow ended without an error", flow13.error in (None, ""), str(flow13.error))
+    check("and the module is put back afterwards", review._edit_artists is original_editor,
+          review._edit_artists.__qualname__)
 
     # --- metadata candidates are cards, with the year and a link ------
     flow12 = Flow("upload", "meta-pick")

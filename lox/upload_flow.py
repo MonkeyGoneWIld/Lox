@@ -17,6 +17,7 @@ labelled buttons rather than a box you have to type a letter into.
 
 import asyncio
 import contextlib
+import copy
 import os
 import re
 from typing import TYPE_CHECKING, Any
@@ -126,6 +127,20 @@ def _spectrals_module() -> Any:
     web app unimportable anywhere those wheels are missing.
     """
     import lox.uploader.spectrals as module
+
+    return module
+
+
+def _review_module() -> Any:
+    """The pipeline's metadata review module, imported on demand."""
+    import lox.tagger.review as module
+
+    return module
+
+
+def _metadata_module() -> Any:
+    """The pipeline's metadata-gathering module, imported on demand."""
+    import lox.tagger.metadata as module
 
     return module
 
@@ -352,6 +367,8 @@ class FlowPrompts:
         self.folder = folder
         self._saved: dict[str, Any] = {}
         self._saved_viewer: Any = None
+        self._saved_editors: dict[str, Any] = {}
+        self._saved_manual: Any = None
         # Group candidates printed since the last question, so the next prompt
         # can offer them instead of asking for a pasted URL.
         self._candidates: list[dict[str, Any]] = []
@@ -901,6 +918,29 @@ class FlowPrompts:
             "_edit_comment": edit_comment,
         }
 
+    def _manual_metadata(self, rls_data: dict) -> dict:
+        """Stand in for the pipeline's raw-JSON metadata editor.
+
+        "Manual" mode dumps the metadata to JSON, opens it in ``$EDITOR`` and
+        parses whatever comes back. That is a synchronous function, so it
+        cannot ask a question here; and if the parse fails it re-opens the
+        editor forever, which is what it would do with a coroutine in place of
+        the text.
+
+        There is nothing to ask. Manual means "start from what the tags say",
+        and the very next step is the metadata review, where every one of those
+        fields is an editable form. So hand the tag-derived data straight back
+        and let the forms do the editing.
+        """
+        # A deep copy, because the version this replaces round-tripped through
+        # JSON and so handed back something the caller could edit freely.
+        metadata = copy.deepcopy(rls_data)
+        genres = metadata.get("genres")
+        if isinstance(genres, str):
+            metadata["genres"] = [genres]
+        self.flow.note("Using the metadata from the file tags. Edit it in the next step.")
+        return metadata
+
     async def _view_spectrals(self, spectrals_path: str, _all_spectral_ids: dict[int, str]) -> None:
         """Stand in for the pipeline's spectral viewer.
 
@@ -920,7 +960,7 @@ class FlowPrompts:
         self.flow.note(f"Spectrals ready: {os.path.basename(spectrals_path)}")
 
     def __enter__(self) -> "FlowPrompts":
-        """Patch click's prompt functions, and the terminal-era spectral viewer."""
+        """Patch click's prompt functions, the metadata editors and the spectral viewer."""
         for name, replacement in (
             ("confirm", self._confirm),
             ("prompt", self._prompt),
@@ -933,6 +973,17 @@ class FlowPrompts:
             self._saved[name] = getattr(click, name)
             setattr(click, name, replacement)
 
+        # review_metadata builds its dispatch table from module globals every
+        # time it runs, so replacing the attributes is enough to redirect it.
+        review = _review_module()
+        for name, replacement in self._metadata_editors().items():
+            self._saved_editors[name] = getattr(review, name)
+            setattr(review, name, replacement)
+
+        metadata = _metadata_module()
+        self._saved_manual = metadata._get_manual_metadata
+        metadata._get_manual_metadata = self._manual_metadata
+
         # Imported here rather than at module scope: the uploader pulls in the
         # whole audio stack, and the web app has to be importable without it.
         spectrals = _spectrals_module()
@@ -941,10 +992,18 @@ class FlowPrompts:
         return self
 
     def __exit__(self, *_exc: object) -> None:
-        """Restore click's prompt functions and the spectral viewer."""
+        """Restore click's prompt functions, the metadata editors and the spectral viewer."""
         for name, original in self._saved.items():
             setattr(click, name, original)
         self._saved.clear()
+        if self._saved_editors:
+            review = _review_module()
+            for name, original in self._saved_editors.items():
+                setattr(review, name, original)
+            self._saved_editors.clear()
+        if self._saved_manual is not None:
+            _metadata_module()._get_manual_metadata = self._saved_manual
+            self._saved_manual = None
         if self._saved_viewer is not None:
             _spectrals_module().view_spectrals = self._saved_viewer
             self._saved_viewer = None
@@ -994,9 +1053,8 @@ async def run_upload(
         )
 
     flow.progress(f"Finished {tracker}", 100.0)
-    return prompts.dry_run_payload
     debug.log("upload finished tracker=%s folder=%s", tracker, folder, level=20)
-    return {"tracker": tracker, "folder": folder}
+    return prompts.dry_run_payload
 
 
 async def run_uploads(
