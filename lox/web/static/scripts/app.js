@@ -2048,7 +2048,6 @@
     fact('Release type', d.release_type);
     fact('Record label', d.record_label);
     fact('Catalogue number', d.catalogue_number);
-    fact('Release name', d.release_name);
     fact('OCLC', d.oclc);
     list('Acceptable bitrates', d.bitrates);
     list('Acceptable formats', d.formats);

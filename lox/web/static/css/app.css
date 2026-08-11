@@ -370,7 +370,9 @@ button.ghost { background: none; }
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  /* Clear of the search bar directly above it: the two were touching, and a
+     button that close to an input reads as part of it. */
+  margin: 18px 0 16px;
   font-size: 12.5px;
 }
 

@@ -18,6 +18,8 @@ from typing import Any
 from lox.checker.bbcode import render
 from lox.checker.deezer_requests import format_bounty
 from lox.checker.gateway import TrackerGateway, plain
+from lox.checker.html_clean import looks_like_html, sanitize
+from lox.checker.missing import _release_type_name
 
 __all__ = ["request_detail"]
 
@@ -26,10 +28,12 @@ __all__ = ["request_detail"]
 _KNOWN = {
     "requestId", "id", "requestorId", "requestorName", "requestTaxId", "timeAdded", "lastVote",
     "canEdit", "canVote", "minimumVote", "voteCount", "topContributors", "totalBounty", "bounty",
-    "categoryId", "categoryName", "title", "year", "image", "description", "musicInfo",
+    "categoryId", "categoryName", "title", "year", "image", "description", "bbDescription", "musicInfo",
     "catalogueNumber", "recordLabel", "releaseType", "releaseName", "bitrateList", "formatList",
     "mediaList", "logCue", "isFilled", "fillerId", "fillerName", "torrentId", "timeFilled",
     "tags", "comments", "commentPage", "commentPages", "artists", "oclc", "isBookmarked",
+    # Internal ids and flags with nothing to say to a reader.
+    "groupId", "requestTax", "categoryld",
 }
 
 _ROLE_LABEL = {
@@ -103,13 +107,33 @@ def _contributors(raw: Any) -> list[dict[str, str]]:
     return [row for row in rows if row["name"]]
 
 
+def _body_html(entry: Any, bb_key: str, html_key: str, base_url: str) -> str:
+    """Render one description or comment, whichever form the tracker sent.
+
+    RED renders the description before sending it and passes the BBCode
+    alongside; other responses put BBCode in the field the rendered form would
+    occupy. Preferring the BBCode gives one code path with one set of rules,
+    and when there is none the HTML is cut down to a safe subset rather than
+    escaped -- escaping is what showed a reader the ``<a href=...>`` instead of
+    the link.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    bb = entry.get(bb_key)
+    if bb:
+        return render(bb, base_url)
+    body = entry.get(html_key) or ""
+    if not body:
+        return ""
+    return sanitize(body) if looks_like_html(body) else render(body, base_url)
+
+
 def _comments(raw: Any, base_url: str) -> list[dict[str, Any]]:
     """The comment thread, rendered."""
     rows = []
     for entry in raw or []:
         if not isinstance(entry, dict):
             continue
-        body = entry.get("comment") or entry.get("body") or ""
         rows.append(
             {
                 "id": str(entry.get("postId") or entry.get("id") or ""),
@@ -118,7 +142,8 @@ def _comments(raw: Any, base_url: str) -> list[dict[str, Any]]:
                 "added": _when(entry.get("addedTime") or entry.get("time")),
                 "edited_by": plain(entry.get("editedUsername") or ""),
                 "edited": _when(entry.get("editedTime")),
-                "html": render(body, base_url),
+                "html": _body_html(entry, "bbComment", "comment", base_url)
+                or _body_html(entry, "bbBody", "body", base_url),
             }
         )
     return rows
@@ -168,10 +193,15 @@ async def request_detail(gateway: TrackerGateway, tracker: str, request_id: int)
         "year": str(raw.get("year") or ""),
         "image": raw.get("image") or "",
         "category": plain(raw.get("categoryName")),
-        "release_type": plain(raw.get("releaseType")),
+        # The trackers send a number, and the same number means different
+        # things on each; "Release type: 11" is not an answer to anything.
+        "release_type": (
+            plain(raw.get("releaseName"))
+            or _release_type_name(tracker, raw.get("releaseType"))
+            or plain(raw.get("releaseType"))
+        ),
         "record_label": plain(raw.get("recordLabel")),
         "catalogue_number": plain(raw.get("catalogueNumber")),
-        "release_name": plain(raw.get("releaseName")),
         "oclc": plain(raw.get("oclc")),
         "log_cue": plain(raw.get("logCue")),
         "created": _when(raw.get("timeAdded")),
@@ -196,13 +226,21 @@ async def request_detail(gateway: TrackerGateway, tracker: str, request_id: int)
             if filled and raw.get("torrentId")
             else ""
         ),
-        "description_html": render(raw.get("description"), base_url),
+        "description_html": _body_html(raw, "bbDescription", "description", base_url),
         "comments": _comments(raw.get("comments"), base_url),
         "comment_page": raw.get("commentPage") or 1,
         "comment_pages": raw.get("commentPages") or 1,
         "bookmarked": bool(raw.get("isBookmarked")),
     }
+    # Whatever else the tracker sent, so a field one site has and the other
+    # does not still reaches the page. Empty values and internal ids are left
+    # out: "Group id: 0" is noise, not information.
     detail["extra"] = {
-        key: value for key, value in raw.items() if key not in _KNOWN and not isinstance(value, (dict, list))
+        key: value
+        for key, value in raw.items()
+        if key not in _KNOWN
+        and not isinstance(value, (dict, list))
+        and value not in (None, "", 0, "0", False)
+        and not key.lower().startswith("bb")
     }
     return detail
