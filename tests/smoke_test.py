@@ -154,6 +154,44 @@ async def main() -> int:
                   list(data.get("sections", {})) == ["artist"] and len(data["results"]) == 1,
                   str(list(data.get("sections", {}))))
 
+            # --- a saved album check is readable for free ----------------
+            # Checking costs tracker budget, so the answer is kept and shown
+            # again on the album page without asking a tracker anything.
+            scanner = runner.app["scanner"]
+
+            async with s.get(f"{BASE}/api/album/999/check", headers=h) as r:
+                data = await r.json()
+            check("an unchecked album has no stored result",
+                  r.status == 200 and data.get("check") is None, str(data))
+
+            scanner.store.put(
+                "albums",
+                "999",
+                {
+                    "status": "exists_red",
+                    "title": "Bedtime Stories",
+                    "artist": "Madonna",
+                    "found_on": ["RED"],
+                    "missing_from": [],
+                    "verdicts": [{"tracker": "RED", "status": "found", "calls_used": 2,
+                                  "match": {"name": "Bedtime Stories", "artist": "Madonna",
+                                            "year": 1994, "url": "https://example.invalid/1"},
+                                  "inspected": [], "queries": []}],
+                },
+                flush=True,
+            )
+
+            async with s.get(f"{BASE}/api/album/999/check", headers=h) as r:
+                data = await r.json()
+            stored = data.get("check") or {}
+            check("a stored result comes back", stored.get("found_on") == ["RED"], str(stored.get("found_on")))
+            check("the verdicts come back with it, not just the summary",
+                  len(stored.get("verdicts") or []) == 1
+                  and stored["verdicts"][0]["match"]["url"] == "https://example.invalid/1",
+                  str(stored.get("verdicts")))
+            check("it says when it was checked", isinstance(stored.get("checked_at"), int | float),
+                  str(stored.get("checked_at")))
+
             # --- deleting a release folder ------------------------------
             import os
 

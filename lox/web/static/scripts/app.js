@@ -772,6 +772,7 @@
               el('button', { onclick: () => downloadAndUpload(album.id, album) }, 'Download & upload'),
               el('button', { id: 'album-check-btn', onclick: (e) => checkAlbum(album, checkTrackers(), e.target) },
                 'Check trackers'),
+              el('span', { class: 'hint', id: 'album-check-when' }),
               album.url
                 ? el('a', { class: 'linkbtn', href: album.url, target: '_blank', rel: 'noopener' }, 'Open on Deezer')
                 : null,
@@ -831,6 +832,9 @@
           ),
         ),
       );
+
+      // Whatever a previous check found, shown straight away and for free.
+      showSavedCheck(album);
     } catch (e) {
       pane.replaceChildren(...[back, empty(e.message)].filter(Boolean));
     }
@@ -849,6 +853,51 @@
       i ? el('span', {}, ', ') : null,
       person.id ? artistLink(person.id, person.name) : el('span', {}, person.name),
     ]).filter(Boolean);
+  }
+
+  // A check costs budget and its answer does not change minute to minute, so
+  // the last one is shown on arrival. Asking again stays a deliberate press --
+  // the button just stops pretending nothing is known.
+  async function showSavedCheck(album) {
+    let saved;
+    try {
+      ({ check: saved } = await api(`/api/album/${album.id}/check`));
+    } catch {
+      return;
+    }
+    if (!saved || !$('#album-check-body')) return;
+
+    const button = $('#album-check-btn');
+    if (button) button.textContent = 'Check again';
+    const when = $('#album-check-when');
+    if (when) when.textContent = `Last checked ${ago(saved.checked_at)}`;
+
+    // Stored verdicts render through the same path as a live check, so the two
+    // views cannot drift apart.
+    if (saved.verdicts?.length) {
+      renderAlbumCheck(album, { verdicts: saved.verdicts });
+      return;
+    }
+    // Older entries kept only the summary.
+    const parts = [
+      saved.found_on?.length ? `already on ${saved.found_on.join(' and ')}` : '',
+      saved.missing_from?.length ? `not on ${saved.missing_from.join(' and ')}` : '',
+    ].filter(Boolean);
+    $('#album-check-body').replaceChildren(
+      el('p', { class: 'hint' }, parts.join(' · ') || 'Checked before, with no verdict recorded.'),
+    );
+  }
+
+  // Rough age of a stored result. Precision past "days" is not a decision input.
+  function ago(seconds) {
+    if (!seconds) return 'at some point';
+    const mins = Math.max(0, Math.round((Date.now() / 1000 - seconds) / 60));
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+    const days = Math.round(hours / 24);
+    return `${days} day${days === 1 ? '' : 's'} ago`;
   }
 
   // Trackers to ask, from the pickers the rest of the app already uses.
@@ -945,7 +994,11 @@
       return el('div', { class: 'verdict' }, head, inspected);
     });
 
-    const uploadable = check.uploadable_to || [];
+    // Derived when absent, which it is for a check read back from storage.
+    // Taking the missing field as "nothing to upload" told you every tracker
+    // already had it while a verdict on the same screen said otherwise.
+    const uploadable = check.uploadable_to
+      || check.verdicts.filter((v) => v.status === 'missing').map((v) => v.tracker);
     target.replaceChildren(
       ...blocks,
       el(
