@@ -370,9 +370,10 @@ button.ghost { background: none; }
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  /* Clear of the search bar directly above it: the two were touching, and a
-     button that close to an input reads as part of it. */
-  margin: 18px 0 16px;
+  /* Clear of the search bar directly above it. 18px was still close enough to
+     a 41px input to read as part of it; 28px is the gutter the rest of the
+     layout uses, so the strip sits with the content it belongs to. */
+  margin: 28px 0 18px;
   font-size: 12.5px;
 }
 
