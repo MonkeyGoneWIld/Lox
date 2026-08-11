@@ -313,6 +313,31 @@ def default_letter(text: str) -> str | None:
     return None
 
 
+class _Answer:
+    """A confirm result that survives not being awaited.
+
+    See :meth:`FlowPrompts._confirm`. ``bool()`` on an un-awaited coroutine is
+    always True, which is why this exists rather than an ``async def``.
+    """
+
+    __slots__ = ("_ask", "_default", "_prompt")
+
+    def __init__(self, ask: Any, default: bool, prompt: str) -> None:
+        """Initialize with the question and the answer to assume without one."""
+        self._ask = ask
+        self._default = default
+        self._prompt = prompt
+
+    def __await__(self) -> Any:
+        """Ask the browser and yield its answer."""
+        return self._ask().__await__()
+
+    def __bool__(self) -> bool:
+        """The default, for a caller that never awaited."""
+        debug.log("confirm not awaited, assuming %s: %s", self._default, self._prompt[:70], level=30)
+        return self._default
+
+
 class FlowPrompts:
     """Redirects click's prompt functions into a flow for as long as it is active."""
 
@@ -341,15 +366,32 @@ class FlowPrompts:
         self._block: dict[str, Any] | None = None
         self._file = ""
 
-    async def _confirm(self, text: str, default: bool = True, abort: bool = False, **_: Any) -> bool:
-        """Stand-in for click.confirm."""
+    def _confirm(self, text: str, default: bool = True, abort: bool = False, **_: Any) -> "_Answer":
+        """Stand-in for click.confirm, awaited or not.
+
+        The pipeline is inconsistent about this: it awaits ``click.confirm`` in
+        some places and calls it bare in at least five others -- the retagger,
+        the folder renamer, the integrity check. A plain coroutine satisfies the
+        first and silently breaks the second, because an un-awaited coroutine is
+        an object, and every object is truthy. So every one of those questions
+        answered itself "yes" no matter what it asked, and Python logged a
+        RuntimeWarning for each.
+
+        The answer returned here is awaitable *and* has a truth value. Awaited,
+        it asks. Used as a bare condition, it is the default the caller passed,
+        which is the answer that call site documents for itself.
+        """
         prompt = strip_ansi(text).strip()
         debug.event("upload.prompt", kind="confirm", prompt=prompt[:80])
         tables, self._tables, self._block = self._tables, [], None
-        answer = await self.flow.confirm(prompt, default=bool(default), tables=tables)
-        if abort and not answer:
-            raise click.Abort
-        return answer
+
+        async def ask() -> bool:
+            answer = await self.flow.confirm(prompt, default=bool(default), tables=tables)
+            if abort and not answer:
+                raise click.Abort
+            return answer
+
+        return _Answer(ask, bool(default), prompt)
 
     async def _prompt(self, text: str, default: Any = None, **_: Any) -> Any:
         """Stand-in for click.prompt.
