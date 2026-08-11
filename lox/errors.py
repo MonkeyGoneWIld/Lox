@@ -84,3 +84,13 @@ class CRCMismatchError(Exception):
     """Raised when CRC values don't match between log and audio files."""
 
     pass
+
+
+class IntegrityCheckError(Exception):
+    """Raised when there is nothing at a path for the integrity check to read.
+
+    Carries the path, because the alternative was a bare ``click.Abort`` that
+    ended the upload with nothing on screen explaining it.
+    """
+
+    pass

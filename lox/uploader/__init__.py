@@ -19,6 +19,7 @@ from lox.checks.integrity import (
 from lox.checks.logs import check_log_cambia
 from lox.checks.upconverts import upload_upconvert_test
 from lox.common import commandgroup
+from lox.common.prompts import confirm as ask_confirm
 from lox.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
 from lox.converter.downconverting import (
     convert_folder,
@@ -320,7 +321,7 @@ async def upload(
 
         if rls_data["encoding"] == "24bit Lossless" and not skip_up:
             if not cfg.upload.yes_all:
-                if click.confirm(
+                if await ask_confirm(
                     click.style("\n24bit detected. Do you want to check whether might be upconverted?", fg="magenta"),
                     default=True,
                 ):
@@ -341,7 +342,7 @@ async def upload(
                             raise click.Abort() from e
                         except CRCMismatchError as e:
                             click.secho("Error: CRC mismatch between log and audio files!", fg="red", bold=True)
-                            if not click.confirm(
+                            if not await ask_confirm(
                                 click.style(
                                     "Log file CRC does not match audio files. Do you want to continue upload anyway?",
                                     fg="magenta",
@@ -489,7 +490,7 @@ async def upload(
 
             await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
 
-            if cfg.upload.yes_all or click.confirm(
+            if cfg.upload.yes_all or await ask_confirm(
                 click.style("\nWould you like to check downconversion options?", fg="magenta"),
                 default=True,
             ):
@@ -566,14 +567,14 @@ async def edit_metadata(
     while True:
         metadata = await review_metadata(metadata, metadata_validator)
         if not metadata["scene"]:
-            tag_files(path, tags, metadata, auto_rename)
+            await tag_files(path, tags, metadata, auto_rename)
 
         tags = await check_tags(path)
         if not metadata["scene"] and recompress:
             await recompress_path(path)
-        path = rename_folder(path, metadata, auto_rename)
+        path = await rename_folder(path, metadata, auto_rename)
         if not metadata["scene"]:
-            rename_files(path, tags, metadata, auto_rename, spectral_ids, source)
+            await rename_files(path, tags, metadata, auto_rename, spectral_ids, source)
         await check_folder_structure(path, metadata["scene"])
 
         if not skip_integrity_check:
@@ -591,7 +592,7 @@ async def edit_metadata(
                 raise click.Abort()
             if not result[0] and (
                 cfg.upload.yes_all
-                or click.confirm(
+                or await ask_confirm(
                     click.style("\nDo you want to sanitize this upload?", fg="magenta"),
                     default=True,
                 )
@@ -602,7 +603,7 @@ async def edit_metadata(
                 else:
                     click.secho("Some files failed sanitization", fg="red", bold=True)
 
-        if cfg.upload.yes_all or click.confirm(
+        if cfg.upload.yes_all or await ask_confirm(
             click.style("\nWould you like to upload the torrent? (No to re-run metadata section)", fg="magenta"),
             default=True,
         ):
@@ -654,7 +655,7 @@ async def last_min_dupe_check(gazelle_site, searchstrs):
     recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs)
     if recent_uploads:
         print_recent_upload_results(gazelle_site, recent_uploads, " / ".join(searchstrs))
-        if not click.confirm(
+        if not await ask_confirm(
             click.style(
                 "\nWould you still like to upload?",
                 fg="red",
@@ -808,7 +809,7 @@ async def prompt_downconversion_choice(rls_data, track_data):
             if selected_tasks:
                 display_names = [task["name"] for task in selected_tasks]
                 click.secho(f"\nSelected formats: {', '.join(display_names)}", fg="green")
-                if click.confirm(click.style("Confirm selection?", fg="magenta"), default=True):
+                if await ask_confirm(click.style("Confirm selection?", fg="magenta"), default=True):
                     break
             else:
                 break

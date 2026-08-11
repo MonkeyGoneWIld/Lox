@@ -10,7 +10,7 @@ from torf import Torrent
 from lox import cfg
 from lox.common import str_to_int_if_int
 from lox.constants import ARTIST_IMPORTANCES
-from lox.errors import RequestError
+from lox.errors import RequestError, UploadError
 from lox.sources import SOURCE_ICONS
 from lox.tagger.sources import METASOURCES
 from lox.uploader.spectrals import (
@@ -56,7 +56,7 @@ async def prepare_and_upload(
     Returns:
         Tuple of (torrent_id, group_id, torrent_path, torrent_content).
     Raises:
-        SystemExit: If upload fails.
+        UploadError: If the tracker rejects the upload.
     """
     if not group_id:
         data = compile_data_new_group(
@@ -101,7 +101,11 @@ async def prepare_and_upload(
         return torrent_id, int(group_id) if group_id else 0, torrent_path, torrent_content
     except RequestError as e:
         click.secho(str(e), fg="red", bold=True)
-        raise SystemExit(1) from e
+        # Not SystemExit: this runs inside the web server, where exiting the
+        # process over one tracker rejecting one torrent takes lox down and
+        # tells the user nothing. As an error it reaches the flow, which shows
+        # the tracker's own reason and leaves the other trackers to run.
+        raise UploadError(f"{gazelle_site.site_code} rejected the upload: {e}") from e
 
 
 def concat_track_data(tags: dict[str, Any], audio_info: dict[str, Any]) -> dict[str, Any]:

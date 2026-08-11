@@ -9,6 +9,7 @@ import asyncclick as click
 import msgspec
 
 from lox import cfg
+from lox.common.prompts import confirm as ask_confirm
 from lox.constants import (
     ARROWS,
     BLACKLISTED_CHARS,
@@ -25,7 +26,7 @@ class Change(msgspec.Struct, frozen=True):
     new: Any
 
 
-def tag_files(path, tags, metadata, auto_rename):
+async def tag_files(path, tags, metadata, auto_rename):
     """
     Wrapper function that calls the functions that create and print the
     proposed changes, and then prompts for confirmation to retag the file.
@@ -36,7 +37,7 @@ def tag_files(path, tags, metadata, auto_rename):
     album_changes = collect_album_data(metadata)
     track_changes = create_track_changes(tags, metadata)
     print_changes(album_changes, track_changes, next(iter(tags.values())))
-    if auto_rename or cfg.upload.yes_all or click.confirm(
+    if auto_rename or cfg.upload.yes_all or await ask_confirm(
         click.style("\nWould you like to auto-tag the files with the updated metadata?", fg="magenta"),
         default=True,
     ):
@@ -216,7 +217,7 @@ def retag_files(path, album_changes, track_changes):
     click.secho("Retagged files.", fg="green")
 
 
-def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
+async def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
     """
     Call functions that generate the proposed changes, then print and prompt
     for confirmation. Apply the changes if user agrees.
@@ -250,7 +251,7 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
 
     if to_rename:
         print_filenames(to_rename)
-        if auto_rename or cfg.upload.yes_all or click.confirm(
+        if auto_rename or cfg.upload.yes_all or await ask_confirm(
             click.style("\nWould you like to rename the files?", fg="magenta"),
             default=True,
         ):
