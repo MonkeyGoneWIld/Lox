@@ -25,7 +25,7 @@ from urllib.parse import quote
 import asyncclick as click
 
 from lox import debug
-from lox.flow import Flow
+from lox.flow import Flow, Step
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -70,7 +70,19 @@ _BLOCK_HEADS = {
     "previous metadata": ("previous", "Previous metadata"),
     "pending metadata": ("pending", "Pending metadata"),
     "torrents in this group": ("torrents", "Torrents already in this group"),
+    # Without this the "old >>> new" lines look like numbered result rows and
+    # became option buttons on whatever question came next, which is how a
+    # rename ended up as a row of filenames beside "upload to an existing
+    # group?".
+    "proposed filename changes": ("renames", "Proposed filename changes"),
+    "proposed folder name": ("renames", "Proposed folder name"),
+    # The dry run prints the whole payload it would have posted. That is the
+    # answer to "what would this have done", so it is kept rather than scrolled
+    # past in the log.
+    "would have posted": ("dryrun", "What would have been posted"),
 }
+_DRY_FIELD = re.compile(r"^\s{2}(\S[\S ]*?)\s{2,}(.+?)\s*$")
+_RENAME_LINE = re.compile(r"^(?P<old>.+?)\s+>>>\s+(?P<new>.+?)\s*$")
 # "> 2025 / Deluxe / 602488195980 / WEB / AAC / 256" -- year, then any number of
 # edition and catalogue-number parts, then media, format and encoding. The three
 # that matter for deciding whether your upload duplicates one of these are the
@@ -96,6 +108,83 @@ def _spectrals_module() -> Any:
 def strip_ansi(text: str) -> str:
     """Remove colour codes so prompt text can be shown as plain text."""
     return _ANSI.sub("", str(text or ""))
+
+
+ARTIST_ROLES = ("main", "guest", "composer", "conductor", "dj", "remixer", "producer", "arranger")
+"""Roles a credit can carry, in the order the trackers list them."""
+
+_ARTIST_LINE = re.compile(r"^(?P<name>.+?)\s*\((?P<role>[^()]+)\)\s*$")
+_ALIAS_MARKER = "Refer to README for syntax"
+
+_EDIT_TITLES = {
+    "artists": "Artists",
+    "aliases": "Artist aliases",
+    "title": "Title",
+    "list": "Values",
+    "json": "Tracks",
+    "text": "Edit",
+}
+_EDIT_HELP = {
+    "artists": "Add, remove or re-credit. Roles are the ones the trackers accept.",
+    "aliases": "Rename an artist for this upload, or leave the new name blank to drop the credit.",
+    "list": "One per line. Blank rows are dropped.",
+    "json": "Edited as JSON because the track map has no simpler shape.",
+}
+
+
+def _editor_shape(text: str, extension: str) -> tuple[str, list[dict[str, Any]]]:
+    """Work out what kind of thing is being edited, and its current contents.
+
+    Args:
+        text: What the pipeline handed to the editor.
+        extension: The temp-file extension it asked for.
+
+    Returns:
+        A shape name and the rows the UI should render.
+    """
+    if extension == ".json":
+        return "json", [{"value": text}]
+
+    if _ALIAS_MARKER in text:
+        names = [n.strip() for n in text.split(_ALIAS_MARKER)[0].split("\n") if n.strip()]
+        return "aliases", [{"name": n, "alias": ""} for n in names]
+
+    lines = [line for line in text.split("\n") if line.strip()]
+    if lines and all(_ARTIST_LINE.match(line) for line in lines):
+        rows = []
+        for line in lines:
+            match = _ARTIST_LINE.match(line)
+            assert match is not None  # every line matched above
+            rows.append({"name": match["name"].strip(), "role": match["role"].strip().lower()})
+        return "artists", rows
+
+    if len(lines) <= 1 and "\n" not in text.strip():
+        return "title", [{"value": text.strip()}]
+
+    return "list", [{"value": line.strip()} for line in lines]
+
+
+def _editor_text(shape: str, answer: Any, original: str) -> str:
+    """Turn the form's answer back into the text the pipeline parses."""
+    if shape in ("json", "title", "text"):
+        return str(answer if answer is not None else original)
+
+    rows = answer if isinstance(answer, list) else []
+    if shape == "artists":
+        return "\n".join(
+            f"{r.get('name', '').strip()} ({(r.get('role') or 'main').strip().lower()})"
+            for r in rows
+            if r.get("name", "").strip()
+        )
+    if shape == "aliases":
+        # The parser splits on the marker and reads "existing --> new" lines.
+        pairs = "\n".join(
+            f"{r.get('name', '').strip()} --> {r.get('alias', '').strip()}"
+            for r in rows
+            if r.get("name", "").strip() and (r.get("alias", "").strip() or r.get("drop"))
+        )
+        return f"{_ALIAS_MARKER}\n\n{pairs}"
+    return "\n".join(str(r.get("value", "")).strip() for r in rows if str(r.get("value", "")).strip())
 
 
 def parse_extra_options(text: str) -> list[dict[str, Any]]:
@@ -150,6 +239,11 @@ def parse_options(text: str) -> list[dict[str, Any]]:
         if not rest:
             label = _BARE_LETTERS.get(letter.lower(), label)
 
+        # "Reopen spectrals" reran the terminal viewer. The images are on the
+        # page already, so the button did nothing you could see.
+        if "reopen" in label.lower():
+            continue
+
         options.append(
             {
                 "value": letter.lower(),
@@ -191,6 +285,8 @@ class FlowPrompts:
         # prints a tag diff and a metadata comparison as prose; both are tables
         # and are far easier to check as tables.
         self._tables: list[dict[str, Any]] = []
+        # What a dry run said it would post, kept for the result panel.
+        self.dry_run_payload: dict[str, str] = {}
         self._block: dict[str, Any] | None = None
         self._file = ""
 
@@ -390,6 +486,28 @@ class FlowPrompts:
             )
             return True
 
+        if self._block["kind"] == "dryrun":
+            field = _DRY_FIELD.match(text)
+            if not field:
+                return False
+            self._block["rows"].append(
+                {"group": "", "label": field[1].strip(), "before": field[2].strip(),
+                 "after": "", "changed": False}
+            )
+            # Kept for the result summary as well as the question it sits under.
+            self.dry_run_payload[field[1].strip()] = field[2].strip()
+            return True
+
+        if self._block["kind"] == "renames":
+            rename = _RENAME_LINE.match(text)
+            if not rename:
+                return False
+            self._block["rows"].append(
+                {"group": "", "label": "", "before": rename["old"].strip(),
+                 "after": rename["new"].strip(), "changed": True}
+            )
+            return True
+
         if self._block["kind"] in ("tags", "album_tags"):
             header = _FILE_HEADER.match(text)
             if header:
@@ -470,6 +588,37 @@ class FlowPrompts:
             )
         return list(grouped.values())
 
+    async def _edit(self, text: Any = "", extension: str = ".txt", **_: Any) -> str | None:
+        """Stand-in for click.edit.
+
+        The pipeline edits metadata by shelling out to ``$EDITOR``. In a
+        container that is vim with no terminal attached: it prints "Output is
+        not to a terminal" and blocks forever, which is what made an upload
+        freeze the moment you chose a field to edit.
+
+        Each blob it edits has a known shape, so instead of a text box this
+        publishes a typed form -- artist rows with a role each, a list of
+        genres, a title -- and serialises the answer back into exactly the text
+        the pipeline's parser expects. It never learns the difference.
+        """
+        original = "" if text is None else str(text)
+        shape, fields = _editor_shape(original, extension)
+        debug.event("upload.edit", shape=shape, chars=len(original))
+
+        answer = await self.flow.ask(
+            Step(
+                "edit",
+                _EDIT_TITLES.get(shape, "Edit"),
+                detail=_EDIT_HELP.get(shape, ""),
+                options=fields,
+                default=original,
+                edit_shape=shape,
+            )
+        )
+        if answer is None:
+            return None
+        return _editor_text(shape, answer, original)
+
     async def _view_spectrals(self, spectrals_path: str, _all_spectral_ids: dict[int, str]) -> None:
         """Stand in for the pipeline's spectral viewer.
 
@@ -495,6 +644,9 @@ class FlowPrompts:
             ("prompt", self._prompt),
             ("echo", self._echo),
             ("secho", self._echo),
+            # Without this the pipeline shells out to vim, which in a container
+            # has no terminal and blocks the upload forever.
+            ("edit", self._edit),
         ):
             self._saved[name] = getattr(click, name)
             setattr(click, name, replacement)
@@ -547,7 +699,7 @@ async def run_upload(
     debug.log("upload start tracker=%s folder=%s", tracker, folder, level=20)
 
     gazelle = lox.trackers.get_class(tracker)()
-    with FlowPrompts(flow, folder):
+    with FlowPrompts(flow, folder) as prompts:
         await run_pipeline(
             gazelle,
             folder,
@@ -560,6 +712,7 @@ async def run_upload(
         )
 
     flow.progress(f"Finished {tracker}", 100.0)
+    return prompts.dry_run_payload
     debug.log("upload finished tracker=%s folder=%s", tracker, folder, level=20)
     return {"tracker": tracker, "folder": folder}
 
@@ -707,8 +860,8 @@ async def _upload_each(
                 continue
 
         try:
-            await run_upload(flow, target, tracker, source=source, auto_rename=auto_rename)
-            outcomes.append({"tracker": tracker, "ok": True})
+            posted = await run_upload(flow, target, tracker, source=source, auto_rename=auto_rename)
+            outcomes.append({"tracker": tracker, "ok": True, "folder": target, "would_post": posted})
         except click.Abort:
             flow.note(f"{tracker}: aborted", "warning")
             outcomes.append({"tracker": tracker, "ok": False, "error": "aborted"})

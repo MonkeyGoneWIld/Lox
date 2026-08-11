@@ -34,7 +34,10 @@ async def main() -> int:
         "[y]es, [N]o, [r]eopen spectrals, [a]bort, [d]elete music folder\x1b[0m"
     )
     options = parse_options(lossy)
-    check("lossy prompt yields five options", len(options) == 5, str([o["value"] for o in options]))
+    # Four, not five: "reopen spectrals" reran the terminal viewer, and the
+    # spectrals are already on the page.
+    check("lossy prompt yields the four answers that do something",
+          [o["value"] for o in options] == ["y", "n", "a", "d"], str([o["value"] for o in options]))
     check("destructive answers marked", [o["value"] for o in options if o["danger"]] == ["a", "d"])
     check("capitalised initial is the default", default_letter(lossy) == "n")
 
@@ -339,6 +342,62 @@ async def main() -> int:
         check("the stand-in does not raise where the real one would", True)
     check("the original viewer is restored afterwards",
           spectrals_module.view_spectrals is original_viewer)
+
+    # --- the editor is a form, not vim --------------------------------
+    # click.edit shells out to $EDITOR, which in a container is vim with no
+    # terminal: it blocks forever and the upload hangs. Each blob it edits has
+    # a known shape, so each becomes a form that serialises back to exactly the
+    # text the pipeline's own parser expects.
+    from lox.upload_flow import _editor_shape, _editor_text
+
+    shape, rows = _editor_shape("Mohamed Hamaki (main)\nSherine (main)", ".txt")
+    check("credits are recognised", shape == "artists", shape)
+    check("names and roles are split out",
+          rows == [{"name": "Mohamed Hamaki", "role": "main"}, {"name": "Sherine", "role": "main"}], str(rows))
+    rows[1]["role"] = "guest"
+    rows.append({"name": "New Guy", "role": "remixer"})
+    check("edited credits serialise back to the pipeline's format",
+          _editor_text(shape, rows, "") == "Mohamed Hamaki (main)\nSherine (guest)\nNew Guy (remixer)",
+          _editor_text(shape, rows, ""))
+
+    check("a single line is a title", _editor_shape("Sammaouny", ".txt")[0] == "title")
+    check("several plain lines are a list", _editor_shape("Pop\nElectronic", ".txt")[0] == "list")
+    check("json stays json", _editor_shape('{"1": {}}', ".json")[0] == "json")
+
+    shape, rows = _editor_shape("Pop\nElectronic", ".txt")
+    rows.append({"value": "House"})
+    check("a list serialises one per line", _editor_text(shape, rows, "") == "Pop\nElectronic\nHouse")
+    check("blank rows are dropped",
+          _editor_text("list", [{"value": "Pop"}, {"value": "  "}], "") == "Pop")
+
+    # --- filename changes are a table, not options --------------------
+    flow10 = Flow("upload", "rename")
+    p10 = FlowPrompts(flow10)
+
+    async def rename():
+        p10._echo("Proposed filename changes:")
+        p10._echo("   01. Beyoulolek Eih.flac >>> 01. Mohamed Hamaki - Beyoulolek Eih.flac")
+        p10._echo("   02. Mesheety.flac >>> 02. Mohamed Hamaki - Mesheety.flac")
+        p10._echo("")
+        return await p10._confirm("Would you like to rename the files?", default=True)
+
+    task10 = asyncio.create_task(rename())
+    step10 = await wait_for_step(flow10)
+    renames = next((t for t in step10.tables if t["kind"] == "renames"), None)
+    check("filename changes become a table", renames is not None, str([t["kind"] for t in step10.tables]))
+    check("old and new are separate columns",
+          renames["rows"][0]["before"] == "01. Beyoulolek Eih.flac"
+          and renames["rows"][0]["after"] == "01. Mohamed Hamaki - Beyoulolek Eih.flac",
+          str(renames["rows"][0]))
+    check("they are not offered as options either",
+          not any(">>>" in str(o.get("label", "")) for o in step10.options), str(step10.options))
+    flow10.answer(step10.id, True)
+    await asyncio.wait_for(task10, timeout=2)
+
+    # --- reopen spectrals is gone -------------------------------------
+    lossy_options = [o["value"] for o in parse_options(
+        "Is this release lossy mastered? [y]es, [N]o, [r]eopen spectrals, [a]bort")]
+    check("the reopen button is not offered", "r" not in lossy_options, str(lossy_options))
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")

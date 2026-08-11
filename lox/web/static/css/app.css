@@ -845,16 +845,31 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
   font-variant-numeric: tabular-nums;
 }
 
-.spectral-pair { display: flex; gap: 8px; flex: 1; min-width: 0; }
-.spectral-full { flex: 1 1 auto; min-width: 0; }
-.spectral-zoom { flex: 0 0 22%; min-width: 0; }
+/* Both images the same height, as upstream's page has them: the zoom is a
+   detail of the full view, and two different heights make them read as two
+   unrelated pictures. Width follows from the aspect ratio. */
+.spectral-pair { display: flex; gap: 8px; flex: 1; min-width: 0; align-items: flex-start; }
+.spectral-full, .spectral-zoom { min-width: 0; display: block; }
 .spectral-pair img {
-  width: 100%;
-  height: auto;
+  height: 280px;
+  width: auto;
+  max-width: 100%;
   display: block;
   border-radius: 6px;
   background: var(--bg);
 }
+
+/* Editing metadata as a form rather than in vim. */
+.editor-rows { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.editor-row { display: flex; align-items: center; gap: 8px; }
+.editor-row input[type="text"] { flex: 1; min-width: 0; }
+.editor-row select { width: auto; flex: none; }
+.editor-fixed { flex: 0 0 190px; font-size: 13px; overflow-wrap: anywhere; }
+.editor-arrow { color: var(--text-dim); flex: none; }
+.row-drop { flex: none; padding: 6px 12px; line-height: 1; }
+
+/* Destructive actions get air, so Delete is not a slip away from Upload. */
+.table td .danger, .dl-actions .danger { margin-left: 18px; }
 .step-controls button { margin-bottom: 4px; }
 
 /* ---------- tag diff and metadata tables ---------- */

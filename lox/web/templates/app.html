@@ -23,6 +23,7 @@
         <li><button class="nav-item" data-view="explore" role="tab">Explore</button></li>
         <li><button class="nav-item" data-view="missing" role="tab">Scan</button></li>
         <li><button class="nav-item" data-view="requests" role="tab">Requests</button></li>
+        <li><button class="nav-item" data-view="found" role="tab">Found</button></li>
         <li><button class="nav-item" data-view="downloads" role="tab">Downloads <span class="badge" id="dl-badge" hidden></span></button></li>
         <li><button class="nav-item" data-view="uploads" role="tab">Uploads</button></li>
         <li><button class="nav-item" data-view="settings" role="tab">Settings</button></li>
@@ -151,6 +152,21 @@
         <!-- The request and the release that might fill it, side by side. -->
         <div class="panel" id="request-split" hidden></div>
         <div id="requests-results"></div>
+      </section>
+
+      <section class="view" id="view-found">
+        <div class="panel">
+          <h2>Releases worth uploading</h2>
+          <p class="hint">Everything a scan or a request check matched to a Deezer release and did not find on a
+            tracker. Kept so the budget you already spent is not spent again.</p>
+          <div class="row">
+            <button class="primary" id="found-download">Download selected</button>
+            <button id="found-upload">Download &amp; upload selected</button>
+            <button id="found-recheck">Re-check on trackers</button>
+            <span class="hint" id="found-count"></span>
+          </div>
+        </div>
+        <div id="found-body"></div>
       </section>
 
       <section class="view" id="view-downloads">
