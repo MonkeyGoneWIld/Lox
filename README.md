@@ -62,14 +62,16 @@ score. Only the request fetch costs tracker budget; everything after it is free.
 
 ### Saved Deezer searches
 
-The **Missing** tab keeps re-runnable queries — new releases by genre, a chart, an album search, an artist's
-discography, a playlist, or a channel module. Running one is free and drops its albums straight into the collect step.
-Set one up for new releases in your genre and it becomes a two-click routine.
+The **Scan** tab keeps re-runnable queries — new releases by genre, a chart, an album search, an artist's
+discography, a playlist, or a channel module. Running one is free and drops its albums straight into the scan.
+Set one up for new releases in your genre and it becomes a one-click routine: paste or pick the sources, press **Scan**,
+and it expands them and checks everything that comes out against the trackers you picked, without stopping to ask you to
+confirm a list you did not choose.
 
 ### Explore
 
 Deezer channels, charts by genre, and editorial new releases. Channels are read out of the page's `__DZR_APP_STATE__`,
-which is the surface deemix never exposed. Any channel module can be sent to the Missing tab with one click.
+which is the surface deemix never exposed. Any channel module can be sent to the Scan tab with one click.
 
 ### Downloading
 

@@ -4,8 +4,8 @@
  * and has to stay editable without a Node toolchain.
  *
  * The one rule worth remembering while reading: nothing here calls a tracker
- * except missingCheck(), requestsFetch() and requestsCheck(). Everything else
- * is Deezer-only and free.
+ * except missingScan(), missingCheck(), requestsFetch() and requestsCheck(). Everything
+ * else is Deezer-only and free.
  */
 
 (() => {
@@ -631,7 +631,7 @@
                   'button',
                   {
                     class: 'ghost',
-                    title: 'Send this module to the Missing tab',
+                    title: 'Send this module to the Scan tab',
                     onclick: () => sendToMissing(`https://www.deezer.com/en/channels/module/${section.id}`),
                   },
                   'Scan module',
@@ -702,7 +702,7 @@
     const box = $('#missing-sources');
     box.value = box.value ? `${box.value.trim()}\n${url}` : url;
     setView('missing');
-    toast('Added to the Missing tab. Nothing has touched a tracker yet.');
+    toast('Added to the Scan tab. Nothing has touched a tracker yet.');
   }
 
   // ---------------------------------------------------------------- detail
@@ -1327,14 +1327,19 @@
 
   // ---------------------------------------------------------------- missing
 
-  async function missingCollect() {
+  // One press. Expanding the sources and checking what comes out were two
+  // buttons with a list of every album in between, all of it ticked, waiting
+  // for you to press the second one -- a question with one sensible answer is
+  // not worth asking. Expanding is free and checking is not, so the cost is
+  // still stated, and both halves can be stopped while they run.
+  async function missingScan() {
     const sources = $('#missing-sources').value.split('\n').map((s) => s.trim()).filter(Boolean);
     if (!sources.length) return toast('Add at least one URL', 'bad');
 
     const log = $('#missing-collect-log');
     log.hidden = false;
-    log.textContent = 'Collecting…';
-    $('#missing-collect').disabled = true;
+    log.textContent = 'Expanding sources…';
+    $('#missing-scan').disabled = true;
     state.candidates = [];
 
     try {
@@ -1344,7 +1349,7 @@
       });
       // Beside the log rather than inside it: the log is written with
       // textContent, which would wipe a child button on the next tick.
-      log.after(jobCancel(job_id, 'Stop collecting'));
+      log.after(jobCancel(job_id, 'Stop'));
       followJob(job_id, {
         onUpdate: (job) => {
           state.candidates.push(...job.results);
@@ -1352,14 +1357,22 @@
           log.textContent = [jobLine(job), ...events.map((e) => `${e.source}: ${e.error || `${e.albums} albums`}`)].join('\n');
         },
         onDone: (job) => {
-          $('#missing-collect').disabled = false;
-          if (job.error) return toast(job.error, 'bad');
-          log.textContent = `Collected ${state.candidates.length} album(s) that pass every Deezer-side filter. No tracker was contacted.`;
+          if (job.error) {
+            $('#missing-scan').disabled = false;
+            return toast(job.error, 'bad');
+          }
+          log.textContent = `${state.candidates.length} album(s) after the Deezer-side filters.`;
           renderCandidates();
+          if (!state.candidates.length) {
+            $('#missing-scan').disabled = false;
+            return;
+          }
+          // Straight on to the trackers, which is what you pressed Scan for.
+          missingCheck({ all: true }).finally(() => ($('#missing-scan').disabled = false));
         },
       });
     } catch (e) {
-      $('#missing-collect').disabled = false;
+      $('#missing-scan').disabled = false;
       toast(e.message, 'bad');
     }
   }
@@ -1375,9 +1388,8 @@
 
     const trackers = [...state.missingTrackers];
     $('#missing-cost').textContent =
-      `${state.selectedCandidates.size} album(s) selected. Estimated cost: about ` +
-      `${state.selectedCandidates.size * 3} call(s) per tracker on ${trackers.join(', ') || 'no tracker'}. ` +
-      `The scan stops rather than overdraw a budget.`;
+      `${state.candidates.length} album(s) to check: about ${state.candidates.length * 3} call(s) ` +
+      `per tracker on ${trackers.join(', ') || 'no tracker'}. The scan stops rather than overdraw a budget.`;
 
     const table = $('#missing-table');
     table.replaceChildren(
@@ -1420,11 +1432,15 @@
     );
   }
 
-  async function missingCheck() {
+  // ``all`` checks everything that was just collected; without it the ticked
+  // rows are checked, which is what "Check again" on the results is for.
+  async function missingCheck({ all = false } = {}) {
     const trackers = [...state.missingTrackers];
     if (!trackers.length) return toast('Pick at least one tracker', 'bad');
-    const candidates = state.candidates.filter((c) => state.selectedCandidates.has(c.album_id));
-    if (!candidates.length) return toast('Select at least one album', 'bad');
+    const candidates = all
+      ? state.candidates
+      : state.candidates.filter((c) => state.selectedCandidates.has(c.album_id));
+    if (!candidates.length) return toast('Nothing to check', 'bad');
 
     const log = $('#missing-check-log');
     log.hidden = false;
@@ -1434,20 +1450,24 @@
     try {
       const { job_id } = await api('/api/missing/check', { method: 'POST', body: { candidates, trackers } });
       log.after(jobCancel(job_id, 'Stop checking'));
-      followJob(job_id, {
-        onUpdate: (job) => {
-          log.textContent = jobLine(job);
-          job.results.forEach(applyScanResult);
-        },
-        onDone: (job) => {
-          $('#missing-check').disabled = false;
-          refreshStatus();
-          const stopped = job.events.find((e) => e.event === 'budget_exhausted');
-          log.textContent = stopped
-            ? `Stopped early to protect the budget: ${stopped.checked} checked, ${stopped.remaining ?? '?'} left. Run again when the window rolls over.`
-            : `Done. ${job.result_count} album(s) checked.`;
-          if (job.error) toast(job.error, 'bad');
-        },
+      // Resolves when the check finishes, so a scan knows when it is over.
+      await new Promise((resolve) => {
+        followJob(job_id, {
+          onUpdate: (job) => {
+            log.textContent = jobLine(job);
+            job.results.forEach(applyScanResult);
+          },
+          onDone: (job) => {
+            $('#missing-check').disabled = false;
+            refreshStatus();
+            const stopped = job.events.find((e) => e.event === 'budget_exhausted');
+            log.textContent = stopped
+              ? `Stopped early to protect the budget: ${stopped.checked} checked, ${stopped.remaining ?? '?'} left. Run again when the window rolls over.`
+              : `Done. ${job.result_count} album(s) checked.`;
+            if (job.error) toast(job.error, 'bad');
+            resolve();
+          },
+        });
       });
     } catch (e) {
       $('#missing-check').disabled = false;
@@ -2600,8 +2620,10 @@
         loadExplore();
       }),
     );
-    $('#missing-collect').addEventListener('click', missingCollect);
-    $('#missing-check').addEventListener('click', missingCheck);
+    $('#missing-scan').addEventListener('click', missingScan);
+    // Re-checks whatever is ticked in the results, which is the only place a
+    // subset makes sense.
+    $('#missing-check').addEventListener('click', () => missingCheck());
     $('#missing-select-all').addEventListener('change', (e) => {
       state.selectedCandidates = e.target.checked ? new Set(state.candidates.map((c) => c.album_id)) : new Set();
       renderCandidates();
