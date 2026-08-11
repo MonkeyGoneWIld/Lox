@@ -1417,6 +1417,48 @@
     }
   }
 
+  // Shift-click selects the run between the row you last touched and this one,
+  // taking this row's new state -- so shift-click extends a selection and
+  // shift-unclick clears a stretch of it. Ticking fifty rows one at a time is
+  // not a decision fifty times over.
+  //
+  // Bound to click rather than change: change is not a mouse event and carries
+  // no shiftKey. The anchor lives out here because every tick re-renders the
+  // table, which would otherwise reset it on each use.
+  function rangeSelector(idsFn, selectedFn, rerender) {
+    let anchor = null;
+    return (id, event) => {
+      const ids = idsFn();
+      // Read the Set each time: these are reassigned wholesale when a scan or a
+      // load seeds a fresh selection, so a captured reference would end up
+      // writing into a Set nothing renders from.
+      const selected = selectedFn();
+      const index = ids.indexOf(id);
+      const checked = event.target.checked;
+
+      if (event.shiftKey && anchor !== null && anchor !== -1 && index !== -1 && anchor !== index) {
+        const [from, to] = anchor < index ? [anchor, index] : [index, anchor];
+        for (let i = from; i <= to; i++) {
+          checked ? selected.add(ids[i]) : selected.delete(ids[i]);
+        }
+        // Shift-clicking inside a table also drags a text selection across it.
+        document.getSelection()?.removeAllRanges();
+      } else {
+        checked ? selected.add(id) : selected.delete(id);
+      }
+
+      anchor = index;
+      rerender();
+    };
+  }
+
+  const pickCandidate = rangeSelector(
+    () => state.candidates.map((c) => c.album_id), () => state.selectedCandidates, () => renderCandidates());
+  const pickRequest = rangeSelector(
+    () => state.requestRows.map((r) => r.id), () => state.selectedRequests, () => renderRequestRows());
+  const pickFound = rangeSelector(
+    () => state.found.map((f) => f.id), () => state.selectedFound, () => renderFound());
+
   // The tick in a table header, with the third state that makes it honest: all,
   // none, or a dash for some. It reports what the rows say rather than being a
   // switch with its own opinion, so it cannot claim everything is selected when
@@ -1476,10 +1518,7 @@
               el('input', {
                 type: 'checkbox',
                 checked: state.selectedCandidates.has(c.album_id),
-                onchange: (e) => {
-                  e.target.checked ? state.selectedCandidates.add(c.album_id) : state.selectedCandidates.delete(c.album_id);
-                  renderCandidates();
-                },
+                onclick: (e) => pickCandidate(c.album_id, e),
               }),
             ),
             el(
@@ -1809,10 +1848,7 @@
                 el('input', {
                   type: 'checkbox',
                   checked: state.selectedRequests.has(r.id),
-                  onchange: (e) => {
-                    e.target.checked ? state.selectedRequests.add(r.id) : state.selectedRequests.delete(r.id);
-                    renderRequestRows();
-                  },
+                  onclick: (e) => pickRequest(r.id, e),
                 }),
               ),
               el('td', {}, el('a', {
@@ -2007,6 +2043,91 @@
             el('td', { class: 'featured-col' }, ...featuredCredits(t, album, artistLink)),
             el('td', { class: 'dur-col' }, duration(t.duration)))))),
     );
+  }
+
+  // ------------------------------------------------------------------ found
+
+  // What earlier checks already established. A scan or a request check pays
+  // tracker budget to learn "this exists on Deezer and is not on RED", and both
+  // used to throw that away the moment you left the tab.
+  async function loadFound() {
+    const body = $('#found-body');
+    body.replaceChildren(spinner('Loading'));
+    try {
+      const { found } = await api('/api/found');
+      state.found = found;
+      state.selectedFound = new Set(found.map((f) => f.id));
+      renderFound();
+    } catch (e) {
+      body.replaceChildren(empty(e.message));
+    }
+  }
+
+  function renderFound() {
+    const body = $('#found-body');
+    if (!state.found.length) {
+      body.replaceChildren(empty('Nothing yet. Run a scan or check some requests.'));
+      $('#found-count').textContent = '';
+      return;
+    }
+    $('#found-count').textContent = `${state.selectedFound.size} of ${state.found.length} selected`;
+    body.replaceChildren(
+      el(
+        'table',
+        { class: 'table' },
+        el('thead', {}, el('tr', {},
+          el('th', {}, selectAllBox(state.found.map((f) => f.id), state.selectedFound, renderFound)),
+          el('th', {}, 'Release'), el('th', {}, 'Where'), el('th', {}, 'From'), el('th', {}, 'When'))),
+        el('tbody', {}, ...state.found.map((f) =>
+          el('tr', {},
+            el('td', {}, el('input', {
+              type: 'checkbox',
+              checked: state.selectedFound.has(f.id),
+              onclick: (e) => pickFound(f.id, e),
+            })),
+            el('td', {}, el('a', {
+              href: '#',
+              onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
+            }, `${f.artist || ''} — ${f.title || ''}`)),
+            el('td', {}, (f.missing_from || []).length
+              ? el('span', { class: 'tag ok' }, `not on ${f.missing_from.join(', ')}`)
+              : el('span', { class: 'tag warn' }, `fills a ${f.tracker || ''} request`)),
+            el('td', {}, f.kind === 'request'
+              ? el('a', { href: f.request_url, target: '_blank', rel: 'noopener' }, 'request')
+              : 'scan'),
+            el('td', { class: 'card-sub' }, ago(f.checked_at)),
+          ))),
+      ),
+    );
+  }
+
+  const foundSelection = () => state.found.filter((f) => state.selectedFound.has(f.id));
+
+  // Ask the trackers again about the selection. Costs budget, so it is a button
+  // rather than something that happens when the tab opens.
+  async function recheckFound() {
+    const picked = foundSelection();
+    if (!picked.length) return toast('Nothing selected', 'bad');
+    const trackers = checkTrackers();
+    if (!trackers.length) return toast('No tracker configured', 'bad');
+
+    const candidates = picked.map((f) => ({
+      album_id: f.album_id, title: f.title, artist: f.artist, source: 'found',
+    }));
+    const body = $('#found-body');
+    try {
+      const { job_id } = await api('/api/missing/check', { method: 'POST', body: { candidates, trackers } });
+      body.before(jobCancel(job_id, 'Stop re-checking'));
+      followJob(job_id, {
+        onDone: (job) => {
+          refreshStatus();
+          toast(job.error || `Re-checked ${job.result_count} release(s)`, job.error ? 'bad' : 'ok');
+          loadFound();
+        },
+      });
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
   }
 
   // ---------------------------------------------------------------- uploads
