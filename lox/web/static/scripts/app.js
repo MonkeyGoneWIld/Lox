@@ -2595,22 +2595,46 @@
               })
               .catch(() => {});
           }
+          // The card is the answer, so the card is the button -- picking a
+          // release should not mean aiming at a small control on the far side
+          // of the row. The link out is the one thing inside it that means
+          // something else, so it stops the click travelling.
           matches.push(
             el(
               'div',
-              { class: 'match' },
+              {
+                class: 'match match-pick',
+                role: 'button',
+                tabindex: '0',
+                title: 'Use this release',
+                onclick: () => send(o.value),
+                onkeydown: (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    send(o.value);
+                  }
+                },
+              },
               el('div', { class: 'match-body' },
                 el('div', { class: 'match-title' }, o.label),
                 sub),
-              el(
-                'div',
-                { class: 'match-actions' },
-                o.url
-                  ? el('a', { class: 'filebtn', href: o.url, target: '_blank', rel: 'noopener noreferrer' },
-                      o.link_label || 'Open on tracker ↗')
-                  : null,
-                el('button', { class: 'primary', onclick: () => send(o.value) }, 'Use this group'),
-              ),
+              o.url
+                ? el(
+                    'div',
+                    { class: 'match-actions' },
+                    el(
+                      'a',
+                      {
+                        class: 'filebtn',
+                        href: o.url,
+                        target: '_blank',
+                        rel: 'noopener noreferrer',
+                        onclick: (e) => e.stopPropagation(),
+                      },
+                      o.link_label || 'Open on tracker ↗',
+                    ),
+                  )
+                : null,
             ),
           );
           return;
