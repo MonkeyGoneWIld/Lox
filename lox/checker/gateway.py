@@ -13,6 +13,7 @@ Search, Explore and download never reach a tracker. Only an explicit check does.
 """
 
 import asyncio
+import html
 import logging
 import time
 from collections import deque
@@ -127,6 +128,24 @@ class _TrackerState:
         self.consecutive_failures += 1
         if self.consecutive_failures >= self.failure_threshold:
             self.cooldown_until = now + self.cooldown
+
+
+def plain(text: Any) -> str:
+    """Decode the HTML entities a Gazelle response carries inside its JSON.
+
+    The API returns strings already escaped for a web page, so an apostrophe
+    arrives as ``&#39;`` and an accented letter as ``&aacute;``. Rendered as
+    text -- which is the only safe way to render it -- that is what you see:
+    "Live Beginnings &#39;88", "Zsoldos &Aacute;rp&aacute;d". Decoding belongs
+    here, at the point the response stops being HTML and becomes data.
+
+    Args:
+        text: A field from a tracker response.
+
+    Returns:
+        The same text with entities resolved, or an empty string for None.
+    """
+    return html.unescape(str(text)) if text else ""
 
 
 class TrackerGateway:
