@@ -1923,6 +1923,15 @@
     cell.replaceChildren(
       el('span', { class: 'tag ok' }, `${(match.confidence * 100).toFixed(0)}% match`),
       ' ',
+      // Whether the tracker already has it. A request left open after somebody
+      // uploaded the release is not worth filling twice.
+      match.already_on_tracker === true
+        ? el('a', { class: 'tag warn', href: match.tracker_group_url || '#', target: '_blank', rel: 'noopener' },
+             'already on tracker')
+        : match.already_on_tracker === false
+          ? el('span', { class: 'tag dim' }, 'not on tracker')
+          : null,
+      ' ',
       // Opens both sides rather than throwing you at Deezer: deciding whether
       // this fills that request means reading them together.
       el('button', { class: 'link', onclick: () => openRequest({ id: match.request_id, url: match.request_url }) },
@@ -2566,13 +2575,31 @@
     } else if (step.kind === 'choice') {
       step.options.forEach((o) => {
         if (o.kind === 'group') {
+          const sub = el('div', { class: 'match-sub' }, o.detail || '');
+          // The pipeline's line carries no year for a Deezer candidate, and the
+          // year is how you tell one edition from another. Deezer is free to
+          // ask, so ask it rather than leaving the field out.
+          const deezerAlbum = /deezer\.com\/album\/(\d+)/.exec(o.url || '');
+          if (deezerAlbum) {
+            api(`/api/album/${deezerAlbum[1]}`)
+              .then((album) => {
+                const facts = [
+                  album.release_date ? album.release_date.slice(0, 4) : null,
+                  album.record_type,
+                  album.label,
+                  o.detail,
+                ].filter(Boolean);
+                sub.textContent = facts.join(' · ');
+              })
+              .catch(() => {});
+          }
           matches.push(
             el(
               'div',
               { class: 'match' },
               el('div', { class: 'match-body' },
                 el('div', { class: 'match-title' }, o.label),
-                el('div', { class: 'match-sub' }, o.detail || '')),
+                sub),
               el(
                 'div',
                 { class: 'match-actions' },

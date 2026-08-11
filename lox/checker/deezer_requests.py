@@ -15,7 +15,7 @@ from typing import Any
 
 import msgspec
 
-from lox import cfg
+from lox import cfg, debug
 from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import MIN_TOTAL_SCORE, find_best_deezer_match
 from lox.checker.request_filters import build_params
@@ -52,6 +52,10 @@ class RequestMatch(msgspec.Struct):
     all_flac: bool = False
     all_readable: bool = False
     verification: dict[str, Any] = msgspec.field(default_factory=dict)
+    # Whether the tracker already has this release, and where. A request left
+    # open after somebody uploaded it is not worth filling twice.
+    already_on_tracker: bool | None = None
+    tracker_group_url: str | None = None
     formats: list[str] = msgspec.field(default_factory=list)
     media: list[str] = msgspec.field(default_factory=list)
     bitrates: list[str] = msgspec.field(default_factory=list)
@@ -286,7 +290,31 @@ class DeezerRequestChecker:
                         reason=str(e),
                     )
 
-                self.store.put("requests", key, {"status": match.status, "reason": match.reason})
+                # The whole match, not just its verdict. A fillable request is
+                # the useful half of a check -- which release fills it, where it
+                # is on Deezer, how confident the match was -- and storing only
+                # the status meant the Found tab had nothing to show.
+                self.store.put(
+                    "requests",
+                    key,
+                    {
+                        "status": match.status,
+                        "reason": match.reason,
+                        "tracker": match.tracker,
+                        "artist": match.artist,
+                        "album": match.album,
+                        "year": match.year,
+                        "bounty": match.bounty,
+                        "request_url": match.request_url,
+                        "deezer_id": match.deezer_id,
+                        "deezer_title": match.deezer_title,
+                        "deezer_artist": match.deezer_artist,
+                        "deezer_url": match.deezer_url,
+                        "confidence": match.confidence,
+                        "already_on_tracker": match.already_on_tracker,
+                        "tracker_group_url": match.tracker_group_url,
+                    },
+                )
                 results.append(match)
                 emit("result", match.as_dict())
         finally:
@@ -391,4 +419,45 @@ class DeezerRequestChecker:
 
         match.status = "fillable"
         match.reason = None
+
+        # One more question, and the one that decides whether filling is worth
+        # doing: is this release already on the tracker? A request can sit open
+        # for a release somebody uploaded since, and filling it with a duplicate
+        # helps nobody. One search, and only for a match that got this far.
+        try:
+            match.already_on_tracker = await self._on_tracker(tracker, match)
+        except Exception as e:  # noqa: BLE001 - an extra fact, never a failure
+            match.already_on_tracker = None
+            match.reason = None
+            debug.log("tracker search for request %s failed: %s", match.request_id, e, level=30)
+
         return match
+
+    async def _on_tracker(self, tracker: str, match: RequestMatch) -> bool | None:
+        """Whether the tracker already has the release this match would fill."""
+        query = " ".join(p for p in (match.deezer_artist, match.deezer_title) if p).strip()
+        if not query:
+            return None
+        data = await self.gateway.call_action(tracker, "browse", {"searchstr": query, "group_results": 1})
+        groups = (data or {}).get("results") or []
+        # Scored the same way a request is scored against Deezer, just in the
+        # other direction: the tracker's groups are the candidates here.
+        candidates = [
+            {
+                "id": group.get("groupId"),
+                "title": plain(group.get("groupName") or ""),
+                "artist": {"name": plain(group.get("artist") or "")},
+            }
+            for group in groups
+            if group.get("groupName")
+        ]
+        if not candidates:
+            return False
+
+        best, score, _ = find_best_deezer_match(
+            candidates, match.deezer_artist or "", match.deezer_title or ""
+        )
+        if best and score >= MIN_TOTAL_SCORE:
+            match.tracker_group_url = f"{self.gateway.api(tracker).base_url}/torrents.php?id={best.get('id')}"
+            return True
+        return False

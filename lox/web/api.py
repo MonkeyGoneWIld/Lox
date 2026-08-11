@@ -554,7 +554,8 @@ async def api_found(request: web.Request) -> web.Response:
         )
 
     for request_id, entry in (store.load("requests") or {}).items():
-        if not entry.get("deezer_id"):
+        # A match the tracker already has is not something to upload.
+        if not entry.get("deezer_id") or entry.get("already_on_tracker"):
             continue
         rows.append(
             {
