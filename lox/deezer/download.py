@@ -146,6 +146,10 @@ class Downloader:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
         self._listeners: list[Callable[[DownloadJob], None]] = []
+        # Downloads currently in flight, so one can be stopped without stopping
+        # the worker carrying it.
+        self._running: dict[str, asyncio.Task] = {}
+        self._stopping = False
 
     @property
     def download_dir(self) -> str:
@@ -180,11 +184,15 @@ class Downloader:
 
     async def stop(self) -> None:
         """Cancel all workers and wait for them to unwind."""
+        self._stopping = True
+        for task in self._running.values():
+            task.cancel()
         for task in self._workers:
             task.cancel()
         if self._workers:
             await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers = []
+        self._stopping = False
 
     async def enqueue(self, album_id: str | int) -> DownloadJob:
         """Queue an album for download.
@@ -229,7 +237,19 @@ class Downloader:
             True if the job was cancelled.
         """
         job = self.jobs.get(job_id)
-        if not job or job.status != "queued":
+        if not job:
+            return False
+
+        # A download in flight is a task of its own, so stopping it does not
+        # disturb the other workers. The partial folder is left where it is --
+        # deleting half a release on your behalf is not a decision to make for
+        # you, and the Downloads list offers a Delete for it.
+        task = self._running.get(job_id)
+        if task and not task.done():
+            task.cancel()
+            return True
+
+        if job.status != "queued":
             return False
         job.status = "cancelled"
         self._notify(job)
@@ -249,7 +269,23 @@ class Downloader:
             try:
                 job = self.jobs.get(job_id)
                 if job and job.status == "queued":
-                    await self._run_job(job)
+                    # Run as its own task so one job can be cancelled without
+                    # taking down the worker that happens to be carrying it.
+                    task = asyncio.ensure_future(self._run_job(job))
+                    self._running[job_id] = task
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        # A cancel aimed at this job, not at the worker: record
+                        # it and go back for the next one.
+                        if job.status not in ("done", "failed"):
+                            job.status = "cancelled"
+                            job.finished = time.time()
+                            self._notify(job)
+                        if self._stopping:
+                            raise
+                    finally:
+                        self._running.pop(job_id, None)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 - a bad job must not kill the worker
