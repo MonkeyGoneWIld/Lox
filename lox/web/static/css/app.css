@@ -388,17 +388,7 @@ button.ghost { background: none; }
 .crumb.current { color: var(--text); font-weight: 600; cursor: default; }
 .crumb-sep { color: var(--text-dim); }
 
-/* The tracker's own page, framed beside the release. */
 .split-page { display: block; }
-.tracker-frame {
-  width: 100%;
-  height: 72vh;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: #fff;
-}
-
-.blocked-note { color: var(--warn); }
 .split-meta { min-width: 0; flex: 1 1 220px; }
 .split-actions { margin: 14px 0; }
 
@@ -411,6 +401,54 @@ button.ghost { background: none; }
 .album-title-sm { margin: 0 0 4px; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
 .split-tracks { margin: 12px 0 0; padding-left: 22px; font-size: 12.5px; color: var(--text-dim); }
 .split-tracks li { padding: 2px 0; }
+
+/* The request itself, drawn from the tracker's own record because the tracker
+   will not let its page be framed. */
+.request-view { display: flex; flex-direction: column; gap: 16px; }
+.request-head { display: flex; gap: 14px; align-items: flex-start; }
+.request-cover { width: 108px; border-radius: 8px; flex: none; background: var(--bg-input); }
+.request-headings { min-width: 0; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.request-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.request-section > h4 { margin: 0 0 7px; font-size: 12.5px; text-transform: uppercase;
+                        letter-spacing: 0.05em; color: var(--text-dim); }
+
+/* Label and value in two columns, so the terms line up and can be scanned
+   rather than read as a paragraph. */
+.facts { display: grid; grid-template-columns: minmax(120px, auto) 1fr; gap: 5px 14px; font-size: 12.5px; }
+.fact-label { color: var(--text-dim); }
+.fact-value { overflow-wrap: anywhere; }
+
+.comments { display: flex; flex-direction: column; gap: 10px; }
+.comment { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg-input); }
+.comment-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+                font-size: 12px; margin-bottom: 6px; }
+.comment-head .dim { color: var(--text-dim); }
+
+/* Rendered BBCode. The tracker's markup is someone else's, so it is boxed in
+   here: it cannot widen the pane and its images cannot overflow it. */
+.bb { font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.bb img.bb-img { max-width: 100%; height: auto; border-radius: 6px; margin: 6px 0; }
+.bb .bb-quote {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-raised);
+  border-radius: 0 6px 6px 0;
+}
+.bb .bb-quote cite { display: block; font-style: normal; font-weight: 600; margin-bottom: 4px; }
+.bb .bb-code {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px 11px;
+  overflow-x: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.bb .bb-important { color: var(--warn); }
+.bb .bb-list { margin: 6px 0; padding-left: 22px; }
+.bb .bb-spoiler summary { cursor: pointer; color: var(--text-dim); }
+.bb hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 
 /* Header ticks read the rows: all, none, or a dash for some. */
 .table thead input[type="checkbox"] { cursor: pointer; }

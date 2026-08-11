@@ -460,14 +460,20 @@
   // is kept: the actual nodes, not a note to re-run the search. Restoring them
   // brings back the scroll position, the selection ticks and the section you
   // were in, and costs no API calls.
-  function pushPane(label) {
+  // `from` is the view the pane belongs to. Opening a request from the Requests
+  // tab shows it in the search pane, so without this Back would restore
+  // whatever the search pane happened to hold and leave you on the wrong tab --
+  // or, if you had never searched, push nothing at all and leave no way back.
+  function pushPane(label, from) {
     const pane = $('#search-results');
-    if (!pane.childNodes.length) return;
     state.paneStack.push({
       cls: pane.className,
       nodes: [...pane.childNodes],
       scroll: window.scrollY,
-      label: label || 'Back',
+      // A pane borrowed from another tab is named after that tab. Calling it
+      // "Results" would point at a search the user never ran.
+      label: from && from !== 'search' ? viewLabel(from) : label || 'Back',
+      view: from || state.view,
     });
     if (state.paneStack.length > 12) state.paneStack.shift();
   }
@@ -478,6 +484,7 @@
     if (index < 0 || index >= state.paneStack.length) return;
     const target = state.paneStack[index];
     state.paneStack.length = index;
+    if (target.view && target.view !== state.view) setView(target.view);
     const pane = $('#search-results');
     pane.className = target.cls;
     pane.replaceChildren(...target.nodes);
@@ -485,6 +492,11 @@
   }
 
   const popPane = () => popPaneTo(state.paneStack.length - 1);
+
+  // What a tab is called, for the crumb that goes back to it.
+  function viewLabel(view) {
+    return $(`.nav-item[data-view="${view}"]`)?.textContent.trim() || 'Back';
+  }
 
   // A name for the pane being left behind, taken from what it is showing.
   function paneLabel() {
@@ -497,12 +509,15 @@
   // Where you are and how you got here, each step clickable. A lone Back button
   // says there is a way out but not where it goes: two hops in, from a search
   // through an artist to a release, "Back" is a guess.
+  // Never returns null. It used to, when nothing had been pushed yet, and
+  // `replaceChildren(null, ...)` writes the string "null" into the page -- so
+  // opening a request straight from the Requests tab, with no search behind it,
+  // put the word "null" where the back button should have been.
   function breadcrumbs(current) {
-    if (!state.paneStack.length) return null;
     const trail = [];
     state.paneStack.forEach((entry, i) => {
       trail.push(
-        el('button', { class: 'crumb', onclick: () => popPaneTo(i) }, entry.label),
+        el('button', { type: 'button', class: 'crumb', onclick: () => popPaneTo(i) }, entry.label),
         el('span', { class: 'crumb-sep' }, '›'),
       );
     });
@@ -510,7 +525,9 @@
     return el(
       'nav',
       { class: 'breadcrumbs', 'aria-label': 'Breadcrumb' },
-      el('button', { class: 'ghost back-btn', onclick: popPane }, '← Back'),
+      state.paneStack.length
+        ? el('button', { type: 'button', class: 'ghost back-btn', onclick: popPane }, '← Back')
+        : null,
       ...trail,
     );
   }
@@ -686,8 +703,11 @@
   }
 
   async function openArtist(artistId) {
+    // Read before the switch: an artist opened from Explore or Found has to
+    // come back to Explore or Found, not to the search pane it borrowed.
+    const from = state.view;
     setView('search');
-    pushPane(paneLabel());
+    pushPane(paneLabel(), from);
     // Its own sections, each with an inner grid, so the pane itself is a plain
     // block here.
     const results = searchPane('artist-page');
@@ -748,8 +768,9 @@
   // deciding needs the tracklist, the credits and the tracker verdict side by
   // side rather than a 380px column you scroll through a slot at a time.
   async function openAlbum(albumId) {
+    const from = state.view;
     setView('search');
-    pushPane(paneLabel());
+    pushPane(paneLabel(), from);
     const pane = searchPane('album-page');
     pane.replaceChildren(spinner('Loading album'));
 
@@ -1943,20 +1964,23 @@
 
   // ------------------------------------------------------- request compare
 
-  // The tracker's own page and the release that might fill it, side by side.
-  // The tracker half is the real page in a frame: comparing a request against a
-  // release means reading the request as its author wrote it, not a summary of
-  // it. Gazelle may refuse to be framed, so the frame is never the only way in
-  // -- the button above it always opens the same page in a tab.
+  // The request and the release that might fill it, side by side.
+  //
+  // The tracker's own page was in a frame here, and could never have worked:
+  // RED and OPS both send X-Frame-Options, which is the browser refusing on the
+  // tracker's instruction, and no attribute on our side overrides it. The
+  // request is fetched and drawn instead -- the same record the tracker builds
+  // its page from, description and comments included -- and the link out is
+  // still there for the parts only the live page has, like voting.
   async function openRequest(row) {
     const match = state.requestMatches.get(String(row.id));
     const url = row.url || match?.request_url || '';
-    const tracker = match?.tracker || state.requestsTracker || 'the tracker';
+    const tracker = match?.tracker || state.requestsTracker || '';
+    const from = state.view;
 
     setView('search');
-    pushPane(paneLabel());
+    pushPane(paneLabel(), from);
     const pane = searchPane('split-page');
-    pane.replaceChildren(spinner('Loading'));
 
     const left = el('div', { class: 'split-side' });
     const right = el('div', { class: 'split-side' });
@@ -1965,44 +1989,153 @@
       el('div', { class: 'split' }, left, right),
     );
 
-    const frame = el('iframe', {
-      class: 'tracker-frame', src: url, referrerpolicy: 'no-referrer',
-      sandbox: 'allow-same-origin allow-scripts allow-popups allow-forms',
-    });
-    const blocked = el('p', { class: 'hint blocked-note', hidden: true },
-      'The tracker refused to be embedded. Use the button above to open it in a tab.');
-    // Cross-origin frames do not report failure, so this is a deadline rather
-    // than an error handler: if nothing has painted by now, say so.
-    let loaded = false;
-    frame.addEventListener('load', () => (loaded = true));
-    setTimeout(() => { if (!loaded) blocked.hidden = false; }, 2500);
-
     left.replaceChildren(
       el('div', { class: 'row split-head' },
-        el('h3', { class: 'section-title' }, `Request on ${tracker}`),
-        url ? el('a', { class: 'filebtn', href: url, target: '_blank', rel: 'noopener' }, 'Open in a tab ↗') : null),
-      blocked,
-      url ? frame : empty('This request has no URL.'),
+        el('h3', { class: 'section-title' }, `Request on ${tracker || 'the tracker'}`),
+        url ? el('a', { class: 'filebtn', href: url, target: '_blank', rel: 'noopener noreferrer' },
+                 'Open in a tab ↗') : null),
+      spinner('Loading the request'),
     );
 
-    if (!match?.deezer_id) {
-      right.replaceChildren(
-        el('h3', { class: 'section-title' }, 'Deezer release'),
-        empty('No Deezer match yet. Check this request to find one.'),
-      );
-      return;
-    }
+    const deezerSide = (async () => {
+      if (!match?.deezer_id) {
+        right.replaceChildren(
+          el('h3', { class: 'section-title' }, 'Deezer release'),
+          empty('No Deezer match yet. Check this request to find one.'),
+        );
+        return;
+      }
+      right.replaceChildren(spinner('Loading release'));
+      try {
+        const album = await api(`/api/album/${match.deezer_id}`);
+        right.replaceChildren(el('h3', { class: 'section-title' }, 'Deezer release'), albumPanel(album));
+      } catch (e) {
+        right.replaceChildren(el('h3', { class: 'section-title' }, 'Deezer release'), empty(e.message));
+      }
+    })();
 
-    right.replaceChildren(spinner('Loading release'));
-    try {
-      const album = await api(`/api/album/${match.deezer_id}`);
-      right.replaceChildren(
-        el('h3', { class: 'section-title' }, 'Deezer release'),
-        albumPanel(album),
-      );
-    } catch (e) {
-      right.replaceChildren(el('h3', { class: 'section-title' }, 'Deezer release'), empty(e.message));
+    const head = left.firstChild;
+    if (!tracker || !row.id) {
+      left.replaceChildren(head, empty('This request has no tracker or id to look up.'));
+    } else {
+      try {
+        const detail = await api(
+          `/api/requests/detail?tracker=${encodeURIComponent(tracker)}&id=${encodeURIComponent(row.id)}`);
+        left.replaceChildren(head, requestPanel(detail));
+      } catch (e) {
+        left.replaceChildren(head, empty(e.message));
+      }
     }
+    await deezerSide;
+  }
+
+  // A request as the tracker holds it: the terms it will accept, what it is
+  // worth, who wants it, the description, and every comment on it.
+  function requestPanel(d) {
+    const facts = [];
+    const fact = (label, value) => {
+      if (value === null || value === undefined || value === '' || value === 0) return;
+      facts.push(el('div', { class: 'fact-label' }, label), el('div', { class: 'fact-value' }, value));
+    };
+    const list = (label, values) => fact(label, (values || []).join(', '));
+
+    fact('Requested by', d.requestor
+      ? el('a', { class: 'plain', href: `${trackerBase(d.url)}/user.php?id=${d.requestor_id}`,
+                  target: '_blank', rel: 'noopener noreferrer' }, d.requestor)
+      : '');
+    fact('Created', when(d.created));
+    fact('Category', d.category);
+    fact('Release type', d.release_type);
+    fact('Record label', d.record_label);
+    fact('Catalogue number', d.catalogue_number);
+    fact('Release name', d.release_name);
+    fact('OCLC', d.oclc);
+    list('Acceptable bitrates', d.bitrates);
+    list('Acceptable formats', d.formats);
+    list('Acceptable media', d.media);
+    fact('Log / cue', d.log_cue);
+    fact('Votes', d.votes ? String(d.votes) : '');
+    fact('Vote cost', d.minimum_vote);
+    fact('Last voted', when(d.last_vote));
+    fact('Bounty', d.bounty);
+    (d.people || []).forEach((group) => fact(group.role, group.names.join(', ')));
+    if (d.filled) {
+      fact('Filled by', d.filled_by);
+      fact('Filled', when(d.filled_at));
+      if (d.torrent_url) {
+        facts.push(
+          el('div', { class: 'fact-label' }, 'Torrent'),
+          el('div', { class: 'fact-value' },
+             el('a', { class: 'plain', href: d.torrent_url, target: '_blank', rel: 'noopener noreferrer' },
+                `#${d.torrent_id} ↗`)),
+        );
+      }
+    }
+    Object.entries(d.extra || {}).forEach(([key, value]) => fact(prettyKey(key), String(value)));
+
+    return el(
+      'div',
+      { class: 'request-view' },
+      el('div', { class: 'request-head' },
+        d.image ? el('img', { class: 'request-cover', src: d.image, loading: 'lazy',
+                              referrerpolicy: 'no-referrer', alt: '' }) : null,
+        el('div', { class: 'request-headings' },
+          el('div', { class: 'album-title' },
+             [d.artist, d.title].filter(Boolean).join(' – ') + (d.year ? ` [${d.year}]` : '')),
+          d.filled ? el('span', { class: 'tag ok' }, 'Filled') : el('span', { class: 'tag' }, 'Open'),
+          (d.tags || []).length
+            ? el('div', { class: 'request-tags' }, ...d.tags.map((t) => el('span', { class: 'tag dim' }, t)))
+            : null)),
+      facts.length ? el('div', { class: 'facts' }, ...facts) : null,
+      (d.contributors || []).length
+        ? el('div', { class: 'request-section' },
+            el('h4', {}, 'Top contributors'),
+            el('div', { class: 'facts' },
+               ...d.contributors.flatMap((c) => [
+                 el('div', { class: 'fact-label' }, c.name),
+                 el('div', { class: 'fact-value' }, c.bounty),
+               ])))
+        : null,
+      d.description_html
+        ? el('div', { class: 'request-section' },
+            el('h4', {}, 'Description'),
+            el('div', { class: 'bb', html: d.description_html }))
+        : null,
+      el('div', { class: 'request-section' },
+        el('h4', {}, (d.comments || []).length
+          ? `Comments (${d.comments.length}${d.comment_pages > 1 ? ` of ${d.comment_pages} pages` : ''})`
+          : 'Comments'),
+        (d.comments || []).length
+          ? el('div', { class: 'comments' }, ...d.comments.map((c) =>
+              el('div', { class: 'comment' },
+                el('div', { class: 'comment-head' },
+                  el('strong', {}, c.author || 'someone'),
+                  el('span', { class: 'dim' }, when(c.added)),
+                  c.edited ? el('span', { class: 'dim' },
+                               `edited ${c.edited_by ? `by ${c.edited_by} ` : ''}${when(c.edited)}`) : null),
+                el('div', { class: 'bb', html: c.html }))))
+          : empty('No comments.')),
+    );
+  }
+
+  // "recordLabel" -> "Record label", for fields a tracker sends that we have no
+  // name of our own for. They are shown rather than dropped.
+  function prettyKey(key) {
+    const spaced = String(key).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ');
+    return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+  }
+
+  // The tracker's origin, taken from a URL it gave us.
+  function trackerBase(url) {
+    try { return new URL(url).origin; } catch { return ''; }
+  }
+
+  // Timestamps arrive as ISO or as whatever the tracker felt like; show a real
+  // date when it parses and the original string when it does not.
+  function when(value) {
+    if (!value) return '';
+    const at = new Date(value);
+    return Number.isNaN(at.getTime()) ? String(value) : at.toLocaleString();
   }
 
   // Everything about a release, for the half of a split that shows one.
