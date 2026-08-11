@@ -364,6 +364,11 @@ button.ghost { background: none; }
 /* ---------- album page ---------- */
 
 .album-page { display: block; }
+.back-btn { margin-bottom: 14px; }
+
+/* A credit you can follow, but only where there is somewhere to follow it to. */
+.featured-col a { color: var(--text); }
+.featured-col a:hover { color: var(--accent); }
 
 .album-head {
   display: flex;
