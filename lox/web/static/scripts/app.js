@@ -460,26 +460,59 @@
   // is kept: the actual nodes, not a note to re-run the search. Restoring them
   // brings back the scroll position, the selection ticks and the section you
   // were in, and costs no API calls.
-  function pushPane() {
+  function pushPane(label) {
     const pane = $('#search-results');
     if (!pane.childNodes.length) return;
-    state.paneStack.push({ cls: pane.className, nodes: [...pane.childNodes], scroll: window.scrollY });
+    state.paneStack.push({
+      cls: pane.className,
+      nodes: [...pane.childNodes],
+      scroll: window.scrollY,
+      label: label || 'Back',
+    });
     if (state.paneStack.length > 12) state.paneStack.shift();
   }
 
-  function popPane() {
-    const previous = state.paneStack.pop();
-    if (!previous) return;
+  // Restore the pane at `index`, dropping everything after it. Popping the last
+  // entry is the plain Back; index 0 is the crumb at the far left.
+  function popPaneTo(index) {
+    if (index < 0 || index >= state.paneStack.length) return;
+    const target = state.paneStack[index];
+    state.paneStack.length = index;
     const pane = $('#search-results');
-    pane.className = previous.cls;
-    pane.replaceChildren(...previous.nodes);
-    window.scrollTo(0, previous.scroll);
+    pane.className = target.cls;
+    pane.replaceChildren(...target.nodes);
+    window.scrollTo(0, target.scroll);
   }
 
-  // Shown only when there is somewhere to go back to.
-  function backButton() {
+  const popPane = () => popPaneTo(state.paneStack.length - 1);
+
+  // A name for the pane being left behind, taken from what it is showing.
+  function paneLabel() {
+    const pane = $('#search-results');
+    return pane.querySelector('.album-title')?.textContent
+      || pane.querySelector('.artist-name')?.textContent
+      || ($('#search-input').value.trim() ? `“${$('#search-input').value.trim()}”` : 'Results');
+  }
+
+  // Where you are and how you got here, each step clickable. A lone Back button
+  // says there is a way out but not where it goes: two hops in, from a search
+  // through an artist to a release, "Back" is a guess.
+  function breadcrumbs(current) {
     if (!state.paneStack.length) return null;
-    return el('button', { class: 'ghost back-btn', onclick: popPane }, '← Back');
+    const trail = [];
+    state.paneStack.forEach((entry, i) => {
+      trail.push(
+        el('button', { class: 'crumb', onclick: () => popPaneTo(i) }, entry.label),
+        el('span', { class: 'crumb-sep' }, '›'),
+      );
+    });
+    trail.push(el('span', { class: 'crumb current' }, current || ''));
+    return el(
+      'nav',
+      { class: 'breadcrumbs', 'aria-label': 'Breadcrumb' },
+      el('button', { class: 'ghost back-btn', onclick: popPane }, '← Back'),
+      ...trail,
+    );
   }
 
   // ---------------------------------------------------------------- search
@@ -654,8 +687,7 @@
 
   async function openArtist(artistId) {
     setView('search');
-    pushPane();
-    const back = backButton();
+    pushPane(paneLabel());
     // Its own sections, each with an inner grid, so the pane itself is a plain
     // block here.
     const results = searchPane('artist-page');
@@ -665,7 +697,7 @@
       const total = artist.groups.reduce((n, g) => n + g.albums.length, 0);
 
       results.replaceChildren(
-        back,
+        breadcrumbs(artist.name || 'Artist'),
         el(
           'div',
           { class: 'artist-head' },
@@ -699,7 +731,7 @@
         ]),
       );
     } catch (e) {
-      results.replaceChildren(...[back, empty(e.message)].filter(Boolean));
+      results.replaceChildren(...[breadcrumbs('Artist'), empty(e.message)].filter(Boolean));
     }
   }
 
@@ -717,8 +749,7 @@
   // side rather than a 380px column you scroll through a slot at a time.
   async function openAlbum(albumId) {
     setView('search');
-    pushPane();
-    const back = backButton();
+    pushPane(paneLabel());
     const pane = searchPane('album-page');
     pane.replaceChildren(spinner('Loading album'));
 
@@ -747,7 +778,7 @@
       ].filter(Boolean);
 
       pane.replaceChildren(
-        back,
+        breadcrumbs(album.title || 'Album'),
         el(
           'div',
           { class: 'album-head' },
@@ -841,7 +872,7 @@
       // Whatever a previous check found, shown straight away and for free.
       showSavedCheck(album);
     } catch (e) {
-      pane.replaceChildren(...[back, empty(e.message)].filter(Boolean));
+      pane.replaceChildren(...[breadcrumbs('Album'), empty(e.message)].filter(Boolean));
     }
   }
 
@@ -1867,39 +1898,46 @@
 
   // ------------------------------------------------------- request compare
 
-  // The request and the release it might fill, side by side. The tracker page
-  // is not embedded -- Gazelle sends X-Frame-Options and an iframe would show
-  // an empty box -- so its side carries what lox already knows about the
-  // request plus a button that opens the real page in a tab.
+  // The tracker's own page and the release that might fill it, side by side.
+  // The tracker half is the real page in a frame: comparing a request against a
+  // release means reading the request as its author wrote it, not a summary of
+  // it. Gazelle may refuse to be framed, so the frame is never the only way in
+  // -- the button above it always opens the same page in a tab.
   async function openRequest(row) {
     const match = state.requestMatches.get(String(row.id));
-    const panel = $('#request-split');
-    panel.hidden = false;
-    panel.replaceChildren(spinner('Loading'));
+    const url = row.url || match?.request_url || '';
+    const tracker = match?.tracker || state.requestsTracker || 'the tracker';
 
-    const tracker = state.requestsTracker || '';
+    setView('search');
+    pushPane(paneLabel());
+    const pane = searchPane('split-page');
+    pane.replaceChildren(spinner('Loading'));
+
     const left = el('div', { class: 'split-side' });
     const right = el('div', { class: 'split-side' });
-    panel.replaceChildren(
-      el('div', { class: 'row split-head' },
-        el('h2', {}, 'Request and release'),
-        el('button', { class: 'ghost', onclick: () => (panel.hidden = true) }, 'Close')),
+    pane.replaceChildren(
+      breadcrumbs(`${row.artist || match?.artist || ''} — ${row.title || match?.album || 'Request'}`),
       el('div', { class: 'split' }, left, right),
     );
 
+    const frame = el('iframe', {
+      class: 'tracker-frame', src: url, referrerpolicy: 'no-referrer',
+      sandbox: 'allow-same-origin allow-scripts allow-popups allow-forms',
+    });
+    const blocked = el('p', { class: 'hint blocked-note', hidden: true },
+      'The tracker refused to be embedded. Use the button above to open it in a tab.');
+    // Cross-origin frames do not report failure, so this is a deadline rather
+    // than an error handler: if nothing has painted by now, say so.
+    let loaded = false;
+    frame.addEventListener('load', () => (loaded = true));
+    setTimeout(() => { if (!loaded) blocked.hidden = false; }, 2500);
+
     left.replaceChildren(
-      el('h3', { class: 'section-title' }, `Request on ${tracker}`),
-      el('p', { class: 'album-title-sm' }, `${row.artist || match?.artist || ''} — ${row.title || match?.album || ''}`),
-      el('dl', { class: 'meta' },
-        ...[
-          ['Year', row.year || match?.year],
-          ['Bounty', row.bounty || match?.bounty],
-          ['Formats', (match?.formats || []).join(', ')],
-          ['Media', (match?.media || []).join(', ')],
-          ['Encodings', (match?.bitrates || []).join(', ')],
-        ].filter(([, v]) => v).flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, String(v))])),
-      el('a', { class: 'linkbtn', href: row.url || match?.request_url, target: '_blank', rel: 'noopener' },
-         `Open on ${tracker} ↗`),
+      el('div', { class: 'row split-head' },
+        el('h3', { class: 'section-title' }, `Request on ${tracker}`),
+        url ? el('a', { class: 'filebtn', href: url, target: '_blank', rel: 'noopener' }, 'Open in a tab ↗') : null),
+      blocked,
+      url ? frame : empty('This request has no URL.'),
     );
 
     if (!match?.deezer_id) {
@@ -1913,117 +1951,62 @@
     right.replaceChildren(spinner('Loading release'));
     try {
       const album = await api(`/api/album/${match.deezer_id}`);
-      const availability = album.availability;
       right.replaceChildren(
         el('h3', { class: 'section-title' }, 'Deezer release'),
-        el('div', { class: 'row' },
-          album.cover ? el('img', { class: 'split-art', src: album.cover, alt: '' }) : null,
-          el('div', {},
-            el('p', { class: 'album-title-sm' }, album.title || ''),
-            el('p', { class: 'album-facts' }, [album.artist, album.release_date, `${album.nb_tracks} tracks`]
-              .filter(Boolean).join(' · ')),
-            availability
-              ? el('span', { class: `tag ${availability.uploadable ? 'ok' : 'bad'}` },
-                   availability.uploadable ? 'All FLAC, all streamable' : availability.reason || 'Not uploadable')
-              : null)),
-        el('div', { class: 'row' },
-          el('button', { class: 'primary', onclick: () => download(album.id) }, 'Download'),
-          el('button', { onclick: () => downloadAndUpload(album.id, album) }, 'Download & upload'),
-          el('button', { class: 'ghost', onclick: () => openAlbum(album.id) }, 'Full album page')),
-        el('ol', { class: 'split-tracks' },
-          ...(album.tracks || []).map((t) => el('li', {}, t.title || ''))),
+        albumPanel(album),
       );
     } catch (e) {
       right.replaceChildren(el('h3', { class: 'section-title' }, 'Deezer release'), empty(e.message));
     }
   }
 
-  // ------------------------------------------------------------------ found
+  // Everything about a release, for the half of a split that shows one.
+  function albumPanel(album) {
+    const availability = album.availability;
+    const artistLink = (id, name) =>
+      id ? el('a', { href: '#', onclick: (e) => { e.preventDefault(); openArtist(id); } }, name)
+         : el('span', {}, name);
+    const facts = [
+      album.nb_tracks ? `${album.nb_tracks} tracks` : null,
+      album.duration ? duration(album.duration) : null,
+      album.release_date,
+      album.record_type,
+      (album.genres || []).join(', ') || null,
+      album.label,
+      album.upc ? `UPC ${album.upc}` : null,
+    ].filter(Boolean);
 
-  // What earlier checks already established. A scan or a request check pays
-  // tracker budget to learn "this exists on Deezer and is not on RED", and both
-  // used to throw that away the moment you left the tab.
-  async function loadFound() {
-    const body = $('#found-body');
-    body.replaceChildren(spinner('Loading'));
-    try {
-      const { found } = await api('/api/found');
-      state.found = found;
-      state.selectedFound = new Set(found.map((f) => f.id));
-      renderFound();
-    } catch (e) {
-      body.replaceChildren(empty(e.message));
-    }
-  }
-
-  function renderFound() {
-    const body = $('#found-body');
-    if (!state.found.length) {
-      body.replaceChildren(empty('Nothing yet. Run a scan or check some requests.'));
-      $('#found-count').textContent = '';
-      return;
-    }
-    $('#found-count').textContent = `${state.selectedFound.size} of ${state.found.length} selected`;
-    body.replaceChildren(
-      el(
-        'table',
-        { class: 'table' },
+    return el(
+      'div',
+      {},
+      el('div', { class: 'row' },
+        album.cover ? el('img', { class: 'split-art', src: album.cover, alt: '' }) : null,
+        el('div', { class: 'split-meta' },
+          el('p', { class: 'album-title-sm' }, album.title || ''),
+          el('p', { class: 'album-facts' }, artistLink(album.artist_id, album.artist || '')),
+          el('p', { class: 'album-facts' }, facts.join(' · ')),
+          availability
+            ? el('span', { class: `tag ${availability.uploadable ? 'ok' : 'bad'}` },
+                 availability.uploadable
+                   ? `All FLAC, all streamable · ${availability.flac_count}/${availability.total}`
+                   : availability.reason || 'Not uploadable')
+            : null)),
+      el('div', { class: 'row split-actions' },
+        el('button', { class: 'primary', onclick: () => download(album.id) }, 'Download'),
+        el('button', { onclick: () => downloadAndUpload(album.id, album) }, 'Download & upload'),
+        album.url ? el('a', { class: 'linkbtn', href: album.url, target: '_blank', rel: 'noopener' },
+                       'Open on Deezer ↗') : null),
+      el('table', { class: 'table tracklist-table' },
         el('thead', {}, el('tr', {},
-          el('th', {}, selectAllBox(state.found.map((f) => f.id), state.selectedFound, renderFound)),
-          el('th', {}, 'Release'), el('th', {}, 'Where'), el('th', {}, 'From'), el('th', {}, 'When'))),
-        el('tbody', {}, ...state.found.map((f) =>
+          el('th', { class: 'num-col' }, '#'), el('th', {}, 'Track'),
+          el('th', {}, 'Featured'), el('th', { class: 'dur-col' }, 'Length'))),
+        el('tbody', {}, ...(album.tracks || []).map((t) =>
           el('tr', {},
-            el('td', {}, el('input', {
-              type: 'checkbox',
-              checked: state.selectedFound.has(f.id),
-              onchange: (e) => {
-                e.target.checked ? state.selectedFound.add(f.id) : state.selectedFound.delete(f.id);
-                renderFound();
-              },
-            })),
-            el('td', {}, el('a', {
-              href: '#',
-              onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
-            }, `${f.artist || ''} — ${f.title || ''}`)),
-            el('td', {}, (f.missing_from || []).length
-              ? el('span', { class: 'tag ok' }, `not on ${f.missing_from.join(', ')}`)
-              : el('span', { class: 'tag warn' }, `fills a ${f.tracker || ''} request`)),
-            el('td', {}, f.kind === 'request'
-              ? el('a', { href: f.request_url, target: '_blank', rel: 'noopener' }, 'request')
-              : 'scan'),
-            el('td', { class: 'card-sub' }, ago(f.checked_at)),
-          ))),
-      ),
+            el('td', { class: 'num-col' }, String(t.number || '')),
+            el('td', {}, t.title || '', t.explicit ? el('span', { class: 'tag dim explicit-tag' }, 'E') : null),
+            el('td', { class: 'featured-col' }, ...featuredCredits(t, album, artistLink)),
+            el('td', { class: 'dur-col' }, duration(t.duration)))))),
     );
-  }
-
-  const foundSelection = () => state.found.filter((f) => state.selectedFound.has(f.id));
-
-  // Ask the trackers again about the selection. Costs budget, so it is a button
-  // rather than something that happens when the tab opens.
-  async function recheckFound() {
-    const picked = foundSelection();
-    if (!picked.length) return toast('Nothing selected', 'bad');
-    const trackers = checkTrackers();
-    if (!trackers.length) return toast('No tracker configured', 'bad');
-
-    const candidates = picked.map((f) => ({
-      album_id: f.album_id, title: f.title, artist: f.artist, source: 'found',
-    }));
-    const body = $('#found-body');
-    try {
-      const { job_id } = await api('/api/missing/check', { method: 'POST', body: { candidates, trackers } });
-      body.before(jobCancel(job_id, 'Stop re-checking'));
-      followJob(job_id, {
-        onDone: (job) => {
-          refreshStatus();
-          toast(job.error || `Re-checked ${job.result_count} release(s)`, job.error ? 'bad' : 'ok');
-          loadFound();
-        },
-      });
-    } catch (e) {
-      toast(e.message, 'bad');
-    }
   }
 
   // ---------------------------------------------------------------- uploads

@@ -364,7 +364,43 @@ button.ghost { background: none; }
 /* ---------- album page ---------- */
 
 .album-page { display: block; }
-.back-btn { margin-bottom: 14px; }
+/* Where you are, and every step back to where you started. */
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  font-size: 12.5px;
+}
+
+.back-btn { margin: 0 6px 0 0; }
+.crumb {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.crumb:hover { color: var(--accent); }
+.crumb.current { color: var(--text); font-weight: 600; cursor: default; }
+.crumb-sep { color: var(--text-dim); }
+
+/* The tracker's own page, framed beside the release. */
+.split-page { display: block; }
+.tracker-frame {
+  width: 100%;
+  height: 72vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.blocked-note { color: var(--warn); }
+.split-meta { min-width: 0; flex: 1 1 220px; }
+.split-actions { margin: 14px 0; }
 
 /* The request beside the release that might fill it. Deciding means reading
    both, so they sit next to each other and stack only when there is no room. */
