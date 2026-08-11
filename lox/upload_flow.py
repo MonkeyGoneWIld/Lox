@@ -374,6 +374,8 @@ class FlowPrompts:
         self._candidates: list[dict[str, Any]] = []
         self._line = ""
         self._spectrals_ready = False
+        # Track number to filename, as the pipeline's own viewer was given it.
+        self._spectral_names: dict[int, str] = {}
         # Structured blocks captured since the last question. The pipeline
         # prints a tag diff and a metadata comparison as prose; both are tables
         # and are far easier to check as tables.
@@ -718,11 +720,26 @@ class FlowPrompts:
         for name in sorted(f for f in os.listdir(directory) if f.lower().endswith(_SPECTRAL_EXT)):
             stem = os.path.splitext(name)[0]
             track, _, kind = stem.partition(" ")
-            entry = grouped.setdefault(track, {"track": track, "full": "", "zoom": ""})
+            entry = grouped.setdefault(track, {"track": track, "label": self._track_label(track),
+                                               "full": "", "zoom": ""})
             entry["zoom" if kind.strip().lower() == "zoom" else "full"] = (
                 f"/spectral-image/{base}/{quote(name)}"
             )
         return list(grouped.values())
+
+    def _track_label(self, track: str) -> str:
+        """What to caption a pair of spectrals with.
+
+        The audio filename, which is what the pipeline's own viewer captions
+        them with and already carries the track number. The bare number is the
+        fallback, for spectrals that were on disk before this upload started
+        and so were never announced to the viewer.
+        """
+        try:
+            filename = self._spectral_names.get(int(track), "")
+        except ValueError:
+            filename = ""
+        return os.path.basename(filename) or track
 
     async def _edit(self, text: Any = "", extension: str = ".txt", **_: Any) -> str | None:
         """Stand-in for click.edit.
@@ -941,7 +958,7 @@ class FlowPrompts:
         self.flow.note("Using the metadata from the file tags. Edit it in the next step.")
         return metadata
 
-    async def _view_spectrals(self, spectrals_path: str, _all_spectral_ids: dict[int, str]) -> None:
+    async def _view_spectrals(self, spectrals_path: str, all_spectral_ids: dict[int, str]) -> None:
         """Stand in for the pipeline's spectral viewer.
 
         The pipeline's own viewer symlinks the spectral directory into the
@@ -953,10 +970,12 @@ class FlowPrompts:
 
         None of it is needed here. The images are attached to the questions
         they inform, so they appear on the page you are already looking at
-        rather than behind a link to a second server. Marking them ready is the
-        whole job.
+        rather than behind a link to a second server. Marking them ready and
+        keeping the track names it was going to caption them with is the whole
+        job.
         """
         self._spectrals_ready = True
+        self._spectral_names = dict(all_spectral_ids or {})
         self.flow.note(f"Spectrals ready: {os.path.basename(spectrals_path)}")
 
     def __enter__(self) -> "FlowPrompts":

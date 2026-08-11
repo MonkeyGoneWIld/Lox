@@ -2236,10 +2236,11 @@
     });
   }
 
-  // One row per track: the full spectral wide enough to read, its zoom beside
-  // it, and the track number. The old grid of 180px thumbnails in a 420px box
-  // showed twenty-four unlabelled squares you could not judge anything from,
-  // which defeated the point of looking at them.
+  // One track per row, captioned with its filename, the full spectral and its
+  // zoom flush against each other -- the layout smoked-salmon's own spectral
+  // page uses. Anything that boxes the two images independently letterboxes
+  // them, and you end up judging a release from two small pictures adrift in a
+  // lot of empty space.
   function spectralList(images) {
     return el(
       'div',
@@ -2248,7 +2249,8 @@
         el(
           'div',
           { class: 'spectral-row' },
-          el('div', { class: 'spectral-num' }, img.track || ''),
+          el('div', { class: 'spectral-num', title: img.label || img.track || '' },
+             img.label || img.track || ''),
           el(
             'div',
             { class: 'spectral-pair' },
