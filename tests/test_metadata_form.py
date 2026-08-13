@@ -100,7 +100,7 @@ async def main() -> int:
     metadata = fresh_metadata()
     original_review = review.review_metadata
 
-    with FlowPrompts(flow, "") as prompts:
+    with FlowPrompts(flow, ""):
         check("review_metadata itself is replaced, not just its editors",
               review.review_metadata is not original_review, review.review_metadata.__qualname__)
 

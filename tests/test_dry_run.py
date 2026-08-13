@@ -41,6 +41,12 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"{'PASS' if ok else 'FAIL'}  {name}{'  ' + detail if detail else ''}")
 
 
+def source_of(*parts: str) -> str:
+    """Read one of lox's own files, for the guards asserted on source."""
+    with open(os.path.join(os.path.dirname(ROOT), *parts), encoding="utf-8") as handle:
+        return handle.read()
+
+
 PAYLOAD = {
     "submit": True,
     "type": 0,
@@ -116,9 +122,7 @@ async def main() -> int:
         "            if cfg.upload.dry_run and not group_id:",
         "                await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)",
     )
-    text = open(
-        os.path.join(os.path.dirname(ROOT), "lox", "uploader", "__init__.py"), encoding="utf-8"
-    ).read()
+    text = source_of("lox", "uploader", "__init__.py")
     check("a dry run with no group never asks the tracker to list it", source[0] in text, "")
     check("a real run still does", source[1] in text, "")
     check("the deferred spectral check is not skipped for want of a torrent id",
@@ -157,9 +161,7 @@ async def main() -> int:
           dry_run_url("/x/01 Full.png").endswith(".png"), dry_run_url("/x/01 Full.png"))
 
     # With the toggle off, nothing here intercepts anything.
-    source = open(
-        os.path.join(os.path.dirname(ROOT), "lox", "images", "__init__.py"), encoding="utf-8"
-    ).read()
+    source = source_of("lox", "images", "__init__.py")
     check("the fake only applies to dry runs", source.count("if cfg.upload.dry_run:") == 2,
           str(source.count("if cfg.upload.dry_run:")))
 
@@ -168,9 +170,7 @@ async def main() -> int:
     # a real run does, and those are the things worth checking before a real
     # one. The transcodes it made were being deleted the moment it finished,
     # so the one output you most wanted to look at was gone before you could.
-    flow_src = open(
-        os.path.join(os.path.dirname(ROOT), "lox", "upload_flow.py"), encoding="utf-8"
-    ).read()
+    flow_src = source_of("lox", "upload_flow.py")
     check("transcodes are no longer deleted after a dry run",
           "_discard_transcodes" not in flow_src, "")
     check("they are reported where they were left",
@@ -190,9 +190,7 @@ async def main() -> int:
     # The seeding side is asserted on its source: importing it pulls in the
     # torrent-client libraries, which are not installed everywhere this runs,
     # and what matters is that the guard is in front of the transfer.
-    seedbox = open(
-        os.path.join(os.path.dirname(ROOT), "lox", "uploader", "seedbox.py"), encoding="utf-8"
-    ).read()
+    seedbox = source_of("lox", "uploader", "seedbox.py")
     guard = seedbox.index("if cfg.upload.dry_run:")
     check("seeding is described rather than run",
           "[DRY RUN] Not running" in seedbox and guard < seedbox.index("Executing {len(self.tasks)}"), "")

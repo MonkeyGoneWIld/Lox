@@ -58,7 +58,10 @@ def _when(value: Any) -> str:
         return ""
     if isinstance(value, (int, float)) or (isinstance(value, str) and value.isdigit()):
         try:
-            return datetime.fromtimestamp(int(value), tz=timezone.utc).isoformat(timespec="seconds")
+            # timezone.utc rather than datetime.UTC: the project floor is
+            # 3.11 where both work, and this spelling also runs on 3.10,
+            # which is what the development environment here has.
+            return datetime.fromtimestamp(int(value), tz=timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
         except (OverflowError, OSError, ValueError):
             return str(value)
     return str(value)

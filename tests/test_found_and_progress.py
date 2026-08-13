@@ -30,7 +30,6 @@ os.environ.update(
 )
 os.makedirs(os.environ["LOX_DOWNLOAD_DIR"], exist_ok=True)
 
-from lox.checker.store import CheckerStore  # noqa: E402
 from lox.deezer.download import DownloadJob, TrackDownload  # noqa: E402
 
 results: list[tuple[str, bool, str]] = []
@@ -84,7 +83,7 @@ async def main() -> int:
     from lox.web import create_app_async  # noqa: PLC0415
 
     runner = await create_app_async()
-    store: CheckerStore = runner.app["store"]
+    store = runner.app["store"]
 
     store.put("albums", "111", {"title": "Kept", "artist": "A", "missing_from": ["RED"]})
     store.put("albums", "222", {"title": "Uploaded", "artist": "B", "missing_from": ["RED"]})
