@@ -174,7 +174,9 @@ async def main() -> int:
     check("transcodes are no longer deleted after a dry run",
           "_discard_transcodes" not in flow_src, "")
     check("they are reported where they were left",
-          "Dry run: kept transcode" in flow_src, "")
+          "Transcode kept at" in flow_src, "")
+    check("and offered on the result so they can be removed by hand",
+          '"transcodes"' in flow_src and '"kept"' in flow_src, "")
 
     uploader_src = text
     check("tagging is not skipped in a dry run",

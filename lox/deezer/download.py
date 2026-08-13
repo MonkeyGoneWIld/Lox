@@ -87,11 +87,23 @@ class DownloadJob(msgspec.Struct):
 
     @property
     def percent(self) -> float:
-        """Overall completion as a percentage of total bytes."""
-        total = sum(t.size for t in self.tracks)
-        if not total:
+        """Overall completion, counted per track rather than per byte.
+
+        A track's size is only known once its download starts, so a total made
+        by summing sizes grew every time another track began -- and the bar
+        slid backwards each time, 7/10 becoming 7/14. The number of tracks is
+        known from the start, so each one is worth the same fixed share and the
+        bar only ever moves forwards.
+        """
+        if not self.tracks:
             return 100.0 if self.status == "done" else 0.0
-        return min(100.0, sum(t.downloaded for t in self.tracks) / total * 100)
+        share = 0.0
+        for track in self.tracks:
+            if track.status == "done":
+                share += 1.0
+            elif track.size:
+                share += min(1.0, track.downloaded / track.size)
+        return min(100.0, share / len(self.tracks) * 100)
 
     def as_dict(self) -> dict[str, Any]:
         """Serialize for the web API."""

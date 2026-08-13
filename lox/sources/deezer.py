@@ -106,6 +106,12 @@ class DeezerBase(BaseScraper):
             results = await self.client.album_page(album_id)
             data["tracklist"] = self.get_tracks(results)
             data["cover_xl"] = self.get_cover(results)
+            # The private page carries fields the public API does not: the
+            # original release date as distinct from this edition's, the
+            # producer/copyright line, the label as Deezer records it, and the
+            # album's own credited artists. Keeping it means the scraper can
+            # fill in the metadata form instead of leaving it to be typed.
+            data["_album_page"] = results.get("DATA") or {}
             return data
         except (DeezerGWError, KeyError) as e:
             raise ScrapeError(f"Failed to grab metadata for {url}.") from e

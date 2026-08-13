@@ -61,6 +61,7 @@ class MetadataMixin(ABC):
             data["url"] = self.format_url(rls_id=rls_id, rls_name=data["title"])
         data["urls"] = [data["url"]]
         data["artists"], data["tracks"] = generate_artists(data["tracks"])
+        data["artists"], data["tracks"] = self.refine_artists(soup, data["artists"], data["tracks"])
         data["tracks"] = append_remixers_to_track_titles(data["tracks"])
         data["tracks"] = assign_track_totals(data["tracks"])
         data["title"], data["rls_type"] = self.determine_rls_type(data)
@@ -226,6 +227,24 @@ class MetadataMixin(ABC):
 
     def parse_comment(self, soup) -> str | None:
         return None
+
+    def refine_artists(self, soup, artists, tracks):
+        """Adjust the credits once every track has been read.
+
+        The album-level list is the union of the tracks' credits, so a role can
+        only be judged once they are all in. A source that knows which artists
+        the release itself is credited to can use this to say so; by default
+        nothing changes.
+
+        Args:
+            soup: Whatever ``create_soup`` returned.
+            artists: Album-level ``(name, role)`` pairs.
+            tracks: The track dictionary, whose credits may also be adjusted.
+
+        Returns:
+            The artists and tracks to use.
+        """
+        return artists, tracks
 
     def process_label(self, data):
         """

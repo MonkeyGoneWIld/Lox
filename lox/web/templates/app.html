@@ -161,6 +161,12 @@
             <button class="primary" id="found-download">Download selected</button>
             <button id="found-upload">Download &amp; upload selected</button>
             <button id="found-recheck">Re-check on trackers</button>
+            <!-- Two ways off the list, because they answer different
+                 questions: one forgets the row so a later scan can find it
+                 again, the other says never show me this release. -->
+            <button id="found-dismiss">Remove</button>
+            <button class="danger" id="found-blacklist">Blacklist</button>
+            <button id="found-restore" hidden>Clear blacklist</button>
             <span class="hint" id="found-count"></span>
           </div>
         </div>
