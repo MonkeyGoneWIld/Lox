@@ -27,7 +27,7 @@ services:
   lox:
     image: ghcr.io/monkeygonewild/lox:alpha
     # Or build from source:
-    # build: https://github.com/MonkeyGoneWIld/lox.git#main
+    # build: https://github.com/MonkeyGoneWIld/Lox.git#main
     container_name: lox
     restart: unless-stopped
     command: ["ui"]

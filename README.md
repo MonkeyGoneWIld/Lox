@@ -1,13 +1,16 @@
-# lox
+# Lox
 
 **A Deezer-to-Gazelle upload pipeline with a web UI.** Find a release on Deezer, check whether RED and OPS already have
 it, look at what the checker found, download it in FLAC, and upload it to whichever trackers are missing it — without
 leaving the browser.
 
-> **This is a vibe-coded fork of [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon) `0.10.0`.** It is not
-> maintained, not reviewed, and not affiliated with upstream. If you want the real, supported thing, use
-> [smokin-salmon/smoked-salmon](https://github.com/smokin-salmon/smoked-salmon). Upstream owns the tagging, spectral,
-> transcoding and upload machinery this is built on; everything Deezer-shaped here is the fork.
+> **Built on [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon) `0.10.0`**, whose tagging, spectral,
+> transcoding and upload machinery this uses under Apache-2.0. Lox is not affiliated with that project and is not
+> maintained by it — please do not take problems here to them. If you want the supported, reviewed thing, use
+> [smokin-salmon/smoked-salmon](https://github.com/smokin-salmon/smoked-salmon). Everything Deezer-shaped, the web UI,
+> the tracker budget, the checker and the per-tracker seeding layout are Lox's.
+>
+> Written with heavy help from an LLM. Read the code before you point it at an account you care about.
 
 ---
 
@@ -124,7 +127,13 @@ Everything runs — tagging, renaming, spectral generation and upload, cover han
 | File a lossy-master report | skipped |
 | Edit a torrent description | skipped |
 | Transfer to seedbox / add to download client | skipped, prints the save path and category it would have used |
+| Upload cover art and spectrals to an image host | skipped, stand-in links on `dry-run.invalid` |
 | Copy the URL to your clipboard | skipped |
+
+Everything else happens for real, because those are the parts worth checking before a real run: the files are tagged,
+the folder is renamed, the downconversion runs and its output is **kept** — listed on the result with a Delete button,
+rather than removed before you can look at it. The descriptions are printed in full, not summarised as a character
+count, since reading them is the point of rehearsing.
 
 The `.torrent` is still written so you can inspect it, but its comment is left blank rather than stamped with a URL
 containing a placeholder torrent ID.
@@ -136,7 +145,7 @@ containing a placeholder torrent ID.
 Needs Python 3.11+, plus `sox`, `flac`, `lame` and `mp3val` on PATH.
 
 ```bash
-uv tool install git+https://github.com/MonkeyGoneWIld/lox
+uv tool install git+https://github.com/MonkeyGoneWIld/Lox
 ```
 
 Then write a config (see [`data/config.default.toml`](data/config.default.toml) for every option) and run:
@@ -177,20 +186,21 @@ query parameter and the `X-Auth-Token` header both still work for scripts and th
 
 ## Configuration
 
-Almost everything is set in the UI under **Settings** — 73 settings across 12 sections, applied without a restart.
-Nine sections have a **Test connection** button that calls the real service rather than just checking a field is
-non-empty:
+Almost everything is set in the UI under **Settings** — 82 settings across 16 sections grouped into Accounts,
+Uploading, Files and Maintenance, applied without a restart. Sixteen things can be tested against the real service
+rather than checked for being non-empty: eight whole sections, and eight individual credentials that stand on their
+own. A section holding four image-host keys cannot be answered by one button at the top, so each key has its own:
 
 | Test | What it actually proves |
 |---|---|
 | Deezer | Logs in with the ARL and reports the account, plus whether it holds a streaming licence — a valid ARL without one cannot download |
 | RED / OPS / DIC | Calls `index`, reports your username and whether it authenticated by API key or session cookie |
 | Seeding layout | Creates a real hardlink between the download and seeding directories and compares inodes |
-| Discogs | Fetches a known release |
-| Torrent client | Connects and logs in |
+| Torrent client | Connects to every configured client and reports its version |
 | Discord | Posts a test message |
 | Paths | Checks every directory exists and is writable |
-| Image hosting | Checks keys are present — no upload is attempted, since that would put a real file on a public host |
+| ptpimg / ptscreens / oeimg / imgbb | Each key against its own host. Nothing is uploaded — a settings test should not put a real file on a public host |
+| Discogs / Apple Music / Qobuz / Tidal | Each token against its own API, with a known lookup |
 
 ### Logs
 
@@ -258,8 +268,8 @@ than from the Gazelle source, so it matches what those sites are running. RED al
 *search descriptions*; OPS alone offers a bounty range. A tracker with no entry there — DIC — gets only the filters
 that need no IDs, and the UI says so rather than offering options that would search for the wrong thing.
 
-Each page of results is one tracker call and holds 25 requests, so the fetch count is a deliberate choice with its
-cost shown next to the button.
+Each page of results is one tracker call and holds 25 requests, so the fetch size is chosen in pages — the unit the
+cost is actually measured in — with that cost shown next to the button.
 
 ### Getting your ARL
 
@@ -267,7 +277,10 @@ Log into Deezer, open developer tools → Application → Cookies → `https://w
 is a full session credential: anyone holding it is logged into your account. Paste it into Settings → Deezer and press
 Test.
 
-## Differences from upstream smoked-salmon
+## What Lox changes
+
+Beyond the web UI, the Deezer integration and the checker, these are the behavioural differences from the upstream
+pipeline it is built on:
 
 - **Deezer only** — metadata search is restricted to Deezer. Bandcamp, Beatport, Discogs, iTunes, JunoDownload,
   MusicBrainz, Qobuz and Tidal are disabled as *sources*, though several are still used to verify request track counts.
@@ -304,17 +317,24 @@ lox/web/        api.py        JSON API, auth middleware, path validation
 
 ## Status and caveats
 
-Written fast, verified where it could be. The UI was driven end to end against a mock API — every tab, every flow — and
-the Python is syntax- and import-clean. **What has not been exercised against the real thing:** the download chain
-(Deezer's media token flow and the Blowfish decryption), the channel page scraping, and live tracker calls under real
-rate limits. Deezer changes those surfaces; expect the download path to be the first thing that breaks.
+Verified where it could be. Around 440 assertions run in CI across twelve suites, covering the prompt bridge, the
+metadata form, the request filters and their per-tracker IDs, the dry run, the settings page, and the Deezer credit
+rules. The UI pieces are driven in a real browser against the shipped script and stylesheet rather than a copy of them.
+Ruff and basedpyright run on every push.
+
+**What has not been exercised against the real thing:** the download chain (Deezer's media token flow and the Blowfish
+decryption), the channel page scraping, live tracker calls under real rate limits, and a live torrent-client injection.
+Deezer changes those surfaces; expect the download path to be the first thing that breaks.
 
 The tracker budget defaults are conservative guesses, not measured limits. Tune `[checker]` to what your trackers
 actually allow.
 
 ---
 
-## Licence
+## Licence and attribution
 
-Apache-2.0, inherited from upstream. deemix is GPL-3.0 and none of its code is used here — the UI resembles it, it does
-not reuse it.
+Apache-2.0, the same licence as [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon), from which the
+tagging, spectral, transcoding and Gazelle upload machinery comes. The `LICENSE` file and upstream's copyright notices
+are retained, and the full commit history is preserved so authorship is traceable.
+
+deemix is GPL-3.0 and none of its code is used here — the UI resembles it, it does not reuse it.
