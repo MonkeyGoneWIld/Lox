@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from os.path import dirname, join
 
 import aiohttp_jinja2
@@ -105,6 +106,11 @@ def add_routes(app: web.Application) -> None:
     # follow_symlinks is no longer needed here: spectrals used to be symlinked
     # into this directory, which the package cannot write to in a container.
     app.router.add_static("/static", join(dirname(__file__), "static"))
+    # Assets are cache-busted by content. Without this a browser can hold the
+    # previous app.js against a newer server -- and the two halves disagreeing
+    # about a payload's shape renders as a blank form rather than an error, so
+    # an upgrade looked like the feature had been removed.
+    app["asset_version"] = _asset_version()
     app.router.add_route("GET", "/", handle_app)
     app.router.add_route("GET", "/login", handle_login)
     app.router.add_route("GET", "/legacy", handle_index)
@@ -121,6 +127,24 @@ def add_routes(app: web.Application) -> None:
         app["config_path"] = "environment (LOX_* variables)"
 
 
+def _asset_version() -> str:
+    """A short fingerprint of the front-end assets.
+
+    Changes whenever the script or the stylesheet changes, and only then, so a
+    new build is fetched fresh while an unchanged one still caches.
+    """
+    digest = hashlib.sha1()
+    static = join(dirname(__file__), "static")
+    for relative in ("scripts/app.js", "css/app.css"):
+        path = join(static, relative)
+        try:
+            with open(path, "rb") as handle:
+                digest.update(handle.read())
+        except OSError:
+            digest.update(relative.encode())
+    return digest.hexdigest()[:10]
+
+
 async def handle_app(request: web.Request) -> web.Response:
     """Serve the single-page UI shell.
 
@@ -130,7 +154,11 @@ async def handle_app(request: web.Request) -> web.Response:
     Returns:
         The rendered application shell.
     """
-    return render_template("app.html", request, {"static_root_url": web_cfg.static_root_url})
+    return render_template(
+        "app.html",
+        request,
+        {"static_root_url": web_cfg.static_root_url, "asset_version": request.app.get("asset_version", "")},
+    )
 
 
 async def handle_login(request: web.Request) -> web.Response:
@@ -147,7 +175,11 @@ async def handle_login(request: web.Request) -> web.Response:
     """
     if not api.auth_required() or api.is_authenticated(request):
         raise web.HTTPFound("/")
-    return render_template("login.html", request, {"static_root_url": web_cfg.static_root_url})
+    return render_template(
+        "login.html",
+        request,
+        {"static_root_url": web_cfg.static_root_url, "asset_version": request.app.get("asset_version", "")},
+    )
 
 
 async def handle_index(request: web.Request) -> web.Response:

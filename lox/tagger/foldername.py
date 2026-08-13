@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import os
 import re
@@ -73,7 +74,7 @@ async def rename_folder(path, metadata, auto_rename, check=True):
             ),
             default=True,
         ):
-            shutil.rmtree(new_path)
+            await asyncio.to_thread(shutil.rmtree, new_path)
         else:
             raise UploadError("New folder name already exists.")
     new_path_dirname = os.path.dirname(new_path)
@@ -83,7 +84,10 @@ async def rename_folder(path, metadata, auto_rename, check=True):
     if os.path.exists(path) and os.path.exists(new_path) and os.path.samefile(path, new_path):
         click.secho(f"Skipping move, same location already for '{new_path}'", fg="yellow")
     else:
-        shutil.move(path, new_path)
+        # Off the loop: moving a release across filesystems is a full copy,
+        # and this runs inside the web server -- a blocking minute here stops
+        # every other request in the process.
+        await asyncio.to_thread(shutil.move, path, new_path)
         click.secho(f"Moved folder to '{new_path}'.", fg="yellow")
         _remove_empty_source_parent(path, new_path)
 
@@ -97,7 +101,7 @@ async def rename_folder(path, metadata, auto_rename, check=True):
         elif os.path.exists(tmp_new_specs_path) and os.path.samefile(tmp_old_specs_path, tmp_new_specs_path):
             click.secho(f"Skipping move, same location already for '{tmp_new_specs_path}'", fg="yellow")
         else:
-            shutil.move(tmp_old_specs_path, tmp_new_specs_path)
+            await asyncio.to_thread(shutil.move, tmp_old_specs_path, tmp_new_specs_path)
             click.secho(f"Moved temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
 
     return new_path

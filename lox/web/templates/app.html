@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>lox</title>
   <link rel="icon" href="{{ static_root_url }}/images/favicon.ico">
-  <link rel="stylesheet" href="{{ static_root_url }}/css/app.css">
+  <link rel="stylesheet" href="{{ static_root_url }}/css/app.css?v={{ asset_version }}">
 </head>
 <body>
   <div id="app">
@@ -210,6 +210,6 @@
   </div>
 
   <div id="toasts"></div>
-  <script src="{{ static_root_url }}/scripts/app.js"></script>
+  <script src="{{ static_root_url }}/scripts/app.js?v={{ asset_version }}"></script>
 </body>
 </html>

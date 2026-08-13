@@ -620,6 +620,18 @@ class FlowPrompts:
         if not text:
             return
 
+        # Which description the "| ..." lines that follow belong to. Detected
+        # here rather than inside the payload block: the first heading closes
+        # that block, so a second heading was never recognised and the release
+        # description was appended to the album description under one key.
+        heading = _DESCRIPTION_HEAD.match(text)
+        if heading:
+            self._description = heading[1].strip().lower()
+            self.flow.note(text)
+            return
+        if text.startswith("[DRY RUN]"):
+            self._description = ""
+
         if self._description and text.startswith("|"):
             body = self.dry_run_descriptions.setdefault(self._description, [])
             body.append(text[1:].lstrip())
@@ -754,8 +766,6 @@ class FlowPrompts:
             # prose and must not be mined for "key   value" pairs.
             if text.startswith("[DRY RUN]"):
                 self._block = None
-                heading = _DESCRIPTION_HEAD.match(text)
-                self._description = heading[1].lower() if heading else ""
                 return False
             field = _DRY_FIELD.match(text)
             if not field:

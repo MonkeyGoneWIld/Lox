@@ -1,10 +1,10 @@
+import asyncio
 import contextlib
 import os
 import platform
 import random
 import re
 import shutil
-import time
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -112,11 +112,15 @@ async def handle_spectrals_upload_and_deletion(
     """
     spectral_urls = await upload_spectrals(spectrals_path, spectral_ids)
     if delete_spectrals and os.path.isdir(spectrals_path):
-        shutil.rmtree(spectrals_path, ignore_errors=True)
-        time.sleep(0.5)
+        # asyncio.sleep and a worker thread, not time.sleep and a direct call.
+        # This runs inside the web server's event loop, so a blocking second
+        # here stops every other request in the process -- the download
+        # progress, the flow poll, the page you are looking at.
+        await asyncio.to_thread(shutil.rmtree, spectrals_path, ignore_errors=True)
+        await asyncio.sleep(0.5)
         if os.path.isdir(spectrals_path):
-            shutil.rmtree(spectrals_path)
-            time.sleep(0.5)
+            await asyncio.to_thread(shutil.rmtree, spectrals_path, ignore_errors=True)
+            await asyncio.sleep(0.5)
     return spectral_urls
 
 

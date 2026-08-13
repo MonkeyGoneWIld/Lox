@@ -113,6 +113,21 @@ async def main() -> int:
         prompts._echo(line)
     payload = prompts.dry_run_payload
     check("the table picked up the fields", payload.get("title") == "Sammaouny", str(payload.get("title")))
+
+    # Both descriptions, kept apart. The heading was only recognised while the
+    # payload block was open -- and the first heading closes that block, so the
+    # second was never seen and the release description was appended onto the
+    # album description under one key.
+    posts = prompts.finish_posts()
+    described = posts[0]["descriptions"] if posts else {}
+    check("each description is captured under its own name",
+          sorted(described) == ["album description", "release description"], str(sorted(described)))
+    check("the album description is only the album description",
+          described.get("album description", "").endswith("Beyoulolek Eih [i](3:42)[/i]"),
+          repr(described.get("album description", ""))[:80])
+    check("and the release description is only its own",
+          described.get("release description", "").startswith("Encode Specifics:"),
+          repr(described.get("release description", ""))[:80])
     check("including the request id", payload.get("requestid") == "41688", str(payload.get("requestid")))
     check("and did not swallow description text as a field",
           not any(k.startswith("|") for k in payload), str(list(payload)))

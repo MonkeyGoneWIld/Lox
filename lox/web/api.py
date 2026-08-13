@@ -11,9 +11,7 @@ import contextlib
 import ipaddress
 import os
 import secrets
-import shlex
 import shutil
-import sys
 import time
 from typing import Any
 from urllib.parse import quote
@@ -1167,49 +1165,6 @@ async def api_folders(request: web.Request) -> web.Response:
     # Walking a large music directory is slow enough to stall the event loop.
     folders = await asyncio.to_thread(scan)
     return json_response({"directory": directory, "folders": folders, "linking": cfg.linking.enabled})
-
-
-def _cli_command() -> list[str]:
-    """Return the argv prefix that invokes this package's CLI."""
-    console_script = shutil.which("lox")
-    if console_script:
-        return [console_script]
-    return [sys.executable, "-u", "-m", "lox"]
-
-
-async def _run_cli(job, args: list[str]) -> int:
-    """Run the CLI as a subprocess, streaming its output into a job.
-
-    Args:
-        job: The job to stream into. Its ``stdin`` is wired to the process so
-            the browser can answer prompts.
-        args: CLI arguments after the program name.
-
-    Returns:
-        The process exit code.
-    """
-    command = _cli_command()
-    job.write_log(f"$ {os.path.basename(command[0])} {shlex.join(args)}")
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        *args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=os.getcwd(),
-        env={**os.environ, "PYTHONUNBUFFERED": "1", "TERM": "dumb"},
-    )
-    job.stdin = process.stdin
-    try:
-        assert process.stdout is not None
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            job.write_log(line.decode(errors="replace").rstrip("\n"))
-        return await process.wait()
-    finally:
-        job.stdin = None
 
 
 @routes.post("/api/upload")
