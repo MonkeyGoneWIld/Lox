@@ -183,6 +183,43 @@ async def api_seedboxes(request: web.Request) -> web.Response:
     )
 
 
+def _saved_password(connection: dict[str, Any], name: str) -> str:
+    """The password already on file for a connection the page sent back blank.
+
+    Matched on where it connects rather than on the entry's name: the name is
+    a label you are free to change, and looking it up by name meant renaming a
+    client while leaving its password untouched silently blanked the password
+    -- which stops seeding without saying anything. Falls back to the name for
+    an entry whose address is being corrected at the same time.
+
+    Args:
+        connection: The connection fields as the page sent them.
+        name: The entry's name.
+
+    Returns:
+        The stored password, or an empty string when there is nothing to reuse.
+    """
+    def where(parts: dict[str, Any]) -> tuple[str, str, str, str]:
+        return (
+            str(parts.get("client") or ""),
+            str(parts.get("host") or "").lower(),
+            str(parts.get("port") or ""),
+            str(parts.get("username") or ""),
+        )
+
+    target = where(connection)
+    by_name = ""
+    for box in cfg.seedbox:
+        parts = split_client_url(box.torrent_client or "")
+        if not parts.get("password"):
+            continue
+        if where(parts) == target:
+            return parts["password"]
+        if box.name and box.name == name:
+            by_name = parts["password"]
+    return by_name
+
+
 def _compose_entries(entries: list[Any]) -> list[dict[str, Any]]:
     """Turn what the page sends back into entries the config understands.
 
@@ -200,7 +237,6 @@ def _compose_entries(entries: list[Any]) -> list[dict[str, Any]]:
         SettingsError: If an entry is not a set of fields, or its connection
             cannot be made into a URL.
     """
-    stored = {box.name: split_client_url(box.torrent_client or "") for box in cfg.seedbox}
     out: list[dict[str, Any]] = []
     for index, entry in enumerate(entries or [], 1):
         if not isinstance(entry, dict):
@@ -210,7 +246,7 @@ def _compose_entries(entries: list[Any]) -> list[dict[str, Any]]:
         if isinstance(connection, dict):
             connection = dict(connection)
             if not connection.get("password"):
-                connection["password"] = (stored.get(entry.get("name", "")) or {}).get("password", "")
+                connection["password"] = _saved_password(connection, str(entry.get("name") or ""))
             try:
                 entry["torrent_client"] = build_client_url(connection)
             except ValueError as e:

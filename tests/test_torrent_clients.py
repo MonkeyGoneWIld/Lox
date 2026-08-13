@@ -240,6 +240,18 @@ async def main() -> int:
             check("really keeps it", split_client_url(cfg.seedbox[0].torrent_client)["password"] == NASTY, "")
             check("and applied the edit", cfg.seedbox[0].label == "music", cfg.seedbox[0].label)
 
+            # Renaming a client must not lose its password either. The name is
+            # a label; looking the password up by it meant a rename silently
+            # blanked the password and seeding stopped with nothing said.
+            renamed = {**stored, "name": "the seedbox"}
+            renamed["connection"] = {**stored["connection"], "password": ""}
+            async with s.put(f"{url}/api/settings/seedboxes", json={"seedboxes": [renamed]}) as r:
+                check("renaming a client is allowed", r.status == 200, str(r.status))
+            check("and does not lose its password",
+                  split_client_url(cfg.seedbox[0].torrent_client)["password"] == NASTY,
+                  cfg.seedbox[0].name)
+
+            stored = {**renamed}
             # A password that is typed replaces the one on file.
             replaced = {**stored, "connection": {**stored["connection"], "password": "brand-new"}}
             async with s.put(f"{url}/api/settings/seedboxes", json={"seedboxes": [replaced]}) as r:
