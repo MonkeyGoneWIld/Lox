@@ -2665,12 +2665,17 @@
              el('strong', {}, o.tracker),
              el('span', { class: `tag ${o.ok ? 'ok' : 'bad'}` },
                 o.ok ? (result.dry_run ? 'would upload' : 'uploaded') : (o.error || 'failed'))),
-          o.folder ? el('p', { class: 'hint' }, `Seeded from ${o.folder}`) : null,
+          o.folder
+            ? el('p', { class: 'hint' },
+                 `${result.dry_run ? 'Would seed' : 'Seeded'} from ${o.folder}`)
+            : null,
           rows.length
             ? el('table', { class: 'table meta-table' },
                 el('tbody', {}, ...rows.map(([k, v]) =>
                   el('tr', {}, el('td', { class: 'meta-field' }, k), el('td', { class: 'meta-value' }, v)))))
-            : null,
+            : result.dry_run && o.ok
+              ? el('p', { class: 'hint' }, 'No payload was captured — check the log for what it would have posted.')
+              : null,
         ),
       );
     });

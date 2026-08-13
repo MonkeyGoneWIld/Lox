@@ -96,31 +96,35 @@ def print_request_results(gazelle_site, results, searchstr):
 
 
 def _print_request_details(gazelle_site, req):
-    """Print request details."""
+    """Print request details.
+
+    Read with .get throughout: the two trackers do not return the same set of
+    fields, and a request missing one used to raise KeyError in the middle of
+    the fill prompt -- which took the whole upload with it.
+    """
     click.secho("\nSelected Request:")
-    click.secho(gazelle_site.request_url(req["requestId"]))
-    click.secho(f" {req['artist']}", fg="cyan", nl=False)
-    click.secho(f" - {req['title']} ", fg="cyan", nl=False)
-    click.secho(f"({req['year']})", fg="yellow")
-    click.secho(f" - {req['requestorName']} ", fg="cyan", nl=False)
+    click.secho(gazelle_site.request_url(req.get("requestId", "")))
+    click.secho(f" {req.get('artist', '')}", fg="cyan", nl=False)
+    click.secho(f" - {req.get('title', '')} ", fg="cyan", nl=False)
+    click.secho(f"({req.get('year', '')})", fg="yellow")
+    click.secho(f" - {req.get('requestorName', '')} ", fg="cyan", nl=False)
 
-    bounty: int = 0
-    if "totalBounty" in req:
-        bounty = req["totalBounty"]
-    elif "bounty" in req:
-        bounty = req["bounty"]
-
-    bounty_str = humanfriendly.format_size(bounty, binary=True)
+    bounty = req.get("totalBounty") or req.get("bounty") or 0
+    try:
+        bounty_str = humanfriendly.format_size(int(bounty), binary=True)
+    except (TypeError, ValueError):
+        bounty_str = str(bounty)
     click.secho(bounty_str, fg="cyan")
 
-    click.secho(f"Allowed Bitrate: {' | '.join(req['bitrateList'])}")
-    click.secho(f"Allowed Formats: {' | '.join(req['formatList'])}")
-    if "CD" in req["mediaList"]:
-        req["mediaList"].remove("CD")
-        req["mediaList"].append(str("CD " + req.get("logCue", "")))
-    click.secho(f"Allowed   Media: {' | '.join(req['mediaList'])}")
+    click.secho(f"Allowed Bitrate: {' | '.join(req.get('bitrateList') or ['Any'])}")
+    click.secho(f"Allowed Formats: {' | '.join(req.get('formatList') or ['Any'])}")
+    media = list(req.get("mediaList") or [])
+    if "CD" in media:
+        media.remove("CD")
+        media.append("CD " + str(req.get("logCue", "")))
+    click.secho(f"Allowed   Media: {' | '.join(media or ['Any'])}")
     click.secho("Description:", fg="cyan")
-    description = req["bbDescription"].splitlines(True)
+    description = (req.get("bbDescription") or req.get("description") or "").splitlines(True)
 
     # Should probably be refactored out and a setting.
     line_limit = 5
@@ -168,12 +172,11 @@ async def _confirm_request_id(gazelle_site: "BaseGazelleApi", request_id: str | 
     """
     try:
         req = await gazelle_site.request("request", {"id": request_id})
-        req["artist"] = ""
-        if len(req["musicInfo"]["artists"]) > 3:
-            req["artist"] = "Various Artists"
-        else:
-            for a in req["musicInfo"]["artists"]:
-                req["artist"] += a["name"] + " "
+        artists = ((req.get("musicInfo") or {}).get("artists")) or []
+        req["artist"] = (
+            "Various Artists" if len(artists) > 3
+            else " ".join(a.get("name", "") for a in artists if isinstance(a, dict))
+        )
     except RequestError:
         click.secho(f"{request_id} does not exist.", fg="red")
         raise click.Abort from None
