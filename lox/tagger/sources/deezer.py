@@ -23,18 +23,18 @@ CONTRIBUTOR_ROLES = {
     "featured": "guest",
     "remixer": "remixer",
     "remixing": "remixer",
-    "producer": "producer",
-    "producers": "producer",
-    "composer": "composer",
-    "composers": "composer",
-    "writer": "composer",
-    "author": "composer",
-    "lyricist": "composer",
     "conductor": "conductor",
     "dj": "djcompiler",
     "djcompiler": "djcompiler",
     "compiler": "djcompiler",
 }
+"""What Deezer calls a credit, and what the trackers call it.
+
+Deliberately not here: composers, writers, lyricists and producers. Deezer
+lists every one of them per track, and reading them turned an eighteen-track
+album into a release credited to fourteen people -- thirteen of whom wrote a
+song on it rather than performed on it. The trackers file releases by performer,
+and a songwriting credit is not a reason to be on that list."""
 
 # What a credit becomes when the album itself is not credited to that artist.
 # Someone who plays on one track of eighteen is a guest on the release, not one
@@ -87,15 +87,10 @@ class Scraper(DeezerBase, MetadataMixin):
         page = soup.get("_album_page") or {}
         return parse_copyright(page.get("LABEL_NAME") or soup.get("label") or "")
 
-    def parse_comment(self, soup):
-        """The producer line, which is the credit Deezer records for a release.
-
-        Nothing else in the scrape carries it, and it is the one piece of
-        provenance a WEB upload can state without guessing.
-        """
-        page = soup.get("_album_page") or {}
-        line = str(page.get("PRODUCER_LINE") or "").strip()
-        return line or None
+    # No parse_comment: the producer line was being used for it, and it is a
+    # copyright notice -- "2026 The Basement Records" -- not a comment about
+    # the release. It ended up in the middle of the group description, which is
+    # not something anyone would have typed there.
 
     def parse_upc(self, soup):
         """The barcode, from whichever payload has one."""

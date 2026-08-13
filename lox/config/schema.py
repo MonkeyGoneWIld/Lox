@@ -200,7 +200,6 @@ FIELDS: tuple[Field, ...] = (
     Field("tracker.ops.dottorrents_dir", "Torrent output directory", "path", "ops"),
     Field("tracker.dic.session", "Session cookie", "secret", "dic"),
     Field("tracker.dic.dottorrents_dir", "Torrent output directory", "path", "dic"),
-    Field("tracker.default_tracker", "Default tracker", "choice", "upload", choices=("RED", "OPS", "DIC")),
 
     # --- Checker ------------------------------------------------------
     Field("checker.tracker_budget", "Calls allowed per window", "int", "checker", minimum=1),
@@ -272,7 +271,6 @@ FIELDS: tuple[Field, ...] = (
           "A log is rotated when it reaches this size.", minimum=65536),
     Field("logging.max_total_bytes", "Maximum total log size", "bytes", "debug",
           "Older files are deleted to stay under it.", minimum=1048576),
-    Field("upload.update_notification", "Check for lox updates on startup", "bool", "upload"),
     Field("upload.compression.flac_compression_level", "FLAC compression level", "int", "upload",
           minimum=0, maximum=8),
     Field("upload.compression.compress_spectrals", "Compress spectrals before upload", "bool", "upload"),

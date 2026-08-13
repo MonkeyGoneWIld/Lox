@@ -58,6 +58,10 @@ _BARE_LETTERS = {"a": "Abort", "n": "No", "y": "Yes", "d": "Delete music folder"
 """What the pipeline means by a bracket with no word after it. Without these the
 button is labelled with the bare letter, which tells you nothing."""
 _DOWNCONVERT = re.compile(r"select formats to convert", re.IGNORECASE)
+# A prompt that names pasting a URL as one of its answers.
+_PASTE_URL = re.compile(r"paste a url|paste urls", re.IGNORECASE)
+# The one question that already loops back to the metadata when answered no.
+_RERUN_METADATA = re.compile(r"re-run metadata section", re.IGNORECASE)
 # Tag diffs print as "  tracknumber          ••• 1/14 >>> 1", album tags as
 # "> album         ••• Jiggy Buckaroo" with the arrow only when it changes.
 _TAG_CHANGE = re.compile(r"^>?\s*(\S[^•]*?)\s+•{3}\s+(.*?)(?:\s+>>>\s+(.*))?$")
@@ -107,7 +111,11 @@ _SELECTED_GROUP = re.compile(r"^Selected ID:\s*(\d+)\s*\|\s*(.+?)\s*$", re.IGNOR
 _SPECTRAL_EXT = (".png", ".jpg", ".jpeg")
 
 _STAGES: tuple[tuple[str, str], ...] = (
-    ("checking for mqa", "Checking for MQA"),
+    # Longest-lived phase last, and each needle has to be specific: "checking
+    # for mqa" also matched the dupe check's own output, so the whole
+    # existing-group search reported itself as an MQA check.
+    ("checking for mqa release", "Checking for MQA (a lossy format some releases are flagged as)"),
+    ("no mqa release detected", "Looking for an existing group"),
     ("results matching this release", "Looking for an existing group"),
     ("searching for", "Searching for metadata"),
     ("checking metadata", "Checking metadata"),
@@ -414,9 +422,31 @@ class FlowPrompts:
         # The descriptions a dry run would have posted, in full. Summarising
         # them as a character count is not something anyone can check.
         self.dry_run_descriptions: dict[str, list[str]] = {}
+        # One entry per torrent the run would have posted.
+        self.dry_run_posts: list[dict[str, Any]] = []
         self._description = ""
         self._block: dict[str, Any] | None = None
         self._file = ""
+
+    def _start_post(self) -> None:
+        """Begin collecting a new torrent's payload, keeping the previous one."""
+        if self.dry_run_payload or self.dry_run_descriptions:
+            self.dry_run_posts.append(
+                {
+                    "fields": dict(self.dry_run_payload),
+                    "descriptions": {
+                        name: "\n".join(lines) for name, lines in self.dry_run_descriptions.items()
+                    },
+                }
+            )
+        self.dry_run_payload = {}
+        self.dry_run_descriptions = {}
+        self._description = ""
+
+    def finish_posts(self) -> list[dict[str, Any]]:
+        """Every torrent this run would have posted, in order."""
+        self._start_post()
+        return self.dry_run_posts
 
     def _confirm(self, text: str, default: bool = True, abort: bool = False, **_: Any) -> "_Answer":
         """Stand-in for click.confirm, awaited or not.
@@ -442,6 +472,22 @@ class FlowPrompts:
         self._candidates = []
 
         async def ask() -> bool:
+            # The pipeline's own way back: answering no here re-runs the
+            # metadata step. As "Yes/No" that is invisible, so it is spelled
+            # out -- everything up to the post is still changeable, and a typo
+            # in the metadata should not mean aborting the whole upload.
+            if _RERUN_METADATA.search(prompt):
+                choice = await self.flow.choose(
+                    prompt.split("(")[0].strip().rstrip("?:, ") or "Upload the torrent?",
+                    [
+                        {"value": "yes", "label": "Upload the torrent"},
+                        {"value": "no", "label": "← Back to the metadata"},
+                    ],
+                    detail="Nothing has been posted yet, so going back changes what will be.",
+                    default="yes",
+                    tables=tables,
+                )
+                return str(choice) != "no"
             answer = await self.flow.confirm(prompt, default=bool(default), tables=tables)
             if abort and not answer:
                 raise click.Abort
@@ -504,6 +550,22 @@ class FlowPrompts:
                 # Converting is the point of being asked, so that is what the
                 # button under your finger does.
                 default="*",
+            )
+
+        # "Upload to an existing group? Paste a URL or [N]ew group" says paste
+        # a URL and then offered only buttons, so the one answer the question
+        # actually names could not be given. The buttons stay -- they are the
+        # common answers -- with a field beside them for the URL.
+        if _PASTE_URL.search(prompt) and options:
+            return await self.flow.ask(
+                Step(
+                    "text",
+                    prompt.split("[")[0].strip().rstrip("?:, ") or "Paste a URL",
+                    detail=prompt,
+                    options=found + options,
+                    default="",
+                    edit_shape="url_or_choice",
+                )
             )
 
         # "Which spectrals shall I upload" has three answers worth offering and
@@ -647,6 +709,12 @@ class FlowPrompts:
         head = _BLOCK_HEADS.get(text.strip().rstrip(":. ").lower())
         if head:
             kind, title = head
+            if kind == "dryrun":
+                # A release with a downconversion posts more than one torrent,
+                # each with its own payload and its own descriptions. They were
+                # all appended into one, which is why the album description
+                # came back repeated four times over.
+                self._start_post()
             self._block = {"kind": kind, "title": title, "rows": []}
             self._tables.append(self._block)
             self._file = ""
@@ -878,12 +946,18 @@ class FlowPrompts:
         # a question you can answer on its own: what is this release, who is on
         # it, which pressing is it, how is it filed.
         return [
+            # The two years sit together. They are the same question asked
+            # twice -- when the album came out, and when this pressing did --
+            # and putting them in different groups meant comparing them was a
+            # scroll.
             {"group": "The release", "fields": [
                 text("title", "Album title"),
                 {"kind": "select", "key": "rls_type", "label": "Release type",
                  "value": metadata.get("rls_type") or "Album", "choices": list(RELEASE_TYPES)},
                 {"kind": "number", "key": "group_year", "label": "Original release year",
                  "value": metadata.get("group_year") or "", "hint": "When the album first came out."},
+                {"kind": "number", "key": "year", "label": "Edition year",
+                 "value": metadata.get("year") or "", "hint": "When this pressing came out."},
             ]},
             {"group": "Credits", "fields": [
                 {"kind": "artists", "key": "artists", "label": "Artists",
@@ -891,8 +965,6 @@ class FlowPrompts:
                  "rows": [{"name": name, "role": role} for name, role in (metadata.get("artists") or [])]},
             ]},
             {"group": "This edition", "fields": [
-                {"kind": "number", "key": "year", "label": "Edition year",
-                 "value": metadata.get("year") or "", "hint": "When this pressing came out."},
                 text("edition_title", "Edition title", "Deluxe, Remastered. Blank for the original."),
                 text("label", "Record label"),
                 text("catno", "Catalogue number"),
@@ -1365,9 +1437,12 @@ async def run_upload(
 
     flow.progress(f"Finished {tracker}", 100.0)
     debug.log("upload finished tracker=%s folder=%s", tracker, folder, level=20)
+    posts = prompts.finish_posts()
     return {
-        "fields": prompts.dry_run_payload,
-        "descriptions": {name: "\n".join(lines) for name, lines in prompts.dry_run_descriptions.items()},
+        "posts": posts,
+        # The first is the release itself; any others are its downconversions.
+        "fields": posts[0]["fields"] if posts else {},
+        "descriptions": posts[0]["descriptions"] if posts else {},
     }
 
 
@@ -1516,6 +1591,7 @@ async def _upload_each(
                     "folder": target,
                     "would_post": posted.get("fields") or {},
                     "descriptions": posted.get("descriptions") or {},
+                    "posts": posted.get("posts") or [],
                 }
             )
         except click.Abort:

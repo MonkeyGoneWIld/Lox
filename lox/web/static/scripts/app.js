@@ -43,6 +43,8 @@
     // Check results by request id, so the split view can show what was found.
     requestMatches: new Map(),
     trackers: [],
+    seedboxes: [],
+    seedboxFields: [],
     flows: new Set(),
     pollers: new Map(),
   };
@@ -3212,6 +3214,7 @@ They will not be listed again, even if a later scan finds them.`)) {
       renderSettings();
       applyTheme();
       loadDebug();
+      loadSeedboxes();
     } catch (e) {
       body.replaceChildren(empty(e.message));
     }
@@ -3325,9 +3328,13 @@ They will not be listed again, even if a later scan finds them.`)) {
     // A credential that stands on its own gets its own test. One button at the
     // top of a section holding five independent tokens could only ever report
     // on one of them, which is what it was doing.
+    // The box is found by element, not by id: a settings key contains dots, so
+    // `#test-field-image.ptpimg_key` parses as an id plus a class and matched
+    // nothing at all -- pressing Test did nothing, silently.
+    const resultBox = field.test ? el('div', { class: 'test-result', hidden: true }) : null;
     const test = field.test
       ? el('button', { type: 'button', class: 'test-btn field-test',
-                       onclick: (e) => runTest(field.test, e.target, `test-field-${field.key}`) }, 'Test')
+                       onclick: (e) => runTest(field.test, e.target, resultBox) }, 'Test')
       : null;
 
     return el(
@@ -3337,7 +3344,7 @@ They will not be listed again, even if a later scan finds them.`)) {
          el('label', {}, field.label, configured ? el('span', { class: 'tag ok saved-tag' }, 'saved') : null),
          test),
       input,
-      field.test ? el('div', { class: 'test-result', id: `test-field-${field.key}`, hidden: true }) : null,
+      resultBox,
       field.help ? el('p', { class: 'hint setting-help' }, field.help) : null,
     );
   }
@@ -3371,15 +3378,6 @@ They will not be listed again, even if a later scan finds them.`)) {
         { class: 'hint' },
         'Changes apply immediately, no restart. Save before running a test — tests read what is stored, not what is typed.',
       ),
-      // Grouped and jumped to. Sixteen sections in one column meant the answer
-      // to "where do I set the seeding directory" was "scroll".
-      el('nav', { class: 'settings-nav' },
-         ...categoriesOf(sections).map(([name]) =>
-           el('a', { class: 'crumb', href: `#settings-${slug(name)}`,
-                     onclick: (e) => {
-                       e.preventDefault();
-                       $(`#settings-${slug(name)}`).scrollIntoView({ behavior: 'smooth', block: 'start' });
-                     } }, name))),
       ...categoriesOf(sections).flatMap(([name, group]) => [
         el('h2', { class: 'settings-category', id: `settings-${slug(name)}` }, name),
         ...group.map((section) =>
@@ -3404,6 +3402,7 @@ They will not be listed again, even if a later scan finds them.`)) {
               ? el('div', { class: 'settings-grid' },
                    ...section.fields.map((f) => settingField(f, values, secretsSet)))
               : null,
+            section.id === 'torrent' ? el('div', { id: 'seedbox-editor' }, spinner('Loading')) : null,
           ),
         ),
       ]),
@@ -3485,6 +3484,99 @@ They will not be listed again, even if a later scan finds them.`)) {
     }
   }
 
+  // The torrent clients finished uploads are handed to.
+  //
+  // A list of connections rather than a set of single values, which is why it
+  // was not on this page at all -- "inject into the torrent client" was a
+  // toggle with nothing behind it, and the connection details only existed in
+  // config.toml where the UI could not see or check them.
+  async function loadSeedboxes() {
+    const host = $('#seedbox-editor');
+    if (!host) return;
+    try {
+      const { seedboxes, fields } = await api('/api/settings/seedboxes');
+      state.seedboxes = seedboxes;
+      state.seedboxFields = fields;
+      renderSeedboxes();
+    } catch (e) {
+      host.replaceChildren(empty(e.message));
+    }
+  }
+
+  function renderSeedboxes() {
+    const host = $('#seedbox-editor');
+    const boxes = state.seedboxes;
+
+    const card = (box, index) => {
+      const grid = el('div', { class: 'settings-grid' });
+      state.seedboxFields.forEach((field) => {
+        const set = field.key === 'torrent_client' && box.torrent_client_set;
+        let input;
+        if (field.kind === 'bool') {
+          input = el('input', { type: 'checkbox', checked: !!box[field.key],
+                                onchange: (e) => (box[field.key] = e.target.checked) });
+          grid.append(el('div', { class: 'setting' },
+            el('label', { class: 'check' }, input, field.label),
+            field.help ? el('p', { class: 'hint setting-help' }, field.help) : null));
+          return;
+        }
+        if (field.kind === 'choice') {
+          input = el('select', { onchange: (e) => (box[field.key] = e.target.value) },
+            ...field.choices.map((c) =>
+              el('option', { value: c, selected: (box[field.key] || '') === c }, c || 'Every tracker')));
+        } else if (field.kind === 'list') {
+          input = el('input', { type: 'text', value: (box[field.key] || []).join(' '),
+                                placeholder: '--checksum -P' });
+          input.addEventListener('input', () => {
+            box[field.key] = input.value.split(/\s+/).filter(Boolean);
+          });
+        } else {
+          input = el('input', {
+            type: field.kind === 'secret' ? 'password' : 'text',
+            autocomplete: 'new-password',
+            value: field.kind === 'secret' ? '' : (box[field.key] ?? ''),
+            placeholder: set ? '•••••••• (saved — type to replace)' : (field.kind === 'secret' ? 'Not set' : ''),
+            oninput: (e) => (box[field.key] = e.target.value),
+          });
+        }
+        grid.append(el('div', { class: 'setting' },
+          el('label', {}, field.label, set ? el('span', { class: 'tag ok saved-tag' }, 'saved') : null),
+          input,
+          field.help ? el('p', { class: 'hint setting-help' }, field.help) : null));
+      });
+
+      return el('div', { class: 'seedbox-card' },
+        el('div', { class: 'row settings-head' },
+           el('strong', {}, box.name || `Client ${index + 1}`),
+           el('button', { type: 'button', class: 'danger',
+                          onclick: () => { boxes.splice(index, 1); renderSeedboxes(); } }, 'Remove')),
+        grid);
+    };
+
+    host.replaceChildren(
+      boxes.length
+        ? el('div', { class: 'seedbox-list' }, ...boxes.map(card))
+        : el('p', { class: 'hint' }, 'No torrent client configured. Uploads will not be seeded automatically.'),
+      el('div', { class: 'row' },
+         el('button', { type: 'button', onclick: () => {
+           boxes.push({ name: `client ${boxes.length + 1}`, enabled: true, type: 'local',
+                        directory: '', label: '', torrent_client: '', extra_args: [] });
+           renderSeedboxes();
+         } }, '+ Add a client'),
+         el('button', { type: 'button', class: 'primary', onclick: saveSeedboxes }, 'Save clients')),
+    );
+  }
+
+  async function saveSeedboxes() {
+    try {
+      await api('/api/settings/seedboxes', { method: 'PUT', body: { seedboxes: state.seedboxes } });
+      toast('Torrent clients saved', 'ok');
+      loadSeedboxes();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
   async function clearDebug() {
     await api('/api/debug/clear', { method: 'POST' });
     loadDebug();
@@ -3511,8 +3603,8 @@ They will not be listed again, even if a later scan finds them.`)) {
     }
   }
 
-  async function runTest(target, button, boxId) {
-    const box = $(`#${boxId || `test-${target}`}`);
+  async function runTest(target, button, boxOrId) {
+    const box = typeof boxOrId === 'string' ? $(`#${boxOrId}`) : (boxOrId || $(`#test-${target}`));
     if (!box) return;
     const label = button.textContent;
     button.disabled = true;

@@ -79,6 +79,9 @@ class DownloadJob(msgspec.Struct):
     error: str | None = None
     started: float | None = None
     finished: float | None = None
+    # Highest percentage reported so far, so the bar is monotonic even if a
+    # size correction would otherwise pull it back.
+    _floor: float = 0.0
 
     @property
     def done_count(self) -> int:
@@ -103,7 +106,16 @@ class DownloadJob(msgspec.Struct):
                 share += 1.0
             elif track.size:
                 share += min(1.0, track.downloaded / track.size)
-        return min(100.0, share / len(self.tracks) * 100)
+            elif track.status == "running":
+                # Started, but the server has not said how big it is yet.
+                # Without this the bar sits still while several tracks are
+                # already downloading, then jumps when the first one lands --
+                # which is the jumping, not the arithmetic.
+                share += 0.05
+        # Never goes backwards: a track that has reported some progress cannot
+        # report less later, and the denominator is fixed from the start.
+        self._floor = max(getattr(self, "_floor", 0.0), min(100.0, share / len(self.tracks) * 100))
+        return self._floor
 
     def as_dict(self) -> dict[str, Any]:
         """Serialize for the web API."""

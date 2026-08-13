@@ -78,7 +78,11 @@ async def main() -> int:
     check("a featured artist is a guest", roles.get("Sherine") == "guest", str(parsed))
     check("a remixer is a remixer, not a main artist",
           roles.get("DJ Someone") == "remixer", str(parsed))
-    check("and a composer is a composer", roles.get("A Composer") == "composer", str(parsed))
+    # Composers, writers and producers are deliberately not read. Deezer lists
+    # them per track, and reading them credited an eighteen-track album to
+    # fourteen people, thirteen of whom wrote a song rather than performed on
+    # it. The trackers file releases by performer.
+    check("a composer is not credited on the release", "A Composer" not in roles, str(parsed))
 
     # --- and the album demotes anyone it is not credited to ----------
     tracks = {
@@ -115,8 +119,11 @@ async def main() -> int:
           scraper.parse_release_year(SOUP) == 2026, str(scraper.parse_release_year(SOUP)))
     check("the label is the private page's, not the copyright line",
           scraper.parse_release_label(SOUP) == "Rotana", str(scraper.parse_release_label(SOUP)))
-    check("the producer line becomes the comment",
-          "Rotana Audio Visual" in (scraper.parse_comment(SOUP) or ""), str(scraper.parse_comment(SOUP)))
+    # The producer line is a copyright notice, not a comment. Using it as one
+    # put "2026 The Basement Records" in the middle of the group description.
+    check("the producer line is not used as a comment",
+          not hasattr(scraper, "parse_comment") or scraper.parse_comment(SOUP) is None,
+          str(getattr(scraper, "parse_comment", lambda _s: None)(SOUP)))
     check("the barcode is picked up", scraper.parse_upc(SOUP) == "729771312036", str(scraper.parse_upc(SOUP)))
 
     # Without an ARL there is no private page, and nothing breaks.
@@ -126,7 +133,7 @@ async def main() -> int:
     check("and the public label still parses",
           scraper.parse_release_label(public_only) == "The Basement Records",
           str(scraper.parse_release_label(public_only)))
-    check("and there is simply no comment", scraper.parse_comment(public_only) is None, "")
+    check("and there is still no comment", scraper.parse_comment(public_only) is None, "")
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")

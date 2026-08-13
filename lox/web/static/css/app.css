@@ -537,7 +537,10 @@ button.ghost { background: none; }
 .dl-sub { color: var(--text-dim); font-size: 12px; }
 
 .bar { height: 5px; background: var(--bg-input); border-radius: 3px; overflow: hidden; margin-top: 7px; }
-.bar-fill { height: 100%; background: var(--accent); transition: width 0.25s; }
+/* Eased over a whole poll interval. The server reports once a second, so a
+   0.25s transition finished long before the next number arrived and the bar
+   spent most of its time stationary -- which reads as jumping. */
+.bar-fill { height: 100%; background: var(--accent); transition: width 1s linear; }
 .bar-fill.done { background: var(--ok); }
 .bar-fill.failed { background: var(--bad); }
 
@@ -767,6 +770,13 @@ select {
   margin: 12px 0 14px;
 }
 
+/* Prompts, options and cards stop growing at a readable width. On an ultrawide
+   a question stretched the full 2000px, so reading one option meant tracking
+   across the whole screen and back. */
+.step { max-width: 1100px; }
+.matches { max-width: 1100px; }
+.step-prompt, .step > .hint { max-width: 90ch; }
+
 /* A release found on the tracker: the thing the question is about, so it gets
    room to say what it is instead of being squeezed onto the button row and cut
    off halfway through the tags. */
@@ -943,9 +953,13 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
    out the same height -- each is exactly as wide as its own aspect ratio needs
    at that height. Sizing the boxes any other way letterboxes the images inside
    them, which is where the gaps came from. */
-.spectrals { margin: 14px auto; max-width: 1100px; }
+/* Left-aligned and as wide as the pane allows, not a centred column: on a wide
+   screen the centred version left the spectrals small in the middle with empty
+   space on both sides, which is the opposite of what looking at a spectral is
+   for. */
+.spectrals { margin: 14px 0; }
 
-.spectral-row { padding: 6px 0 14px; }
+.spectral-row { padding: 6px 0 16px; }
 
 .spectral-num {
   color: var(--text-dim);
@@ -958,6 +972,9 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 }
 
 .spectral-pair { display: flex; flex-flow: row nowrap; align-items: flex-start; }
+/* The step holding spectrals is as wide as the pane; every other step stays
+   readable. A 1900px-wide paragraph of prompt text is not readable. */
+.step:has(.spectrals) { max-width: none; }
 .spectral-full { width: 86%; }
 .spectral-zoom { width: 13.85%; margin-left: 0.15%; }
 .spectral-pair img {
