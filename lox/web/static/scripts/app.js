@@ -413,18 +413,37 @@
     }
   }
 
-  // Uploads run one at a time. Several at once would interleave their
-  // questions, and a prompt you cannot tell the release for is worse than
-  // waiting.
+  // Everything downloads at once; the uploads queue behind each other.
+  //
+  // These are two different jobs with two different reasons. Downloads are
+  // network-bound and the downloader already limits its own concurrency, so
+  // running them one release at a time left the connection idle between
+  // albums. Uploads ask questions, and two uploads asking at once gives you a
+  // prompt you cannot tell the release for -- so those still run in turn, each
+  // starting as soon as its own download lands.
   async function bulkDownloadAndUpload(entries) {
     const trackers = [...state.uploadTrackers];
     if (!trackers.length) return toast('Pick a tracker to upload to first', 'bad');
     clearPicks();
-    setView('uploads');
-    toast(`Queued ${entries.length} for download and upload, one at a time.`);
-    for (const { id, item } of entries) {
-      // Sequential on purpose: each waits for the one before it to finish.
-      await downloadAndUpload(id, item, { quiet: true });
+    setView('downloads');
+    toast(`Downloading ${entries.length} together. Uploads start as each one lands.`);
+
+    const started = await Promise.all(entries.map(async ({ id, item }) => ({
+      id,
+      label: `${item?.artist || ''} - ${item?.title || ''}`.trim() || String(id),
+      queued: await download(id),
+    })));
+
+    // One at a time from here, in the order they were picked.
+    for (const { id, label, queued } of started) {
+      if (!queued) continue;
+      const job = await waitForDownload(queued.id);
+      if (!job || job.status !== 'done' || !job.folder) {
+        toast(`${label}: ${job?.error || 'download did not finish'}`, 'bad');
+        continue;
+      }
+      setView('uploads');
+      await startUpload(job.folder, trackers, id);
     }
   }
 
@@ -1222,7 +1241,7 @@
       return toast(`${label}: ${job?.error || 'download did not finish'}`, 'bad');
     }
     setView('uploads');
-    await startUpload(job.folder, trackers);
+    await startUpload(job.folder, trackers, albumId);
   }
 
   // Deleting a release is not undoable, so it asks first and names what it is
@@ -1739,17 +1758,20 @@
     }
 
     fields.push(
+      // Pages, not a row count. One page is one call against the budget, so
+      // pages are the unit the cost is actually measured in -- picking "200"
+      // and being told it costs 8 calls was arithmetic the page could do.
       filterField(
         'requests-limit',
-        'How many to fetch',
+        'Pages to fetch',
         el(
           'select',
           { id: 'requests-limit', onchange: requestsCost },
-          ...[25, 50, 100, 200, 500].map((n) =>
+          ...[1, 2, 3, 4, 5, 8, 10, 20].map((pages) =>
             el(
               'option',
-              { value: String(n), selected: n === 100 },
-              `${n} — ${Math.ceil(n / (spec.page_size || 25))} page${n > spec.page_size ? 's' : ''}`,
+              { value: String(pages), selected: pages === 4 },
+              `${pages} page${pages === 1 ? '' : 's'} — up to ${pages * (spec.page_size || 25)} requests`,
             ),
           ),
         ),
@@ -1782,8 +1804,7 @@
   function requestsCost() {
     const limitEl = $('#requests-limit');
     if (!limitEl) return;
-    const size = state.requestFilters?.page_size || 25;
-    const pages = Math.ceil((Number(limitEl.value) || size) / size);
+    const pages = Number(limitEl.value) || 1;
     const budget = state.trackers.find((t) => t.code === state.requestsTracker);
     const note = `Costs up to ${pages} call${pages === 1 ? '' : 's'}`;
     $('#requests-cost').textContent = budget ? `${note} of ${budget.remaining} left on ${budget.code}.` : `${note}.`;
@@ -1793,9 +1814,11 @@
 
   async function requestsFetch() {
     if (!state.requestsTracker) return toast('No tracker configured', 'bad');
-    const limit = Number($('#requests-limit')?.value) || 25;
+    const pages = Number($('#requests-limit')?.value) || 1;
+    const limit = pages * (state.requestFilters?.page_size || 25);
     const container = $('#requests-results');
-    container.replaceChildren(spinner(`Fetching up to ${limit} open requests`));
+    container.replaceChildren(
+      spinner(`Fetching ${pages} page${pages === 1 ? '' : 's'} of open requests`));
     try {
       const params = new URLSearchParams({
         tracker: state.requestsTracker,
@@ -2195,9 +2218,11 @@
     const body = $('#found-body');
     body.replaceChildren(spinner('Loading'));
     try {
-      const { found } = await api('/api/found');
+      const { found, blacklisted } = await api('/api/found');
       state.found = found;
       state.selectedFound = new Set(found.map((f) => f.id));
+      $('#found-restore').hidden = !blacklisted;
+      $('#found-restore').textContent = `Clear blacklist (${blacklisted})`;
       renderFound();
     } catch (e) {
       body.replaceChildren(empty(e.message));
@@ -2243,6 +2268,44 @@
   }
 
   const foundSelection = () => state.found.filter((f) => state.selectedFound.has(f.id));
+
+  // Off the list, one of two ways.
+  //
+  // "Remove" forgets the check result, so the next scan that turns the release
+  // up puts it back -- which is what you want for something you are not doing
+  // yet. "Blacklist" remembers it as unwanted, and no scan lists it again
+  // until the blacklist is cleared.
+  async function dismissFound(blacklist) {
+    const picked = foundSelection();
+    if (!picked.length) return toast('Nothing selected', 'bad');
+    const what = `${picked.length} release${picked.length === 1 ? '' : 's'}`;
+    if (blacklist && !confirm(`Blacklist ${what}?
+
+They will not be listed again, even if a later scan finds them.`)) {
+      return;
+    }
+    try {
+      await api('/api/found/dismiss', {
+        method: 'POST',
+        body: { ids: picked.map((f) => f.id), blacklist },
+      });
+      toast(blacklist ? `Blacklisted ${what}` : `Removed ${what}`, 'ok');
+      loadFound();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
+  async function restoreFound() {
+    if (!confirm('Clear the blacklist? Releases on it can be found by a scan again.')) return;
+    try {
+      const { restored } = await api('/api/found/restore', { method: 'POST', body: {} });
+      toast(`Cleared ${restored} from the blacklist`, 'ok');
+      loadFound();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
 
   // Ask the trackers again about the selection. Costs budget, so it is a button
   // rather than something that happens when the tab opens.
@@ -2323,14 +2386,18 @@
     }
   }
 
-  async function startUpload(folder, trackers) {
+  // `albumId` is passed on when the upload came from a Deezer release, so a
+  // successful one can take that release off the Found list. An upload started
+  // from the Uploads tab has no id, and the server falls back to matching the
+  // folder name.
+  async function startUpload(folder, trackers, albumId) {
     const targets = trackers && trackers.length ? trackers : [...state.uploadTrackers];
     if (!targets.length) return toast('Pick at least one tracker', 'bad');
 
     try {
       const { flow_id, dry_run } = await api('/api/upload', {
         method: 'POST',
-        body: { folder, trackers: targets },
+        body: { folder, trackers: targets, album_id: albumId ? String(albumId) : '' },
       });
       if (dry_run) toast('Dry run: nothing reaches the tracker or the download client.');
       state.flows.add(flow_id);
@@ -2512,20 +2579,22 @@
   // could never see the release while editing part of it. This is every field
   // with the control that suits it and one Save.
   function metadataForm(step, send) {
-    const sections = (step.options || []).map((s) => ({
-      ...s,
-      rows: (s.rows || []).map((r) => ({ ...r })),
+    // The server sends groups of fields; flatten for the answer, keep the
+    // grouping for the layout.
+    const groups = (step.options || []).map((g) => ({
+      group: g.group || '',
+      fields: (g.fields || []).map((f) => ({ ...f, rows: (f.rows || []).map((r) => ({ ...r })) })),
     }));
+    const sections = groups.flatMap((g) => g.fields);
 
     const label = (section) =>
       el('div', { class: 'meta-form-head' },
          el('label', {}, section.label),
          section.hint ? el('span', { class: 'meta-form-hint' }, section.hint) : null);
 
-    const body = el('div', { class: 'meta-form' });
+    const body = el('div', { class: 'meta-groups' });
 
-    const draw = () => {
-      body.replaceChildren(...sections.map((section) => {
+    const drawField = (section) => {
         // Credits, lists, the tracklist and the comment are as tall as their
         // content and read badly in a narrow column, so they take the full
         // row. Marked here as well as in CSS, so the layout does not depend on
@@ -2604,7 +2673,13 @@
         control.addEventListener('input', () => (section.value = control.value));
         field.append(control);
         return field;
-      }));
+    };
+
+    const draw = () => {
+      body.replaceChildren(...groups.map((group) =>
+        el('section', { class: 'meta-group' },
+           group.group ? el('h4', { class: 'meta-group-head' }, group.group) : null,
+           el('div', { class: 'meta-form' }, ...group.fields.map(drawField)))));
     };
     draw();
 
@@ -2790,32 +2865,63 @@
     );
   }
 
-  // What the run actually did, or in a dry run would have done. The point of a
-  // dry run is the answer to "what would this have posted", and that answer was
-  // only ever visible as a few lines scrolling past in the log.
+  // What the run did, or in a dry run would have done.
+  //
+  // A finished upload is a line, not a page. The full payload used to sit open
+  // under every completed run, so three uploads pushed the one that still
+  // needed you off the bottom of the screen. It is all still here, one click
+  // away, and a dry run's descriptions are here in full -- the whole point of
+  // rehearsing is reading what would have been posted, which "1179 chars" does
+  // not let you do.
   function flowResult(result) {
     const parts = [];
     (result.outcomes || []).forEach((o) => {
       const rows = Object.entries(o.would_post || {});
+      const detail = [];
+
+      if (o.folder) {
+        detail.push(el('p', { class: 'hint' },
+          `${result.dry_run ? 'Would seed' : 'Seeded'} from ${o.folder}`));
+      }
+      (o.kept || []).forEach((path) => detail.push(
+        el('div', { class: 'row result-kept' },
+           el('span', { class: 'hint' }, `Transcode kept at ${path}`),
+           el('button', {
+             type: 'button', class: 'danger',
+             onclick: (e) => deleteFolder(path, basename(path), async () => {
+               e.target.closest('.result-kept').remove();
+               loadFolders();
+             }),
+           }, 'Delete'))));
+
+      const plain = rows.filter(([k]) => !DESCRIPTION_FIELDS.includes(k));
+      if (plain.length) {
+        detail.push(el('table', { class: 'table meta-table' },
+          el('tbody', {}, ...plain.map(([k, v]) =>
+            el('tr', {}, el('td', { class: 'meta-field' }, k), el('td', { class: 'meta-value' }, v))))));
+      }
+      DESCRIPTION_FIELDS.forEach((key) => {
+        const body = (o.descriptions || {})[key];
+        if (!body) return;
+        detail.push(
+          el('h4', { class: 'result-desc-head' }, key),
+          el('pre', { class: 'result-desc' }, body),
+        );
+      });
+      if (!detail.length) {
+        detail.push(el('p', { class: 'hint' }, 'Nothing else to show — see the log.'));
+      }
+
       parts.push(
         el(
-          'div',
+          'details',
           { class: 'result-block' },
-          el('div', { class: 'row' },
+          el('summary', {},
              el('strong', {}, o.tracker),
              el('span', { class: `tag ${o.ok ? 'ok' : 'bad'}` },
-                o.ok ? (result.dry_run ? 'would upload' : 'uploaded') : (o.error || 'failed'))),
-          o.folder
-            ? el('p', { class: 'hint' },
-                 `${result.dry_run ? 'Would seed' : 'Seeded'} from ${o.folder}`)
-            : null,
-          rows.length
-            ? el('table', { class: 'table meta-table' },
-                el('tbody', {}, ...rows.map(([k, v]) =>
-                  el('tr', {}, el('td', { class: 'meta-field' }, k), el('td', { class: 'meta-value' }, v)))))
-            : result.dry_run && o.ok
-              ? el('p', { class: 'hint' }, 'No payload was captured — check the log for what it would have posted.')
-              : null,
+                o.ok ? (result.dry_run ? 'would upload' : 'uploaded') : (o.error || 'failed')),
+             el('span', { class: 'card-sub' }, o.folder ? basename(o.folder) : '')),
+          ...detail,
         ),
       );
     });
@@ -2827,6 +2933,10 @@
       ...parts,
     );
   }
+
+  const DESCRIPTION_FIELDS = ['album description', 'release description'];
+
+  const basename = (path) => String(path || '').split(/[\\/]/).filter(Boolean).pop() || '';
 
   function flowStep(flow) {
     const step = flow.step;
@@ -3495,6 +3605,9 @@
     $('#found-upload').addEventListener('click', () =>
       bulkDownloadAndUpload(foundSelection().map((f) => ({ id: f.album_id, item: f }))));
     $('#found-recheck').addEventListener('click', recheckFound);
+    $('#found-dismiss').addEventListener('click', () => dismissFound(false));
+    $('#found-blacklist').addEventListener('click', () => dismissFound(true));
+    $('#found-restore').addEventListener('click', restoreFound);
     $('#folders-refresh').addEventListener('click', loadFolders);
     $('#upload-dry-run').addEventListener('change', (e) =>
       setUploadFlag('upload.dry_run', e.target, 'Dry run'));

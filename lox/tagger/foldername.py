@@ -33,11 +33,15 @@ async def rename_folder(path, metadata, auto_rename, check=True):
         new_base = old_base
         auto_rename = True
 
-    if check and old_base != new_base:
+    # Shown even when the name is already right. Skipping the step silently is
+    # why an upload could go from the metadata straight to "upload the
+    # torrent?" with no sign that the folder had been looked at.
+    if check:
         click.secho("\nRenaming folder...", fg="cyan", bold=True)
         click.echo(f"Old folder name        : {old_base}")
         click.echo(f"New pending folder name: {new_base}")
 
+    if check and old_base != new_base:
         user_rename_choice = cfg.upload.yes_all or await ask_confirm(
             click.style("\nWould you like to replace the original folder name?",
                         fg="magenta"),
@@ -49,6 +53,8 @@ async def rename_folder(path, metadata, auto_rename, check=True):
             if auto_rename or user_rename_choice
             else old_base
         )
+    elif check:
+        click.secho("The folder is already named correctly.", fg="green")
 
     # Renamed where it stands, not moved into the download directory. With
     # per-tracker linking the release lives in <link_dir>/<TRACKER>/, and

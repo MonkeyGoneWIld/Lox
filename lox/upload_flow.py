@@ -93,6 +93,8 @@ _BLOCK_HEADS = {
 _DRY_FIELD = re.compile(r"^(\S[\S ]*?)\s{2,}(.+?)\s*$")
 # "Old folder name        : Artist - Album (2026) [WEB FLAC]"
 _FOLDER_NAME = re.compile(r"^(Old|New pending)\s+folder name\s*:\s*(.+?)\s*$", re.IGNORECASE)
+# "[DRY RUN] album description that would have been posted:"
+_DESCRIPTION_HEAD = re.compile(r"^\[DRY RUN\]\s+(.+?)\s+that would have been posted", re.IGNORECASE)
 _RENAME_LINE = re.compile(r"^(?P<old>.+?)\s+>>>\s+(?P<new>.+?)\s*$")
 # "> 2025 / Deluxe / 602488195980 / WEB / AAC / 256" -- year, then any number of
 # edition and catalogue-number parts, then media, format and encoding. The three
@@ -395,6 +397,7 @@ class FlowPrompts:
         self._saved_editors: dict[str, Any] = {}
         self._saved_manual: Any = None
         self._saved_reviews: list[tuple[Any, Any]] = []
+        self._saved_tqdm: Any = None
         # Group candidates printed since the last question, so the next prompt
         # can offer them instead of asking for a pasted URL.
         self._candidates: list[dict[str, Any]] = []
@@ -408,6 +411,10 @@ class FlowPrompts:
         self._tables: list[dict[str, Any]] = []
         # What a dry run said it would post, kept for the result panel.
         self.dry_run_payload: dict[str, str] = {}
+        # The descriptions a dry run would have posted, in full. Summarising
+        # them as a character count is not something anyone can check.
+        self.dry_run_descriptions: dict[str, list[str]] = {}
+        self._description = ""
         self._block: dict[str, Any] | None = None
         self._file = ""
 
@@ -561,6 +568,11 @@ class FlowPrompts:
         if not text:
             return
 
+        if self._description and text.startswith("|"):
+            body = self.dry_run_descriptions.setdefault(self._description, [])
+            body.append(text[1:].lstrip())
+            return
+
         group = _GROUP_LINE.match(text)
         if group:
             group_id, description, url = group[1], group[2].strip(), group[3]
@@ -684,6 +696,8 @@ class FlowPrompts:
             # prose and must not be mined for "key   value" pairs.
             if text.startswith("[DRY RUN]"):
                 self._block = None
+                heading = _DESCRIPTION_HEAD.match(text)
+                self._description = heading[1].lower() if heading else ""
                 return False
             field = _DRY_FIELD.match(text)
             if not field:
@@ -860,27 +874,41 @@ class FlowPrompts:
         def text(key: str, label: str, hint: str = "") -> dict[str, Any]:
             return {"kind": "text", "key": key, "label": label, "value": metadata.get(key) or "", "hint": hint}
 
+        # Grouped, because thirteen fields in one run is a wall. Each group is
+        # a question you can answer on its own: what is this release, who is on
+        # it, which pressing is it, how is it filed.
         return [
-            {"kind": "artists", "key": "artists", "label": "Artists",
-             "hint": "Roles are the ones the trackers accept. Drop a credit by removing its row.",
-             "rows": [{"name": name, "role": role} for name, role in (metadata.get("artists") or [])]},
-            text("title", "Album title"),
-            {"kind": "select", "key": "rls_type", "label": "Release type",
-             "value": metadata.get("rls_type") or "Album", "choices": list(RELEASE_TYPES)},
-            {"kind": "number", "key": "group_year", "label": "Original release year",
-             "value": metadata.get("group_year") or "", "hint": "The year the album first came out."},
-            {"kind": "number", "key": "year", "label": "Edition year",
-             "value": metadata.get("year") or "", "hint": "The year this particular pressing came out."},
-            text("edition_title", "Edition title", "Deluxe, Remastered, and so on. Blank for the original."),
-            text("label", "Record label"),
-            text("catno", "Catalogue number"),
-            text("upc", "UPC"),
-            {"kind": "list", "key": "genres", "label": "Genres", "hint": "At least one is required.",
-             "rows": [{"value": genre} for genre in (metadata.get("genres") or [])]},
-            {"kind": "list", "key": "urls", "label": "URLs",
-             "rows": [{"value": url} for url in (metadata.get("urls") or [])]},
-            {"kind": "textarea", "key": "comment", "label": "Comment", "value": metadata.get("comment") or ""},
-            {"kind": "tracks", "key": "tracks", "label": "Track titles", "rows": tracks},
+            {"group": "The release", "fields": [
+                text("title", "Album title"),
+                {"kind": "select", "key": "rls_type", "label": "Release type",
+                 "value": metadata.get("rls_type") or "Album", "choices": list(RELEASE_TYPES)},
+                {"kind": "number", "key": "group_year", "label": "Original release year",
+                 "value": metadata.get("group_year") or "", "hint": "When the album first came out."},
+            ]},
+            {"group": "Credits", "fields": [
+                {"kind": "artists", "key": "artists", "label": "Artists",
+                 "hint": "Main is for the artists the release is by. Everyone else is a guest or a specific role.",
+                 "rows": [{"name": name, "role": role} for name, role in (metadata.get("artists") or [])]},
+            ]},
+            {"group": "This edition", "fields": [
+                {"kind": "number", "key": "year", "label": "Edition year",
+                 "value": metadata.get("year") or "", "hint": "When this pressing came out."},
+                text("edition_title", "Edition title", "Deluxe, Remastered. Blank for the original."),
+                text("label", "Record label"),
+                text("catno", "Catalogue number"),
+                text("upc", "UPC"),
+            ]},
+            {"group": "Filing", "fields": [
+                {"kind": "list", "key": "genres", "label": "Genres", "hint": "At least one is required.",
+                 "rows": [{"value": genre} for genre in (metadata.get("genres") or [])]},
+                {"kind": "list", "key": "urls", "label": "URLs",
+                 "rows": [{"value": url} for url in (metadata.get("urls") or [])]},
+                {"kind": "textarea", "key": "comment", "label": "Comment",
+                 "value": metadata.get("comment") or ""},
+            ]},
+            {"group": "Tracks", "fields": [
+                {"kind": "tracks", "key": "tracks", "label": "Track titles", "rows": tracks},
+            ]},
         ]
 
     @staticmethod
@@ -1154,6 +1182,45 @@ class FlowPrompts:
         self.flow.note("Using the metadata from the file tags. Edit it in the next step.")
         return metadata
 
+    def _progress_bar(self) -> Any:
+        """A stand-in for tqdm that reports into the flow.
+
+        Every per-file phase of an upload -- generating spectrals, compressing
+        them, checking integrity, transcoding -- runs through
+        ``lox.common.files.process_files``, which counts them off on a tqdm bar
+        written to stderr. In a browser that is invisible, so the longest parts
+        of an upload showed a stage name and nothing else for minutes at a
+        time. Same counter, reported where it can be seen.
+        """
+        flow = self.flow
+
+        class Bar:
+            def __init__(self, total: int = 0, desc: str = "", **_: Any) -> None:
+                self.total = total or 0
+                self.desc = desc or "Working"
+                self.n = 0
+                self._report()
+
+            def _report(self) -> None:
+                percent = (self.n / self.total * 100) if self.total else None
+                flow.progress(f"{self.desc} ({self.n}/{self.total})" if self.total else self.desc, percent)
+
+            def update(self, count: int = 1) -> None:
+                self.n += count
+                self._report()
+
+            def close(self) -> None:
+                self.n = self.total
+                self._report()
+
+            def __enter__(self) -> "Bar":
+                return self
+
+            def __exit__(self, *_exc: object) -> None:
+                self.close()
+
+        return Bar
+
     async def _view_spectrals(self, spectrals_path: str, all_spectral_ids: dict[int, str]) -> None:
         """Stand in for the pipeline's spectral viewer.
 
@@ -1213,6 +1280,13 @@ class FlowPrompts:
         self._saved_manual = metadata._get_manual_metadata
         metadata._get_manual_metadata = self._manual_metadata
 
+        # The per-file counter for the slow phases, moved from a terminal
+        # progress bar nobody can see to the flow's own progress.
+        import lox.common.files as files
+
+        self._saved_tqdm = files.tqdm
+        files.tqdm = self._progress_bar()
+
         # Imported here rather than at module scope: the uploader pulls in the
         # whole audio stack, and the web app has to be importable without it.
         spectrals = _spectrals_module()
@@ -1233,6 +1307,11 @@ class FlowPrompts:
         for module, original in self._saved_reviews:
             module.review_metadata = original
         self._saved_reviews.clear()
+        if self._saved_tqdm is not None:
+            import lox.common.files as files
+
+            files.tqdm = self._saved_tqdm
+            self._saved_tqdm = None
         if self._saved_manual is not None:
             _metadata_module()._get_manual_metadata = self._saved_manual
             self._saved_manual = None
@@ -1286,7 +1365,10 @@ async def run_upload(
 
     flow.progress(f"Finished {tracker}", 100.0)
     debug.log("upload finished tracker=%s folder=%s", tracker, folder, level=20)
-    return prompts.dry_run_payload
+    return {
+        "fields": prompts.dry_run_payload,
+        "descriptions": {name: "\n".join(lines) for name, lines in prompts.dry_run_descriptions.items()},
+    }
 
 
 async def run_uploads(
@@ -1320,16 +1402,23 @@ async def run_uploads(
     cfg.upload.multi_tracker_upload = False
     try:
         with _record_transcodes() as transcoded:
+            result: dict[str, Any] = {}
             try:
-                return await _upload_each(flow, folder, trackers, source=source, auto_rename=auto_rename)
+                result = await _upload_each(flow, folder, trackers, source=source, auto_rename=auto_rename)
+                return result
             finally:
-                if _dry_run() and transcoded:
-                    # Kept, not deleted. A dry run exists to be inspected, and
-                    # deleting the transcodes it just made meant the one part
-                    # you most wanted to check -- that the conversion produced
-                    # the right files -- was gone before you could look.
-                    for path in transcoded:
-                        flow.note(f"Dry run: kept transcode {os.path.basename(path)} at {path}")
+                # Kept, never deleted. A dry run exists to be inspected, and
+                # deleting the transcodes it just made meant the one part you
+                # most wanted to check -- that the conversion produced the
+                # right files -- was gone before you could look. They are
+                # listed on the result with a button to remove them, so the
+                # decision is yours rather than automatic.
+                for path in transcoded:
+                    flow.note(f"Transcode kept at {path}")
+                if result:
+                    result["transcodes"] = list(transcoded)
+                    for outcome in result.get("outcomes") or []:
+                        outcome["kept"] = list(transcoded)
     finally:
         cfg.upload.multi_tracker_upload = was_multi
         _discard_spectrals(flow, folder)
@@ -1420,7 +1509,15 @@ async def _upload_each(
 
         try:
             posted = await run_upload(flow, target, tracker, source=source, auto_rename=auto_rename)
-            outcomes.append({"tracker": tracker, "ok": True, "folder": target, "would_post": posted})
+            outcomes.append(
+                {
+                    "tracker": tracker,
+                    "ok": True,
+                    "folder": target,
+                    "would_post": posted.get("fields") or {},
+                    "descriptions": posted.get("descriptions") or {},
+                }
+            )
         except click.Abort:
             flow.note(f"{tracker}: aborted", "warning")
             outcomes.append({"tracker": tracker, "ok": False, "error": "aborted"})

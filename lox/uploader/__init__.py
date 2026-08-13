@@ -505,37 +505,34 @@ async def upload(
             else:
                 await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
 
-            if cfg.upload.yes_all or await ask_confirm(
-                click.style("\nWould you like to check downconversion options?", fg="magenta"),
-                default=True,
-            ):
-                selected_tasks = await prompt_downconversion_choice(rls_data, track_data)
-                if selected_tasks:
-                    display_names = [task["name"] for task in selected_tasks]
-                    click.secho(
-                        f"\nSelected formats for downconversion: {', '.join(display_names)}", fg="green", bold=True
-                    )
-
-                    # Execute downconversion tasks
-                    await execute_downconversion_tasks(
-                        selected_tasks,
-                        path,
-                        gazelle_site,
-                        group_id,
-                        metadata,
-                        cover_url,
-                        track_data,
-                        hybrid,
-                        lossy_master,
-                        spectral_urls,
-                        spectral_ids,
-                        lossy_comment,
-                        request_id,
-                        source_url,
-                        seedbox_uploader,
-                        source,
-                        url,
-                    )
+            # Straight to the formats. The gate in front of them asked whether
+            # you wanted to be asked, and "no" was the same answer as picking
+            # "do not convert" on the question it was guarding.
+            selected_tasks = await prompt_downconversion_choice(rls_data, track_data)
+            if selected_tasks:
+                display_names = [task["name"] for task in selected_tasks]
+                click.secho(
+                    f"\nSelected formats for downconversion: {', '.join(display_names)}", fg="green", bold=True
+                )
+                await execute_downconversion_tasks(
+                    selected_tasks,
+                    path,
+                    gazelle_site,
+                    group_id,
+                    metadata,
+                    cover_url,
+                    track_data,
+                    hybrid,
+                    lossy_master,
+                    spectral_urls,
+                    spectral_ids,
+                    lossy_comment,
+                    request_id,
+                    source_url,
+                    seedbox_uploader,
+                    source,
+                    url,
+                )
 
             tracker = None
             if not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload:

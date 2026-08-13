@@ -61,6 +61,7 @@ jobs:
           uv run python tests/test_flow.py
           uv run python tests/test_prompts.py
           uv run python tests/smoke_test.py
+          uv run python tests/test_found_and_progress.py
 
       - name: Request collection and filters
         run: uv run python tests/test_requests.py
@@ -76,6 +77,9 @@ jobs:
 
       - name: Metadata is one form, and the questions show their work
         run: uv run python tests/test_metadata_form.py
+
+      - name: Deezer credits and the fields an ARL reaches
+        run: uv run python tests/test_deezer_metadata.py
 
       - name: Request detail and BBCode rendering
         # The tracker refuses to be framed, so this code renders the request

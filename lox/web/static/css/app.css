@@ -938,14 +938,60 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
   background: var(--bg);
 }
 
-/* The whole release in one form. Two columns where there is room, because most
-   of these fields are short and stacking thirteen of them turns the answer to
-   "is this metadata right" into a scroll. */
+/* A finished upload is a line until you ask for more. Left open, three
+   completed runs pushed the one still waiting on you off the screen. */
+.flow-result { display: flex; flex-direction: column; gap: 8px; }
+.result-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: var(--bg);
+}
+.result-block > summary { cursor: pointer; display: flex; align-items: center; gap: 9px; }
+.result-block > summary::-webkit-details-marker { color: var(--text-dim); }
+.result-block > summary .card-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.result-block[open] > summary { margin-bottom: 10px; }
+.result-kept { justify-content: space-between; gap: 10px; margin: 6px 0; }
+
+/* The description a dry run would have posted, in full. Reading it is the
+   reason for rehearsing, and "1179 chars" is not something you can read. */
+.result-desc {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.result-desc-head { margin: 6px 0; font-size: 12px; text-transform: capitalize; color: var(--text-dim); }
+
+/* The whole release in one form, in groups. Thirteen fields in one run is a
+   wall; each group is a question you can answer on its own -- what the release
+   is, who is on it, which pressing this is, how it is filed. */
+.meta-groups { display: flex; flex-direction: column; gap: 18px; margin: 16px 0 4px; }
+.meta-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px 16px;
+  background: var(--bg);
+}
+.meta-group-head {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
 .meta-form {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 14px 20px;
-  margin: 14px 0 4px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px 18px;
   align-items: start;
 }
 

@@ -116,12 +116,17 @@ async def main() -> int:
         check("it is one edit step, not a menu", step.kind == "edit", step.kind)
         check("carrying the whole record", step.edit_shape == "metadata", str(step.edit_shape))
 
-        keys = [s["key"] for s in step.options]
+        # Grouped now: each option is a titled group of fields.
+        groups = [g["group"] for g in step.options]
+        check("the form is grouped, not one long run",
+              groups == ["The release", "Credits", "This edition", "Filing", "Tracks"], str(groups))
+        fields = [f for group in step.options for f in group["fields"]]
+        keys = [f["key"] for f in fields]
         for key in ("artists", "title", "rls_type", "year", "group_year", "edition_title",
                     "label", "catno", "upc", "genres", "urls", "comment", "tracks"):
             check(f"the form has {key}", key in keys, str(keys))
 
-        by_key = {s["key"]: s for s in step.options}
+        by_key = {f["key"]: f for f in fields}
         check("artists come through as rows with roles",
               by_key["artists"]["rows"] == [{"name": "Mohamed Hamaki", "role": "main"},
                                             {"name": "Sherine", "role": "main"}],

@@ -536,9 +536,12 @@ async def api_found(request: web.Request) -> web.Response:
     """
     store: CheckerStore = request.app["store"]
     rows: list[dict[str, Any]] = []
+    dismissed = store.load("dismissed") or {}
 
     for album_id, entry in (store.load("albums") or {}).items():
         if not entry.get("missing_from"):
+            continue
+        if entry.get("uploaded_at") or album_id in dismissed:
             continue
         rows.append(
             {
@@ -558,6 +561,8 @@ async def api_found(request: web.Request) -> web.Response:
         # A match the tracker already has is not something to upload.
         if not entry.get("deezer_id") or entry.get("already_on_tracker"):
             continue
+        if entry.get("uploaded_at") or str(entry.get("deezer_id")) in dismissed or request_id in dismissed:
+            continue
         rows.append(
             {
                 "kind": "request",
@@ -575,7 +580,86 @@ async def api_found(request: web.Request) -> web.Response:
         )
 
     rows.sort(key=lambda r: r.get("checked_at") or 0, reverse=True)
-    return json_response({"found": rows})
+    return json_response({"found": rows, "blacklisted": sum(1 for d in dismissed.values() if d.get("blacklist"))})
+
+
+def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: list[str]) -> None:
+    """Record that a release has been uploaded, so Found stops offering it.
+
+    Matched by Deezer id when the upload came from a Found row, and otherwise
+    by folder name against the stored title -- an upload started from the
+    Uploads tab has no id attached to it, and it is still the same release.
+    """
+    stamp = {"uploaded_at": time.time(), "uploaded_to": trackers}
+    if album_id:
+        for name in ("albums", "requests"):
+            entry = store.get(name, album_id)
+            if entry is not None:
+                store.put(name, album_id, {**entry, **stamp}, flush=False)
+        store.flush()
+        return
+
+    basename = os.path.basename(folder).lower()
+    if not basename:
+        return
+    for name in ("albums", "requests"):
+        for key, entry in list((store.load(name) or {}).items()):
+            title = str(entry.get("title") or entry.get("album") or "").strip().lower()
+            artist = str(entry.get("artist") or "").strip().lower()
+            # Both have to be long enough to mean something. A one-letter
+            # artist matches almost any folder name, and marking the wrong
+            # release as uploaded is worse than missing one.
+            if len(title) < 3 or len(artist) < 3:
+                continue
+            if title in basename and artist in basename:
+                store.put(name, key, {**entry, **stamp}, flush=False)
+    store.flush()
+
+
+@routes.post("/api/found/dismiss")
+async def api_found_dismiss(request: web.Request) -> web.Response:
+    """Take a row off the Found list. No tracker calls.
+
+    Two ways, because they answer different questions. "Not now" forgets the
+    row, and a later scan that finds the release again puts it back. "Never"
+    blacklists it, and no scan will list it again until it is un-blacklisted --
+    which is what you want for a release you have decided you are not uploading.
+    """
+    body = await request.json()
+    keys = [str(k) for k in (body.get("ids") or []) if str(k)]
+    if not keys:
+        return error("ids is required")
+    blacklist = bool(body.get("blacklist"))
+
+    store: CheckerStore = request.app["store"]
+    for key in keys:
+        if blacklist:
+            store.put("dismissed", key, {"blacklist": True, "at": time.time()}, flush=False)
+        else:
+            # Forgotten rather than remembered as unwanted: dropping the check
+            # result is what lets the next scan surface it again.
+            store.delete("albums", key, flush=False)
+            store.delete("requests", key, flush=False)
+    store.flush()
+    return json_response({"dismissed": len(keys), "blacklisted": blacklist})
+
+
+@routes.post("/api/found/restore")
+async def api_found_restore(request: web.Request) -> web.Response:
+    """Un-blacklist releases so scans can list them again. No tracker calls."""
+    body = await request.json()
+    keys = [str(k) for k in (body.get("ids") or []) if str(k)]
+    store: CheckerStore = request.app["store"]
+    if not keys:
+        removed = store.clear("dismissed")
+    else:
+        removed = 0
+        for key in keys:
+            if store.get("dismissed", key):
+                store.delete("dismissed", key, flush=False)
+                removed += 1
+        store.flush()
+    return json_response({"restored": removed})
 
 
 @routes.get("/api/album/{album_id}/check")
@@ -1150,12 +1234,23 @@ async def api_upload(request: web.Request) -> web.Response:
     source = body.get("source", "WEB")
     auto_rename = bool(body.get("auto_rename", False))
     flows: FlowRegistry = request.app["flows"]
+    store: CheckerStore = request.app["store"]
+    album_id = str(body.get("album_id") or "")
+
+    async def run(f):
+        result = await run_uploads(f, folder, trackers, source=source, auto_rename=auto_rename)
+        # A release that has been uploaded is not one that is missing any more.
+        # Leaving it on the Found list meant every successful upload made that
+        # list slightly less true than it was before.
+        if result.get("succeeded") and not cfg.upload.dry_run:
+            _mark_uploaded(store, album_id, folder, result["succeeded"])
+        return result
 
     label = f"{os.path.basename(folder)} to {', '.join(trackers)}"
     flow = flows.start(
         "upload",
         f"{'Dry run of ' if cfg.upload.dry_run else 'Uploading '}{label}",
-        lambda f: run_uploads(f, folder, trackers, source=source, auto_rename=auto_rename),
+        run,
     )
     return json_response(
         {"flow_id": flow.id, "trackers": trackers, "linking": cfg.linking.enabled, "dry_run": cfg.upload.dry_run}
