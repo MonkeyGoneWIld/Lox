@@ -3301,6 +3301,15 @@ They will not be listed again, even if a later scan finds them.`)) {
         placeholder: configured ? '•••••••• (saved — type to replace)' : 'Not set',
         oninput: onInput,
       });
+    } else if (field.kind === 'list') {
+      // Stored as a list, edited as one per line, which is how anyone would
+      // write a list of genres by hand.
+      input = el('textarea', { rows: '4', placeholder: field.placeholder || '' });
+      input.value = (value || []).join('\n');
+      input.addEventListener('input', () => {
+        state.pending[field.key] = input.value.split('\n').map((s) => s.trim()).filter(Boolean);
+        markDirty();
+      });
     } else {
       input = el('input', {
         type: field.kind === 'int' || field.kind === 'float' ? 'number' : 'text',
@@ -3313,13 +3322,37 @@ They will not be listed again, even if a later scan finds them.`)) {
       });
     }
 
+    // A credential that stands on its own gets its own test. One button at the
+    // top of a section holding five independent tokens could only ever report
+    // on one of them, which is what it was doing.
+    const test = field.test
+      ? el('button', { type: 'button', class: 'test-btn field-test',
+                       onclick: (e) => runTest(field.test, e.target, `test-field-${field.key}`) }, 'Test')
+      : null;
+
     return el(
       'div',
       { class: 'setting' },
-      el('label', {}, field.label, configured ? el('span', { class: 'tag ok saved-tag' }, 'saved') : null),
+      el('div', { class: 'setting-head' },
+         el('label', {}, field.label, configured ? el('span', { class: 'tag ok saved-tag' }, 'saved') : null),
+         test),
       input,
+      field.test ? el('div', { class: 'test-result', id: `test-field-${field.key}`, hidden: true }) : null,
       field.help ? el('p', { class: 'hint setting-help' }, field.help) : null,
     );
+  }
+
+  const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+
+  // Sections in category order, keeping the order they were declared in.
+  function categoriesOf(sections) {
+    const groups = new Map();
+    sections.forEach((s) => {
+      const name = s.category || 'General';
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(s);
+    });
+    return [...groups.entries()];
   }
 
   function renderSettings() {
@@ -3338,27 +3371,42 @@ They will not be listed again, even if a later scan finds them.`)) {
         { class: 'hint' },
         'Changes apply immediately, no restart. Save before running a test — tests read what is stored, not what is typed.',
       ),
-      ...sections.map((section) =>
-        el(
-          'section',
-          { class: 'panel settings-section' },
+      // Grouped and jumped to. Sixteen sections in one column meant the answer
+      // to "where do I set the seeding directory" was "scroll".
+      el('nav', { class: 'settings-nav' },
+         ...categoriesOf(sections).map(([name]) =>
+           el('a', { class: 'crumb', href: `#settings-${slug(name)}`,
+                     onclick: (e) => {
+                       e.preventDefault();
+                       $(`#settings-${slug(name)}`).scrollIntoView({ behavior: 'smooth', block: 'start' });
+                     } }, name))),
+      ...categoriesOf(sections).flatMap(([name, group]) => [
+        el('h2', { class: 'settings-category', id: `settings-${slug(name)}` }, name),
+        ...group.map((section) =>
           el(
-            'div',
-            { class: 'row' },
-            el('h2', {}, section.title),
-            section.test
-              ? el(
-                  'button',
-                  { class: 'test-btn', onclick: (e) => runTest(section.test, e.target) },
-                  'Test connection',
-                )
+            'section',
+            { class: 'panel settings-section' },
+            el(
+              'div',
+              { class: 'row settings-head' },
+              el('h3', {}, section.title),
+              section.test
+                ? el(
+                    'button',
+                    { type: 'button', class: 'test-btn', onclick: (e) => runTest(section.test, e.target) },
+                    'Test connection',
+                  )
+                : null,
+            ),
+            section.blurb ? el('p', { class: 'hint' }, section.blurb) : null,
+            el('div', { class: 'test-result', id: `test-${section.test || section.id}`, hidden: true }),
+            section.fields.length
+              ? el('div', { class: 'settings-grid' },
+                   ...section.fields.map((f) => settingField(f, values, secretsSet)))
               : null,
           ),
-          section.blurb ? el('p', { class: 'hint' }, section.blurb) : null,
-          el('div', { class: 'test-result', id: `test-${section.test || section.id}`, hidden: true }),
-          el('div', { class: 'settings-grid' }, ...section.fields.map((f) => settingField(f, values, secretsSet))),
         ),
-      ),
+      ]),
       el(
         'section',
         { class: 'panel' },
@@ -3463,9 +3511,10 @@ They will not be listed again, even if a later scan finds them.`)) {
     }
   }
 
-  async function runTest(target, button) {
-    const box = $(`#test-${target}`);
+  async function runTest(target, button, boxId) {
+    const box = $(`#${boxId || `test-${target}`}`);
     if (!box) return;
+    const label = button.textContent;
     button.disabled = true;
     button.textContent = 'Testing…';
     box.hidden = false;
@@ -3499,7 +3548,7 @@ They will not be listed again, even if a later scan finds them.`)) {
       box.textContent = `✕ ${e.message}`;
     } finally {
       button.disabled = false;
-      button.textContent = 'Test connection';
+      button.textContent = label;
     }
   }
 

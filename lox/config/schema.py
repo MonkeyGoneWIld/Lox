@@ -58,6 +58,11 @@ class Field(NamedTuple):
     minimum: float | None = None
     maximum: float | None = None
     placeholder: str = ""
+    test: str = ""
+    """A check that belongs to this one field. Sections holding several
+    independent credentials -- four image-host keys, five metadata sources --
+    cannot be tested by a single button at the top: it can only report on one
+    of them, which is what "Test connection" beside five tokens was doing."""
 
     def as_dict(self) -> dict[str, Any]:
         """Serialize for the settings page."""
@@ -71,6 +76,7 @@ class Field(NamedTuple):
             "min": self.minimum,
             "max": self.maximum,
             "placeholder": self.placeholder,
+            "test": self.test,
         }
 
 
@@ -81,10 +87,20 @@ class Section(NamedTuple):
     title: str
     blurb: str = ""
     test: str = ""
+    category: str = "General"
+    """Which group of the page this belongs under. Sixteen sections in one
+    column is a scroll, and the answer to "where do I set the seeding
+    directory" should not be "somewhere below the fold"."""
 
     def as_dict(self) -> dict[str, Any]:
         """Serialize for the settings page."""
-        return {"id": self.id, "title": self.title, "blurb": self.blurb, "test": self.test}
+        return {
+            "id": self.id,
+            "title": self.title,
+            "blurb": self.blurb,
+            "test": self.test,
+            "category": self.category,
+        }
 
 
 SECTIONS: tuple[Section, ...] = (
@@ -94,44 +110,74 @@ SECTIONS: tuple[Section, ...] = (
         "The ARL is a full session credential — anyone holding it is logged into your account. "
         "Deezer → devtools → Application → Cookies → deezer.com → arl.",
         test="deezer",
+        category="Accounts",
     ),
-    Section("red", "RED", "Session cookie from your browser. An API key with upload rights is preferred.", test="red"),
-    Section("ops", "OPS", "Session cookie from your browser. An API key with upload rights is preferred.", test="ops"),
-    Section("dic", "DIC", "DIC does not support API key authentication.", test="dic"),
+    Section("red", "RED", "Session cookie from your browser. An API key with upload rights is preferred.",
+            test="red", category="Accounts"),
+    Section("ops", "OPS", "Session cookie from your browser. An API key with upload rights is preferred.",
+            test="ops", category="Accounts"),
+    Section("dic", "DIC", "DIC does not support API key authentication.", test="dic", category="Accounts"),
+    Section(
+        "images",
+        "Image hosting",
+        "Where cover art and spectrals are uploaded. Each key has its own test, because one button at the "
+        "top of four independent credentials can only ever report on one of them.",
+        category="Accounts",
+    ),
+    Section(
+        "metadata",
+        "Verification sources",
+        "Used only to cross-check track counts when deciding whether a Deezer release can fill a request. "
+        "More sources configured means fewer wrong editions get through. Each has its own test.",
+        category="Accounts",
+    ),
+    Section("notifications", "Notifications", "Optional Discord webhook for scan results.",
+            test="discord", category="Accounts"),
     Section(
         "checker",
         "Tracker budget",
         "Nothing contacts a tracker until you press a check button. These numbers bound what one press can cost. "
         "The defaults are conservative guesses, not measured limits.",
+        category="Accounts",
     ),
+    Section("upload", "Uploading", "Behaviour of the upload pipeline itself.", category="Uploading"),
+    Section("requests", "Requests and duplicates", "What the pipeline checks against the tracker while uploading.",
+            category="Uploading"),
+    Section("formatting", "Naming", "How release folders and files are named.", category="Uploading"),
+    Section("description", "Descriptions", "What goes in the torrent and group descriptions.",
+            category="Uploading"),
     Section(
         "linking",
         "Seeding layout",
         "Hardlinked per-tracker folders, cross-seed style. The link directory must be on the same filesystem "
         "as your downloads.",
         test="linking",
+        category="Files",
     ),
-    Section("torrent", "Torrent client", "Where finished uploads are injected for seeding.", test="qbittorrent"),
-    Section("images", "Image hosting", "Where cover art and spectrals are uploaded.", test="images"),
     Section(
-        "metadata",
-        "Verification sources",
-        "Used only to cross-check track counts when deciding whether a Deezer release can fill a request. "
-        "More sources configured means fewer wrong editions get through.",
-        test="discogs",
+        "torrent",
+        "Torrent client",
+        "Where finished uploads are injected for seeding. Clients are declared in config.toml under "
+        "[[seedbox]] — they are a list of connections rather than a single setting, so they do not fit "
+        "this page. The test says which ones answered.",
+        test="qbittorrent",
+        category="Files",
     ),
-    Section("notifications", "Notifications", "Optional Discord webhook for scan results.", test="discord"),
-    Section("upload", "Uploading", "Behaviour of the upload pipeline itself."),
-    Section("formatting", "Naming", "How release folders and files are named."),
-    Section("debug", "Debug", "Verbose logging and a diagnostics bundle. Credentials are never written."),
     Section(
         "paths",
         "Paths",
         "Where lox reads releases from and writes its own files to. Bootstrapped from the environment, "
         "but anything set here wins — so a wrong mount is fixable without editing compose.",
         test="paths",
+        category="Files",
     ),
+    Section("debug", "Debug", "Verbose logging and a diagnostics bundle. Credentials are never written.",
+            category="Maintenance"),
 )
+
+
+CATEGORIES: tuple[str, ...] = ("Accounts", "Uploading", "Files", "Maintenance")
+"""Display order for the section groups."""
 
 
 FIELDS: tuple[Field, ...] = (
@@ -187,20 +233,21 @@ FIELDS: tuple[Field, ...] = (
           choices=("ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox")),
     Field("image.specs_uploader", "Spectrals", "choice", "images",
           choices=("ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox")),
-    Field("image.ptpimg_key", "ptpimg key", "secret", "images"),
-    Field("image.ptscreens_key", "ptscreens key", "secret", "images"),
-    Field("image.oeimg_key", "oeimg key", "secret", "images"),
-    Field("image.imgbb_key", "imgbb key", "secret", "images"),
+    Field("image.ptpimg_key", "ptpimg key", "secret", "images", test="image:ptpimg"),
+    Field("image.ptscreens_key", "ptscreens key", "secret", "images", test="image:ptscreens"),
+    Field("image.oeimg_key", "oeimg key", "secret", "images", test="image:oeimg"),
+    Field("image.imgbb_key", "imgbb key", "secret", "images", test="image:imgbb"),
     Field("image.auto_compress_cover", "Compress covers automatically", "bool", "images"),
     Field("image.remove_auto_downloaded_cover_image", "Delete covers lox downloaded", "bool", "images"),
 
     # --- Verification sources ----------------------------------------
     Field("metadata.discogs_token", "Discogs token", "secret", "metadata",
-          "discogs.com → Settings → Developers."),
-    Field("metadata.apple_music_token", "Apple Music developer token", "secret", "metadata"),
+          "discogs.com → Settings → Developers.", test="discogs"),
+    Field("metadata.apple_music_token", "Apple Music developer token", "secret", "metadata", test="apple"),
     Field("metadata.qobuz.app_id", "Qobuz app ID", "text", "metadata"),
-    Field("metadata.qobuz.user_auth_token", "Qobuz auth token", "secret", "metadata"),
-    Field("metadata.tidal.token", "Tidal token", "secret", "metadata"),
+    Field("metadata.qobuz.user_auth_token", "Qobuz auth token", "secret", "metadata",
+          "Tested together with the app ID.", test="qobuz"),
+    Field("metadata.tidal.token", "Tidal token", "secret", "metadata", test="tidal"),
 
     # --- Notifications ------------------------------------------------
     Field("notifications.enabled", "Send notifications", "bool", "notifications"),
@@ -214,16 +261,11 @@ FIELDS: tuple[Field, ...] = (
           "Do everything except post to the tracker and add to the download client."),
     Field("upload.yes_all", "Auto-answer prompts", "bool", "upload",
           "The lossy-master question always asks regardless."),
-    Field("upload.multi_tracker_upload", "Allow uploading to several trackers in one run", "bool", "upload"),
     Field("upload.upload_to_seedbox", "Inject into the torrent client", "bool", "upload"),
     Field("upload.simultaneous_threads", "Worker threads", "int", "upload", minimum=1, maximum=16),
-    Field("upload.default_editor", "Text editor", "text", "upload", placeholder="nano"),
     Field("upload.debug", "Debug mode", "bool", "debug",
           "Verbose logging, shown below. Credentials are redacted before anything is written."),
     Field("upload.debug_tracker_connection", "Also log tracker requests and responses", "bool", "debug", "Noisy."),
-    Field("upload.web_interface.display_host", "Address you reach the UI on", "text", "upload",
-          "Used in links like the spectral viewer. Leave blank unless the bind address is 0.0.0.0.",
-          placeholder="192.168.1.25"),
     Field("logging.directory", "Log directory", "path", "debug",
           "Defaults to a logs folder beside settings.toml."),
     Field("logging.max_file_bytes", "Maximum size per log file", "bytes", "debug",
@@ -234,8 +276,16 @@ FIELDS: tuple[Field, ...] = (
     Field("upload.compression.flac_compression_level", "FLAC compression level", "int", "upload",
           minimum=0, maximum=8),
     Field("upload.compression.compress_spectrals", "Compress spectrals before upload", "bool", "upload"),
-    Field("upload.requests.check_requests", "Check for fillable requests during upload", "bool", "upload"),
-    Field("upload.requests.last_minute_dupe_check", "Re-check for duplicates before uploading", "bool", "upload"),
+    Field("upload.compression.use_upc_as_catno", "Use the barcode as the catalogue number", "bool", "upload",
+          "When the release has no catalogue number of its own."),
+    Field("upload.search.blacklisted_genres", "Genres to drop", "list", "upload",
+          "Genres removed from every scrape before the metadata form. One per line."),
+    Field("upload.requests.check_requests", "Offer to fill a request", "bool", "requests",
+          "Searches the tracker for open requests this release would fill, and offers to attach one."),
+    Field("upload.requests.always_ask_for_request_fill", "Ask even when nothing matched", "bool", "requests",
+          "So a request the search missed can still be filled by pasting its id."),
+    Field("upload.requests.last_minute_dupe_check", "Re-check for duplicates before posting", "bool", "requests",
+          "One more search immediately before the upload, for races with another uploader."),
 
     # --- Formatting ---------------------------------------------------
     Field("upload.formatting.folder_template", "Folder template", "text", "formatting",
@@ -250,9 +300,20 @@ FIELDS: tuple[Field, ...] = (
     Field("upload.formatting.various_artist_word", "Various Artists label", "text", "formatting"),
     Field("upload.formatting.strip_useless_versions", "Strip redundant version suffixes", "bool", "formatting"),
     Field("upload.formatting.lowercase_cover", "Lowercase the cover filename", "bool", "formatting"),
-    Field("upload.description.icons_in_descriptions", "Icons in descriptions", "bool", "formatting"),
-    Field("upload.description.include_tracklist_in_t_desc", "Tracklist in torrent description", "bool", "formatting"),
-    Field("upload.description.bitrates_in_t_desc", "Bitrates in torrent description", "bool", "formatting"),
+    Field("upload.formatting.blacklisted_substitution", "Replace illegal characters with", "text", "formatting",
+          "What stands in for characters a filesystem will not accept.", placeholder="_"),
+
+    # --- Descriptions -------------------------------------------------
+    Field("upload.description.icons_in_descriptions", "Source icons", "bool", "description"),
+    Field("upload.description.include_tracklist_in_t_desc", "Tracklist in the torrent description",
+          "bool", "description"),
+    Field("upload.description.bitrates_in_t_desc", "Per-track bitrates", "bool", "description"),
+    Field("upload.compression.lma_comment_in_t_desc", "Lossy-master notes", "bool", "description",
+          "Includes the approval comment when a release is flagged as lossy mastered."),
+    Field("upload.description.fullwidth_replacements", "Full-width lookalikes for illegal characters",
+          "bool", "description", "Uses ： and ？ instead of dropping a colon or a question mark."),
+    Field("upload.description.copy_uploaded_url_to_clipboard", "Copy the upload URL to the clipboard",
+          "bool", "description", "Needs a desktop clipboard; ignored on a headless server."),
 
     # --- Paths --------------------------------------------------------
     Field("directory.download_directory", "Download directory", "path", "paths",
@@ -271,6 +332,9 @@ def sections_with_fields() -> list[dict[str, Any]]:
     out = []
     for section in SECTIONS:
         fields = [f.as_dict() for f in FIELDS if f.section == section.id]
-        if fields:
+        # A section with no editable fields but a test still earns its place:
+        # the torrent clients are declared in config.toml, and hiding the
+        # section hid the only way to check they answer.
+        if fields or section.test:
             out.append({**section.as_dict(), "fields": fields})
     return out
