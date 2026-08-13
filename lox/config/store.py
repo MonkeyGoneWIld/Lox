@@ -20,6 +20,10 @@ from lox.config.schema import BOOTSTRAP_KEYS, FIELDS_BY_KEY
 
 SETTINGS_FILENAME = "settings.toml"
 
+SEEDBOX_KEY = "seedbox"
+"""Where the torrent-client list is stored. It is a list of tables rather than
+a leaf value, so it is handled apart from the dotted-key settings."""
+
 
 class SettingsError(Exception):
     """Raised when a settings write is rejected."""
@@ -238,6 +242,52 @@ class SettingsStore:
         self.save()
         return coerced
 
+    @property
+    def seedboxes(self) -> list[dict[str, Any]]:
+        """The stored torrent-client entries, or an empty list."""
+        return list(self._values.get(SEEDBOX_KEY) or [])
+
+    def set_seedboxes(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Validate and store the torrent-client list.
+
+        Seedboxes are a list of connections rather than a single value, so they
+        do not fit the dotted-key scheme the rest of the page uses. They were
+        therefore not editable at all: the toggle that injects finished uploads
+        into a client was on the page with no way to say which client.
+
+        Args:
+            entries: One dict per connection, as the page sends them.
+
+        Returns:
+            The cleaned entries that were stored.
+
+        Raises:
+            SettingsError: If an entry is not usable.
+        """
+        from lox.config.validations import Seedbox
+
+        cleaned: list[dict[str, Any]] = []
+        for index, entry in enumerate(entries or [], 1):
+            if not isinstance(entry, dict):
+                raise SettingsError(f"Torrent client {index} is not a set of fields.")
+            payload = {k: v for k, v in entry.items() if v not in (None, "")}
+            payload.setdefault("name", f"client {index}")
+            try:
+                box = msgspec.convert(payload, Seedbox, strict=False)
+            except (msgspec.ValidationError, ValueError) as e:
+                raise SettingsError(f"Torrent client {index}: {e}") from e
+            if box.enabled and not box.torrent_client:
+                raise SettingsError(f"Torrent client {index} is enabled but has no connection URL.")
+            cleaned.append(msgspec.to_builtins(box))
+
+        with self._lock:
+            if cleaned:
+                self._values[SEEDBOX_KEY] = cleaned
+            else:
+                self._values.pop(SEEDBOX_KEY, None)
+        self.save()
+        return cleaned
+
     def apply_to(self, cfg: Any) -> list[str]:
         """Layer the stored settings onto a live config object.
 
@@ -248,8 +298,18 @@ class SettingsStore:
             Keys that could not be applied, e.g. a tracker section that does not
             exist in config.toml yet.
         """
+        from lox.config.validations import Seedbox
+
         failed: list[str] = []
         for key, value in self.values.items():
+            if key == SEEDBOX_KEY:
+                # A list of structs, not a leaf: rebuilt rather than assigned
+                # through the dotted-key path the rest of this walks.
+                try:
+                    cfg.seedbox = [msgspec.convert(entry, Seedbox, strict=False) for entry in value]
+                except (msgspec.ValidationError, ValueError):
+                    failed.append(key)
+                continue
             try:
                 set_value(cfg, key, value)
             except SettingsError:

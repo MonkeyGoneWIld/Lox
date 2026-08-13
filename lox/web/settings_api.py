@@ -111,6 +111,73 @@ async def api_settings_save(request: web.Request) -> web.Response:
     )
 
 
+# What one torrent-client entry is made of, described here so the page can
+# render it without knowing the struct.
+SEEDBOX_FIELDS = [
+    {"key": "name", "label": "Name", "kind": "text", "help": "Just a label for you."},
+    {"key": "enabled", "label": "Enabled", "kind": "bool"},
+    {"key": "torrent_client", "label": "Connection URL", "kind": "secret",
+     "help": "qbittorrent+http://user:pass@host:8080 — also transmission+http://, deluge://, "
+             "rutorrent+http://host/plugins/rpc/rpc.php"},
+    {"key": "directory", "label": "Save path on the client", "kind": "text",
+     "help": "Where the client will look for the files. Supports {tracker}, which becomes RED, OPS or DIC — "
+             "match it to the seeding directory when a separate folder per tracker is on."},
+    {"key": "label", "label": "Category or label", "kind": "text",
+     "help": "qBittorrent category, or the label on the others. Supports {tracker}."},
+    {"key": "type", "label": "Transfer", "kind": "choice", "choices": ["local", "rclone"],
+     "help": "local: the files are already where the client can see them. rclone: copy them to a remote first."},
+    {"key": "url", "label": "rclone remote", "kind": "text", "help": "Only for the rclone transfer type."},
+    {"key": "extra_args", "label": "Extra rclone arguments", "kind": "list"},
+    {"key": "tracker", "label": "Only for tracker", "kind": "choice", "choices": ["", "RED", "OPS", "DIC"],
+     "help": "Leave blank to use this client for every tracker."},
+    {"key": "flac_only", "label": "FLAC uploads only", "kind": "bool"},
+    {"key": "add_paused", "label": "Add paused", "kind": "bool"},
+]
+
+
+@routes.get("/api/settings/seedboxes")
+async def api_seedboxes(request: web.Request) -> web.Response:
+    """The torrent clients finished uploads are handed to.
+
+    Separate from the rest of the settings because this is a list of
+    connections, not a set of single values -- which is why it was missing from
+    the page entirely, leaving "inject into the torrent client" with nothing to
+    inject into.
+    """
+    entries = []
+    for box in cfg.seedbox:
+        entry = msgspec.to_builtins(box)
+        # The connection URL carries a password. Same treatment as any secret:
+        # the page is told it is set, not what it is.
+        entry["torrent_client_set"] = bool(entry.get("torrent_client"))
+        entry["torrent_client"] = ""
+        entries.append(entry)
+    return _json({"seedboxes": entries, "fields": SEEDBOX_FIELDS})
+
+
+@routes.put("/api/settings/seedboxes")
+async def api_seedboxes_save(request: web.Request) -> web.Response:
+    """Replace the torrent-client list."""
+    body = await request.json()
+    entries = body.get("seedboxes")
+    if not isinstance(entries, list):
+        return _json({"error": "seedboxes must be a list"}, status=400)
+
+    # A blank connection URL means "unchanged", so editing a category does not
+    # require retyping a password the page was never given.
+    existing = {box.name: box.torrent_client for box in cfg.seedbox}
+    for entry in entries:
+        if isinstance(entry, dict) and not entry.get("torrent_client"):
+            entry["torrent_client"] = existing.get(entry.get("name", ""), "")
+
+    try:
+        stored = settings.set_seedboxes(entries)
+    except SettingsError as e:
+        return _json({"error": str(e)}, status=400)
+    settings.apply_to(cfg)
+    return _json({"saved": len(stored)})
+
+
 @routes.post("/api/settings/reset")
 async def api_settings_reset(request: web.Request) -> web.Response:
     """Drop UI overrides for the given keys, reverting to config.toml."""
