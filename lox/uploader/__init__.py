@@ -425,11 +425,15 @@ async def upload(
         while True:
             # Loop until we don't want to upload to any more sites.
             if not tracker:
-                if spectrals_after and torrent_id:
+                # A dry run has no torrent id, so this used to be skipped and
+                # the deferred spectral step never shown. It runs anyway; the
+                # report it would file is itself dry-run gated.
+                if spectrals_after and (torrent_id or cfg.upload.dry_run):
                     # Here we are checking the spectrals after uploading to the first site
                     # if they were not done before.
                     lossy_master, lossy_comment, spectral_urls, spectral_ids = await post_upload_spectral_check(
-                        gazelle_site, path, torrent_id, None, track_data, source, source_url, format=rls_data["format"]
+                        gazelle_site, path, torrent_id or 0, None, track_data, source, source_url,
+                        format=rls_data["format"],
                     )
                     spectrals_after = False
                 click.secho("\nWould you like to upload to another tracker? ", fg="magenta", nl=False)
@@ -488,7 +492,18 @@ async def upload(
 
             request_id = None
 
-            await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
+            # A dry run of a new group has no group to look at: nothing was
+            # posted, so the id is a placeholder. Asking the tracker about it
+            # used to raise "0 does not exist" and abort -- which ended the dry
+            # run right here, before the downconversion question, the
+            # next-tracker offer or the seeding summary. Say so and carry on.
+            if cfg.upload.dry_run and not group_id:
+                click.secho(
+                    "[DRY RUN] Skipping the group listing: nothing was posted, so there is no group to show.",
+                    fg="yellow",
+                )
+            else:
+                await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
 
             if cfg.upload.yes_all or await ask_confirm(
                 click.style("\nWould you like to check downconversion options?", fg="magenta"),

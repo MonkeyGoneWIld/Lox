@@ -568,20 +568,41 @@ class BaseGazelleApi:
         Returns:
             Tuple of (0, group id from the payload or 0).
         """
-        click.secho(f"\n[DRY RUN] Not uploading to {self.site_string}. Would have posted:", fg="yellow", bold=True)
+        click.secho(f"\n[DRY RUN] Not uploading to {self.site_string}.", fg="yellow", bold=True)
+        # On its own line, and worded exactly: the UI recognises block headers
+        # by an exact match, so burying this in a sentence meant the payload
+        # was never collected into the summary table at all.
+        click.secho("Would have posted:", fg="yellow", bold=True)
         interesting = (
-            "type", "artists", "title", "year", "releasetype", "format", "bitrate", "media",
+            "type", "artists", "importance", "title", "year", "releasetype", "format", "bitrate", "media",
             "remaster_year", "remaster_title", "remaster_record_label", "remaster_catalogue_number",
-            "tags", "groupid", "requestid", "scene", "vanity_house",
+            "record_label", "catalogue_number", "tags", "groupid", "requestid", "scene", "vanity_house",
+            "image",
         )
         for key in interesting:
-            value = data.get(key)
+            value = data.get(key) if key in data else data.get(f"{key}[]")
             if value not in (None, "", [], False):
                 click.secho(f"  {key:28} {value}", fg="yellow")
-        description = data.get("album_desc") or data.get("release_desc") or ""
-        if description:
-            click.secho(f"  description                  {len(str(description))} chars", fg="yellow")
-        click.secho("[DRY RUN] No torrent was uploaded and no request was filled.\n", fg="yellow", bold=True)
+        # Two passes over the descriptions. The size goes in with the other
+        # fields, because that is what the summary table is for; the text
+        # itself follows once the table has ended, because summarising the
+        # description you are about to post as "1843 chars" tells you nothing
+        # about whether it is right.
+        bodies = [
+            (label, str(data[key]))
+            for label, key in (("album description", "album_desc"), ("release description", "release_desc"))
+            if data.get(key)
+        ]
+        for label, body in bodies:
+            click.secho(f"  {label:28} {len(body)} chars", fg="yellow")
+
+        for label, body in bodies:
+            click.secho(f"\n[DRY RUN] {label} that would have been posted:", fg="yellow", bold=True)
+            for line in body.splitlines():
+                click.secho(f"  | {line}", fg="yellow")
+        if data.get("requestid"):
+            click.secho(f"\n[DRY RUN] Would have filled request {data['requestid']}.", fg="yellow")
+        click.secho("\n[DRY RUN] No torrent was uploaded and no request was filled.\n", fg="yellow", bold=True)
         try:
             group_id = int(data.get("groupid") or 0)
         except (TypeError, ValueError):

@@ -82,7 +82,11 @@ _BLOCK_HEADS = {
     # past in the log.
     "would have posted": ("dryrun", "What would have been posted"),
 }
-_DRY_FIELD = re.compile(r"^\s{2}(\S[\S ]*?)\s{2,}(.+?)\s*$")
+# "title                        Sammaouny". Matched after the line has been
+# stripped -- it is indented in the pipeline's output, but _echo strips every
+# line before this sees it, so requiring the indent here matched nothing and
+# the dry-run table came out empty every time.
+_DRY_FIELD = re.compile(r"^(\S[\S ]*?)\s{2,}(.+?)\s*$")
 _RENAME_LINE = re.compile(r"^(?P<old>.+?)\s+>>>\s+(?P<new>.+?)\s*$")
 # "> 2025 / Deluxe / 602488195980 / WEB / AAC / 256" -- year, then any number of
 # edition and catalogue-number parts, then media, format and encoding. The three
@@ -625,6 +629,11 @@ class FlowPrompts:
             return True
 
         if self._block["kind"] == "dryrun":
+            # The payload is followed by the descriptions in full, which are
+            # prose and must not be mined for "key   value" pairs.
+            if text.startswith("[DRY RUN]"):
+                self._block = None
+                return False
             field = _DRY_FIELD.match(text)
             if not field:
                 return False
