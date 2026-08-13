@@ -157,9 +157,9 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "torrent",
         "Torrent client",
-        "Where finished uploads are injected for seeding. Clients are declared in config.toml under "
-        "[[seedbox]] — they are a list of connections rather than a single setting, so they do not fit "
-        "this page. The test says which ones answered.",
+        "Where finished uploads are injected for seeding. Add a client, give it a connection URL, and set "
+        "the save path it should use — {tracker} in the path or the category expands to RED, OPS or DIC. "
+        "Test connection says which ones answered.",
         test="qbittorrent",
         category="Files",
     ),

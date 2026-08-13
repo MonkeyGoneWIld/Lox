@@ -3093,7 +3093,30 @@ They will not be listed again, even if a later scan finds them.`)) {
           )
         : null,
       el('div', { class: 'row step-controls' }, ...controls),
+      // A field beside the buttons, for the prompts that name pasting a URL as
+      // one of their answers. Never instead of the buttons: replacing them
+      // threw away the candidates the pipeline had just found, which are the
+      // answer nearly every time.
+      step.text_label ? urlAnswer(step, send) : null,
       ].filter((n) => n !== null && n !== undefined),
+    );
+  }
+
+  // "Or paste a URL" — a text field and a Send button under the choices.
+  function urlAnswer(step, send) {
+    const field = el('input', {
+      type: 'text',
+      placeholder: 'https://…',
+      onkeydown: (e) => { if (e.key === 'Enter' && field.value.trim()) send(field.value.trim()); },
+    });
+    return el(
+      'div',
+      { class: 'step-text-answer' },
+      el('label', {}, step.text_label),
+      el('div', { class: 'row' },
+         field,
+         el('button', { type: 'button',
+                        onclick: () => field.value.trim() && send(field.value.trim()) }, 'Use this')),
     );
   }
 

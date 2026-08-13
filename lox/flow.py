@@ -57,6 +57,7 @@ class Step:
         images: list[dict[str, Any]] | None = None,
         tables: list[dict[str, Any]] | None = None,
         edit_shape: str = "",
+        text_label: str = "",
     ) -> None:
         """Initialize a step."""
         self.id = uuid.uuid4().hex[:8]
@@ -78,6 +79,12 @@ class Step:
         # different things through one editor call, and they are not the same
         # shape -- a list of credits with roles is not a list of genres.
         self.edit_shape = edit_shape
+        # A choice that also accepts something typed. Some prompts name pasting
+        # a URL as one of their answers, and offering only buttons made the
+        # answer the question names impossible to give -- while replacing the
+        # buttons with a text box threw away the candidates it had just found.
+        # Both, or neither is right.
+        self.text_label = text_label
         self.asked = time.time()
 
     def as_dict(self) -> dict[str, Any]:
@@ -93,6 +100,7 @@ class Step:
             "images": self.images,
             "tables": self.tables,
             "edit_shape": self.edit_shape,
+            "text_label": self.text_label,
         }
 
 
@@ -174,6 +182,7 @@ class Flow:
         default: Any = None,
         images: list[dict[str, Any]] | None = None,
         tables: list[dict[str, Any]] | None = None,
+        text_label: str = "",
     ) -> Any:
         """Ask the user to pick one of a named set.
 
@@ -188,7 +197,8 @@ class Flow:
             The chosen ``value``.
         """
         return await self.ask(
-            Step("choice", prompt, detail=detail, options=options, default=default, images=images, tables=tables)
+            Step("choice", prompt, detail=detail, options=options, default=default,
+                 images=images, tables=tables, text_label=text_label)
         )
 
     async def choose_many(

@@ -1110,3 +1110,10 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .diff-after { width: 37%; color: var(--ok); }
 .diff-changed .diff-before { color: var(--text-dim); text-decoration: line-through; }
 .diff-group td { background: var(--bg); font-weight: 600; color: var(--text); padding-top: 10px; }
+
+/* A typed answer offered alongside the buttons, for prompts that name pasting
+   a URL as one of their options. */
+.step-text-answer { margin-top: 12px; max-width: 720px; }
+.step-text-answer > label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 5px; }
+.step-text-answer .row { flex-wrap: nowrap; }
+.step-text-answer input { flex: 1 1 auto; min-width: 0; }

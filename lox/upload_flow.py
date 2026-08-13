@@ -552,22 +552,6 @@ class FlowPrompts:
                 default="*",
             )
 
-        # "Upload to an existing group? Paste a URL or [N]ew group" says paste
-        # a URL and then offered only buttons, so the one answer the question
-        # actually names could not be given. The buttons stay -- they are the
-        # common answers -- with a field beside them for the URL.
-        if _PASTE_URL.search(prompt) and options:
-            return await self.flow.ask(
-                Step(
-                    "text",
-                    prompt.split("[")[0].strip().rstrip("?:, ") or "Paste a URL",
-                    detail=prompt,
-                    options=found + options,
-                    default="",
-                    edit_shape="url_or_choice",
-                )
-            )
-
         # "Which spectrals shall I upload" has three answers worth offering and
         # a fourth nobody uses. None, all, or let it pick -- as buttons, beside
         # the spectrals themselves.
@@ -604,6 +588,12 @@ class FlowPrompts:
                 default=default_letter(prompt) or (str(default).lower() if default else None),
                 images=self._spectral_images() if self._wants_images(prompt) else [],
                 tables=tables,
+                # Some of these name pasting a URL as one of their answers --
+                # the existing-group question and the metadata results both do.
+                # A field beside the buttons, never instead of them: replacing
+                # them threw away the candidates the pipeline had just found,
+                # which are the answer nearly every time.
+                text_label="Or paste a URL" if _PASTE_URL.search(prompt) else "",
             )
             return chosen
 

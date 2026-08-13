@@ -174,6 +174,8 @@ async def api_seedboxes_save(request: web.Request) -> web.Response:
         stored = settings.set_seedboxes(entries)
     except SettingsError as e:
         return _json({"error": str(e)}, status=400)
+    except Exception as e:  # noqa: BLE001 - a bad entry must say so, not 500
+        return _json({"error": f"Could not save: {type(e).__name__}: {e}"}, status=400)
     settings.apply_to(cfg)
     return _json({"saved": len(stored)})
 

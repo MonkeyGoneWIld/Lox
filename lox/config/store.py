@@ -278,7 +278,10 @@ class SettingsStore:
                 raise SettingsError(f"Torrent client {index}: {e}") from e
             if box.enabled and not box.torrent_client:
                 raise SettingsError(f"Torrent client {index} is enabled but has no connection URL.")
-            cleaned.append(msgspec.to_builtins(box))
+            # None is not TOML-serialisable, and an unset "only for tracker"
+            # is None -- so saving any client at all raised TypeError deep in
+            # the encoder and came back as a 500 with no explanation.
+            cleaned.append({k: v for k, v in msgspec.to_builtins(box).items() if v is not None})
 
         with self._lock:
             if cleaned:
