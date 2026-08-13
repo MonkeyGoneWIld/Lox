@@ -125,6 +125,44 @@ async def main() -> int:
           "if spectrals_after and (torrent_id or cfg.upload.dry_run):" in text, "")
 
     # --- the writes really are still off ------------------------------
+    # --- images are faked, not uploaded ------------------------------
+    from lox.images import dry_run_url, upload_cover, upload_spectrals
+
+    was, cfg.upload.dry_run = cfg.upload.dry_run, True
+    lines.clear()
+    click.secho = lambda message="", **_: lines.append(str(message))
+    try:
+        cover = await upload_cover("/data/media/album/cover.jpg")
+        spectrals = await upload_spectrals(
+            [(1, "01. Track.flac", ("/tmp/s/01 Full.png", "/tmp/s/01 Zoom.png"))]
+        )
+    finally:
+        click.secho = saved_secho
+        cfg.upload.dry_run = was
+    out = "\n".join(lines)
+
+    check("a dry run does not upload the cover", "Not uploading the cover" in out, out[:80])
+    check("but still produces a cover url", bool(cover) and cover.startswith("https://dry-run.invalid/"), str(cover))
+    check("nor the spectrals", "Not uploading 2 spectral image(s)" in out, out[-120:])
+    check("and each one still gets a link",
+          spectrals and len(spectrals[1]) == 2
+          and all(u.startswith("https://dry-run.invalid/") for u in spectrals[1]),
+          str(spectrals))
+    check("full and zoom get different links", spectrals[1][0] != spectrals[1][1], str(spectrals[1]))
+    check("the host is .invalid, so a stand-in can never resolve",
+          all(".invalid/" in u for u in [cover, *spectrals[1]]), "")
+    check("the same file always gets the same link, so two rehearsals compare",
+          dry_run_url("/a/cover.jpg") == dry_run_url("/b/cover.jpg"), "")
+    check("and the extension is kept, so the description renders as an image",
+          dry_run_url("/x/01 Full.png").endswith(".png"), dry_run_url("/x/01 Full.png"))
+
+    # With the toggle off, nothing here intercepts anything.
+    source = open(
+        os.path.join(os.path.dirname(ROOT), "lox", "images", "__init__.py"), encoding="utf-8"
+    ).read()
+    check("the fake only applies to dry runs", source.count("if cfg.upload.dry_run:") == 2,
+          str(source.count("if cfg.upload.dry_run:")))
+
     # The seeding side is asserted on its source: importing it pulls in the
     # torrent-client libraries, which are not installed everywhere this runs,
     # and what matters is that the guard is in front of the transfer.

@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import os
 import sqlite3
 from typing import Any
 
@@ -130,6 +132,27 @@ def chunker(seq, size=4):
         yield seq[pos : pos + size]
 
 
+def dry_run_url(path: str) -> str:
+    """A stand-in URL for an image a dry run did not upload.
+
+    On ``.invalid``, which by RFC 2606 can never resolve, so one of these can
+    never be mistaken for a real link or quietly end up in a real description.
+    Derived from the filename rather than counted, so the same release produces
+    the same description every time you rehearse it and two runs can be
+    compared.
+
+    Args:
+        path: The image that would have been uploaded.
+
+    Returns:
+        A URL that looks like the real thing and points nowhere.
+    """
+    name = os.path.basename(path or "image")
+    digest = hashlib.sha1(name.encode("utf-8", "replace")).hexdigest()[:12]
+    extension = os.path.splitext(name)[1] or ".png"
+    return f"https://dry-run.invalid/{digest}{extension}"
+
+
 async def upload_cover(cover_path: str | None) -> str | None:
     """Upload cover image to the configured image host.
 
@@ -142,6 +165,12 @@ async def upload_cover(cover_path: str | None) -> str | None:
     if not cover_path:
         click.secho("\nNo Cover Image Path was provided to upload...", fg="red", nl=False)
         return None
+    if cfg.upload.dry_run:
+        url = dry_run_url(cover_path)
+        click.secho(
+            f"[DRY RUN] Not uploading the cover to {cfg.image.cover_uploader}. Using {url}", fg="yellow"
+        )
+        return url
     click.secho(f"Uploading cover to {cfg.image.cover_uploader}...", fg="yellow", nl=False)
     try:
         uploader = HOSTS[cfg.image.cover_uploader].ImageUploader()
@@ -166,6 +195,15 @@ async def upload_spectrals(spectrals, uploader=None, successful=None) -> dict:
     """
     if uploader is None:
         uploader = HOSTS[cfg.image.specs_uploader]
+
+    if cfg.upload.dry_run:
+        placeholders = {sid: [dry_run_url(p) for p in paths] for sid, _filename, paths in spectrals}
+        click.secho(
+            f"[DRY RUN] Not uploading {sum(len(u) for u in placeholders.values())} spectral image(s) to "
+            f"{cfg.image.specs_uploader}. The description below uses stand-in links.",
+            fg="yellow",
+        )
+        return placeholders
 
     response = {}
     successful = successful or set()
