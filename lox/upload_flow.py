@@ -77,6 +77,10 @@ _BLOCK_HEADS = {
     # group?".
     "proposed filename changes": ("renames", "Proposed filename changes"),
     "proposed folder name": ("renames", "Proposed folder name"),
+    # The folder rename prints the old and new names, then asks whether to go
+    # ahead. Without this they were loose log lines, so the question arrived
+    # with nothing on screen saying what it would rename the folder to.
+    "renaming folder": ("folder", "Folder rename"),
     # The dry run prints the whole payload it would have posted. That is the
     # answer to "what would this have done", so it is kept rather than scrolled
     # past in the log.
@@ -87,6 +91,8 @@ _BLOCK_HEADS = {
 # line before this sees it, so requiring the indent here matched nothing and
 # the dry-run table came out empty every time.
 _DRY_FIELD = re.compile(r"^(\S[\S ]*?)\s{2,}(.+?)\s*$")
+# "Old folder name        : Artist - Album (2026) [WEB FLAC]"
+_FOLDER_NAME = re.compile(r"^(Old|New pending)\s+folder name\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _RENAME_LINE = re.compile(r"^(?P<old>.+?)\s+>>>\s+(?P<new>.+?)\s*$")
 # "> 2025 / Deluxe / 602488195980 / WEB / AAC / 256" -- year, then any number of
 # edition and catalogue-number parts, then media, format and encoding. The three
@@ -147,6 +153,21 @@ def _metadata_module() -> Any:
     import lox.tagger.metadata as module
 
     return module
+
+
+def _modules_using(name: str) -> list[Any]:
+    """Every already-imported lox module holding a reference called ``name``.
+
+    ``from x import y`` copies the reference into the importer, so replacing it
+    on the module that defines it leaves every caller pointing at the original.
+    """
+    import sys
+
+    return [
+        module
+        for module_name, module in list(sys.modules.items())
+        if module_name.startswith("lox.") and module is not None and hasattr(module, name)
+    ]
 
 
 def strip_ansi(text: str) -> str:
@@ -373,6 +394,7 @@ class FlowPrompts:
         self._saved_viewer: Any = None
         self._saved_editors: dict[str, Any] = {}
         self._saved_manual: Any = None
+        self._saved_reviews: list[tuple[Any, Any]] = []
         # Group candidates printed since the last question, so the next prompt
         # can offer them instead of asking for a pasted URL.
         self._candidates: list[dict[str, Any]] = []
@@ -407,6 +429,10 @@ class FlowPrompts:
         prompt = strip_ansi(text).strip()
         debug.event("upload.prompt", kind="confirm", prompt=prompt[:80])
         tables, self._tables, self._block = self._tables, [], None
+        # Candidates belong to the question they were printed for. Leaving them
+        # behind here meant anything listed before a confirm turned up as an
+        # option on whatever was asked next.
+        self._candidates = []
 
         async def ask() -> bool:
             answer = await self.flow.confirm(prompt, default=bool(default), tables=tables)
@@ -450,7 +476,16 @@ class FlowPrompts:
         # combinations that contradict each other and matched nothing anyone
         # would type at the real prompt.
         if _DOWNCONVERT.search(prompt):
-            formats = [o for o in found if o["value"].isdigit()]
+            # Only the numbered formats. "0" is the menu's own "Skip
+            # downconversion", which is the same answer as the "Do not convert"
+            # button added below and appeared beside it as a second, differently
+            # worded copy; and anything carrying the rename arrow is a filename
+            # that has no business being an answer to this question.
+            formats = [
+                option
+                for option in found
+                if option["value"].isdigit() and option["value"] != "0" and ">>>" not in option["label"]
+            ]
             return await self.flow.choose(
                 prompt.split("(")[0].strip().rstrip("?:,") or "Convert to another format?",
                 [
@@ -459,7 +494,9 @@ class FlowPrompts:
                     {"value": "0", "label": "Do not convert"},
                 ],
                 detail=prompt,
-                default="0",
+                # Converting is the point of being asked, so that is what the
+                # button under your finger does.
+                default="*",
             )
 
         # "Which spectrals shall I upload" has three answers worth offering and
@@ -593,7 +630,9 @@ class FlowPrompts:
             True when the line belonged to a block and should not also be shown
             as a loose note.
         """
-        head = _BLOCK_HEADS.get(text.rstrip(":").strip().lower())
+        # Trailing dots as well as colons: the pipeline writes some of these
+        # headers as "Renaming folder..." and some as "Proposed tag changes:".
+        head = _BLOCK_HEADS.get(text.strip().rstrip(":. ").lower())
         if head:
             kind, title = head
             self._block = {"kind": kind, "title": title, "rows": []}
@@ -626,6 +665,18 @@ class FlowPrompts:
                     "encoding": encoding,
                 }
             )
+            return True
+
+        if self._block["kind"] == "folder":
+            name = _FOLDER_NAME.match(text)
+            if not name:
+                # Anything else means the rename has moved on; let it be a note.
+                self._block = None
+                return False
+            rows = self._block["rows"]
+            if not rows:
+                rows.append({"group": "", "label": "", "before": "", "after": "", "changed": True})
+            rows[0]["before" if name[1].lower() == "old" else "after"] = name[2]
             return True
 
         if self._block["kind"] == "dryrun":
@@ -780,6 +831,142 @@ class FlowPrompts:
         if answer is None:
             return None
         return _editor_text(shape, answer, original)
+
+    def _metadata_sections(self, metadata: dict) -> list[dict[str, Any]]:
+        """Every editable field of a release, as one form.
+
+        The pipeline's metadata screen is a menu: it prints the record, asks
+        which single field you want to change, opens an editor for that one
+        field, prints the record again and asks again. Changing four things
+        means going round four times, and at no point can you see the release
+        as a whole while editing it.
+
+        This is the whole record at once, each field with the control that
+        suits it, and one Save.
+        """
+        from lox.constants import RELEASE_TYPES
+
+        tracks = [
+            {
+                "key": f"{disc}/{num}",
+                "label": f"Disc {disc} · track {num}" if len(metadata.get("tracks") or {}) > 1 else f"Track {num}",
+                "value": track.get("title") or "",
+                "artists": ", ".join(name for name, _role in (track.get("artists") or [])),
+            }
+            for disc, disc_tracks in (metadata.get("tracks") or {}).items()
+            for num, track in disc_tracks.items()
+        ]
+
+        def text(key: str, label: str, hint: str = "") -> dict[str, Any]:
+            return {"kind": "text", "key": key, "label": label, "value": metadata.get(key) or "", "hint": hint}
+
+        return [
+            {"kind": "artists", "key": "artists", "label": "Artists",
+             "hint": "Roles are the ones the trackers accept. Drop a credit by removing its row.",
+             "rows": [{"name": name, "role": role} for name, role in (metadata.get("artists") or [])]},
+            text("title", "Album title"),
+            {"kind": "select", "key": "rls_type", "label": "Release type",
+             "value": metadata.get("rls_type") or "Album", "choices": list(RELEASE_TYPES)},
+            {"kind": "number", "key": "group_year", "label": "Original release year",
+             "value": metadata.get("group_year") or "", "hint": "The year the album first came out."},
+            {"kind": "number", "key": "year", "label": "Edition year",
+             "value": metadata.get("year") or "", "hint": "The year this particular pressing came out."},
+            text("edition_title", "Edition title", "Deluxe, Remastered, and so on. Blank for the original."),
+            text("label", "Record label"),
+            text("catno", "Catalogue number"),
+            text("upc", "UPC"),
+            {"kind": "list", "key": "genres", "label": "Genres", "hint": "At least one is required.",
+             "rows": [{"value": genre} for genre in (metadata.get("genres") or [])]},
+            {"kind": "list", "key": "urls", "label": "URLs",
+             "rows": [{"value": url} for url in (metadata.get("urls") or [])]},
+            {"kind": "textarea", "key": "comment", "label": "Comment", "value": metadata.get("comment") or ""},
+            {"kind": "tracks", "key": "tracks", "label": "Track titles", "rows": tracks},
+        ]
+
+    @staticmethod
+    def _apply_metadata(metadata: dict, answer: Any) -> None:
+        """Write a metadata form's answer back over the release.
+
+        Only the keys the form sent are touched, so a field the form does not
+        offer keeps whatever the scraper found for it. ``answer`` is whatever
+        the browser sent, so it is checked rather than assumed.
+        """
+        if not isinstance(answer, dict):
+            return
+
+        if isinstance(answer.get("artists"), list):
+            people = [
+                (str(row.get("name", "")).strip(), str(row.get("role") or "main").strip().lower())
+                for row in answer["artists"]
+                if str(row.get("name", "")).strip()
+            ]
+            if people:
+                metadata["artists"] = people
+                roles = dict(people)
+                for disc in (metadata.get("tracks") or {}).values():
+                    for track in disc.values():
+                        track["artists"] = [(n, roles.get(n, r)) for n, r in (track.get("artists") or [])]
+
+        for key in ("title", "rls_type"):
+            value = str(answer.get(key, "")).strip()
+            if value:
+                metadata[key] = value
+
+        for key in ("year", "group_year"):
+            value = str(answer.get(key, "")).strip()
+            if re.fullmatch(r"\d{4}", value):
+                metadata[key] = value
+
+        # These four are legitimately blank on most releases, so an empty box
+        # means None rather than "leave it alone".
+        for key in ("edition_title", "label", "catno", "upc", "comment"):
+            if key in answer:
+                metadata[key] = str(answer.get(key) or "").strip() or None
+
+        for key in ("genres", "urls"):
+            if isinstance(answer.get(key), list):
+                values = [str(v).strip() for v in answer[key] if str(v).strip()]
+                if values or key == "urls":
+                    metadata[key] = values
+
+        titles = answer.get("tracks")
+        if isinstance(titles, dict):
+            for key, title in titles.items():
+                disc, _, num = str(key).partition("/")
+                text_title = str(title).strip()
+                if text_title and disc in metadata.get("tracks", {}) and num in metadata["tracks"][disc]:
+                    metadata["tracks"][disc][num]["title"] = text_title
+
+    def _review_metadata(self) -> Any:
+        """A replacement for the pipeline's metadata menu: one form, one Save."""
+
+        async def review_metadata(metadata: dict, validator: Any) -> dict:
+            from lox.errors import InvalidMetadataError
+
+            problem = ""
+            while True:
+                answer = await self.flow.ask(
+                    Step(
+                        "edit",
+                        "Release metadata",
+                        detail=problem or "Everything the upload will be posted with. Change what you need, then save.",
+                        options=self._metadata_sections(metadata),
+                        edit_shape="metadata",
+                    )
+                )
+                if answer is not None:
+                    self._apply_metadata(metadata, answer)
+
+                try:
+                    validator(metadata)
+                except InvalidMetadataError as e:
+                    # Back into the form with the reason on it, rather than a
+                    # yes/no about whether to "revisit the metadata step".
+                    problem = f"{e} Fix it below."
+                    continue
+                return metadata
+
+        return review_metadata
 
     async def _form(self, title: str, shape: str, rows: list[dict[str, Any]], detail: str = "") -> Any:
         """Ask one metadata form and return its answer, or None if cancelled."""
@@ -1008,6 +1195,20 @@ class FlowPrompts:
             self._saved_editors[name] = getattr(review, name)
             setattr(review, name, replacement)
 
+        # The whole screen, not just the editors under it: the menu that asks
+        # which single field you would like to change is the thing being
+        # replaced. The individual editors stay patched above because the
+        # pipeline also calls them directly when a release arrives with no
+        # release type or no genres.
+        #
+        # Patched on every module that imported the name, not just the one that
+        # defines it -- "from x import y" binds y in the importer, so replacing
+        # it on x alone would change nothing for the two callers that matter.
+        form = self._review_metadata()
+        for module in _modules_using("review_metadata"):
+            self._saved_reviews.append((module, module.review_metadata))
+            module.review_metadata = form
+
         metadata = _metadata_module()
         self._saved_manual = metadata._get_manual_metadata
         metadata._get_manual_metadata = self._manual_metadata
@@ -1029,6 +1230,9 @@ class FlowPrompts:
             for name, original in self._saved_editors.items():
                 setattr(review, name, original)
             self._saved_editors.clear()
+        for module, original in self._saved_reviews:
+            module.review_metadata = original
+        self._saved_reviews.clear()
         if self._saved_manual is not None:
             _metadata_module()._get_manual_metadata = self._saved_manual
             self._saved_manual = None
@@ -1119,8 +1323,13 @@ async def run_uploads(
             try:
                 return await _upload_each(flow, folder, trackers, source=source, auto_rename=auto_rename)
             finally:
-                if _dry_run():
-                    _discard_transcodes(flow, transcoded)
+                if _dry_run() and transcoded:
+                    # Kept, not deleted. A dry run exists to be inspected, and
+                    # deleting the transcodes it just made meant the one part
+                    # you most wanted to check -- that the conversion produced
+                    # the right files -- was gone before you could look.
+                    for path in transcoded:
+                        flow.note(f"Dry run: kept transcode {os.path.basename(path)} at {path}")
     finally:
         cfg.upload.multi_tracker_upload = was_multi
         _discard_spectrals(flow, folder)
@@ -1160,24 +1369,6 @@ def _record_transcodes() -> "Iterator[list[str]]":
         yield created
     finally:
         uploader.transcode_folder = original
-
-
-def _discard_transcodes(flow: Flow, folders: list[str]) -> None:
-    """Delete transcodes produced by a dry run.
-
-    A dry run posts nothing and hands nothing to the download client, so the
-    folders it transcoded have no owner: they are not seeding, nothing links to
-    them, and they sit in the download directory looking like releases waiting
-    to be uploaded. Only folders this run created are touched.
-    """
-    import shutil
-
-    for folder in folders:
-        try:
-            shutil.rmtree(folder)
-            flow.note(f"Dry run: removed transcode {os.path.basename(folder)}")
-        except OSError as e:
-            flow.note(f"Could not remove {folder}: {e}", "warning")
 
 
 def _discard_spectrals(flow: Flow, folder: str) -> None:

@@ -193,7 +193,10 @@ async def main() -> int:
           step6.kind == "choice"
           and [o["label"] for o in step6.options] == ["MP3 320", "MP3 V0", "Every format", "Do not convert"],
           str([o["label"] for o in step6.options]))
-    check("not converting is the default", step6.default == "0", str(step6.default))
+    # Converting is the point of being asked, so that is the button under your
+    # finger. It used to default to "do not convert", which is the one answer
+    # that makes the question pointless.
+    check("every format is the default", step6.default == "*", str(step6.default))
     flow6.answer(step6.id, "1")
     check("the chosen format is returned", await asyncio.wait_for(task6, timeout=2) == "1")
 
@@ -500,8 +503,10 @@ async def main() -> int:
     # The forms above passed their tests while doing nothing at all in
     # production: they were built, but __enter__ only patched click, so the
     # pipeline ran its own _edit_artists, which called the patched click.edit
-    # and tried to .split() the coroutine that came back. So run the real
-    # review_metadata, through the real context manager, and let it dispatch.
+    # and tried to .split() the coroutine that came back. The individual
+    # editors are still installed -- the pipeline calls them directly when a
+    # release has no release type or no genres -- and the screen above them is
+    # now a single form, which tests/test_metadata_form.py covers in full.
     import lox.tagger.review as review
 
     original_editor = review._edit_artists
@@ -514,24 +519,19 @@ async def main() -> int:
             "genres": ["Pop"], "urls": [], "label": None, "catno": None,
             "edition_title": None, "upc": None, "comment": None, "rls_type": "Album",
         }
-        with FlowPrompts(flow13, "") as p13:
+        with FlowPrompts(flow13, ""):
             check("the editors are installed, not just defined",
                   review._edit_artists is not original_editor, review._edit_artists.__qualname__)
             task13 = asyncio.create_task(review.review_metadata(live, lambda _m: None))
 
             step13 = await wait_for_step(flow13)
-            check("the field menu is a set of buttons",
-                  "a" in [o["value"] for o in step13.options], str([o["value"] for o in step13.options]))
-            flow13.answer(step13.id, "a")
-
-            step13b = await wait_for_step(flow13)
-            check("choosing artists opens the form, not an editor", step13b.kind == "edit", step13b.kind)
-            check("and it is the artist form", step13b.edit_shape == "artists", str(step13b.edit_shape))
-            flow13.answer(step13b.id, [{"name": "Mohamed Hamaki", "role": "main"},
-                                       {"name": "Sherine", "role": "guest"}])
-
-            step13c = await wait_for_step(flow13)
-            flow13.answer(step13c.id, "n")
+            check("the metadata screen is one form, not a field menu",
+                  step13.kind == "edit" and step13.edit_shape == "metadata",
+                  f"{step13.kind}/{step13.edit_shape}")
+            flow13.answer(step13.id, {
+                "artists": [{"name": "Mohamed Hamaki", "role": "main"},
+                            {"name": "Sherine", "role": "guest"}],
+            })
             await asyncio.wait_for(task13, timeout=2)
 
             # "Manual" metadata is the other editor-backed screen. Left alone
