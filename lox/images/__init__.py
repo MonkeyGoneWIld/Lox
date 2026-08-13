@@ -92,8 +92,15 @@ async def upload_images(filepaths: tuple, image_host) -> list[str]:
                 click.secho(url)
                 urls.append(url)
             conn.commit()
+            # Guarded: pyperclip raises when there is no clipboard, which on a
+            # headless server is always. Unguarded here it raised after every
+            # image had already uploaded, so a working upload reported as a
+            # failed one.
             if cfg.upload.description.copy_uploaded_url_to_clipboard:
-                pyperclip.copy("\n".join(urls))
+                try:
+                    pyperclip.copy("\n".join(urls))
+                except Exception as e:  # noqa: BLE001 - no clipboard is not an upload failure
+                    click.secho(f"Could not copy the URLs to the clipboard: {e}", fg="yellow")
             return urls
         except (ImageUploadFailed, ValueError) as error:
             click.secho(f"Image Upload Failed. {error}", fg="red")

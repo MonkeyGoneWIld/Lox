@@ -114,7 +114,12 @@ async def main() -> int:
     # --- sessions -----------------------------------------------------
     token = issue_session(store, "Jack")
     check("a session names its account", read_session(store, token) == "Jack", str(read_session(store, token)))
-    check("a tampered session is refused", read_session(store, token[:-1] + "0") is None, "")
+    # The last character has to actually change. Appending a fixed "0" left the
+    # token untouched one run in sixteen -- whenever the signature already
+    # ended in one -- and the check failed for the right reason on a token that
+    # had not been tampered with at all.
+    tampered = token[:-1] + ("1" if token[-1] == "0" else "0")
+    check("a tampered session is refused", read_session(store, tampered) is None, tampered[-8:])
     check("so is a malformed one", read_session(store, "nonsense") is None, "")
     check("and an expired one", read_session(store, "jack.1.deadbeef") is None, "")
 

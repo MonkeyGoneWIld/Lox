@@ -7,8 +7,8 @@ import anyio
 import asyncclick as click
 
 from lox import cfg
+from lox.clients import TorrentClient, TorrentClientGenerator
 from lox.config.validations import Seedbox
-from lox.uploader.torrent_client import TorrentClient, TorrentClientGenerator
 
 
 def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:

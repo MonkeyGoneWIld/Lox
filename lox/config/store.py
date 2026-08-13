@@ -277,7 +277,9 @@ class SettingsStore:
             except (msgspec.ValidationError, ValueError) as e:
                 raise SettingsError(f"Torrent client {index}: {e}") from e
             if box.enabled and not box.torrent_client:
-                raise SettingsError(f"Torrent client {index} is enabled but has no connection URL.")
+                raise SettingsError(
+                    f"Torrent client {index} ({box.name}) is switched on but has no address to connect to."
+                )
             # None is not TOML-serialisable, and an unset "only for tracker"
             # is None -- so saving any client at all raised TypeError deep in
             # the encoder and came back as a 500 with no explanation.

@@ -20,6 +20,7 @@ import lox.trackers
 import lox.uploader
 import lox.web
 from lox import cfg
+from lox.clients import TorrentClientGenerator
 from lox.common import commandgroup, str_to_int_if_int
 from lox.common import compress as recompress
 from lox.config import find_config_path, get_default_config_path, get_user_cfg_path
@@ -35,7 +36,6 @@ from lox.uploader.spectrals import (
     handle_spectrals_upload_and_deletion,
     post_upload_spectral_check,
 )
-from lox.uploader.torrent_client import TorrentClientGenerator
 from lox.uploader.upload import generate_source_links
 
 

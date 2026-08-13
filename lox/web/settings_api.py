@@ -6,6 +6,7 @@ found — the Deezer account behind an ARL, the username behind a tracker sessio
 whether a hardlink can genuinely be made between two directories.
 """
 
+import asyncio
 import contextlib
 import os
 from typing import Any
@@ -17,6 +18,7 @@ from aiohttp import web
 import lox.trackers
 from lox import cfg, settings
 from lox import debug as debuglog
+from lox.config.client_url import CLIENTS, build_client_url, split_client_url
 from lox.config.schema import BOOTSTRAP_KEYS, sections_with_fields
 from lox.config.store import SettingsError, coerce, get_value, set_value
 from lox.config.validations import validate as validate_config
@@ -111,28 +113,50 @@ async def api_settings_save(request: web.Request) -> web.Response:
     )
 
 
-# What one torrent-client entry is made of, described here so the page can
-# render it without knowing the struct.
+# The rest of a torrent-client entry -- everything that is not the connection
+# itself, which the page renders from CLIENTS instead. Described here so the
+# page can draw it without knowing the struct.
+#
+# "when" hides a field until another one has a particular value. The rclone
+# settings are meaningless for a client that can already see the files, and
+# three dead boxes on every entry is how a settings page turns into a copy of
+# the config file.
 SEEDBOX_FIELDS = [
-    {"key": "name", "label": "Name", "kind": "text", "help": "Just a label for you."},
-    {"key": "enabled", "label": "Enabled", "kind": "bool"},
-    {"key": "torrent_client", "label": "Connection URL", "kind": "secret",
-     "help": "qbittorrent+http://user:pass@host:8080 — also transmission+http://, deluge://, "
-             "rutorrent+http://host/plugins/rpc/rpc.php"},
-    {"key": "directory", "label": "Save path on the client", "kind": "text",
-     "help": "Where the client will look for the files. Supports {tracker}, which becomes RED, OPS or DIC — "
-             "match it to the seeding directory when a separate folder per tracker is on."},
+    {"key": "name", "label": "Name", "kind": "text", "help": "What this client is called on this page."},
+    {"key": "enabled", "label": "Send uploads here", "kind": "bool"},
+    {"key": "directory", "label": "Save path", "kind": "text",
+     "help": "The folder the client should load the release from, spelled the way the client sees it — which "
+             "is not the way lox sees it if either of you is in a container. Blank uses the seeding "
+             "directory from Seeding layout. {tracker} becomes RED, OPS or DIC."},
     {"key": "label", "label": "Category or label", "kind": "text",
-     "help": "qBittorrent category, or the label on the others. Supports {tracker}."},
-    {"key": "type", "label": "Transfer", "kind": "choice", "choices": ["local", "rclone"],
-     "help": "local: the files are already where the client can see them. rclone: copy them to a remote first."},
-    {"key": "url", "label": "rclone remote", "kind": "text", "help": "Only for the rclone transfer type."},
-    {"key": "extra_args", "label": "Extra rclone arguments", "kind": "list"},
-    {"key": "tracker", "label": "Only for tracker", "kind": "choice", "choices": ["", "RED", "OPS", "DIC"],
-     "help": "Leave blank to use this client for every tracker."},
-    {"key": "flac_only", "label": "FLAC uploads only", "kind": "bool"},
-    {"key": "add_paused", "label": "Add paused", "kind": "bool"},
+     "help": "A category in qBittorrent, a label everywhere else. {tracker} works here too."},
+    {"key": "tracker", "label": "Handles", "kind": "choice", "choices": ["", "RED", "OPS", "DIC"],
+     "labels": {"": "Every tracker"}},
+    {"key": "flac_only", "label": "FLAC only", "kind": "bool",
+     "help": "Skip this client for MP3 downconversions."},
+    {"key": "add_paused", "label": "Add paused", "kind": "bool",
+     "help": "For when you would rather check the files before it starts announcing."},
+    {"key": "type", "label": "The files are", "kind": "choice", "choices": ["local", "rclone"],
+     "labels": {"local": "Already where this client can read them",
+                "rclone": "On another machine — copy them there first"}},
+    {"key": "url", "label": "rclone remote", "kind": "text", "when": {"key": "type", "value": "rclone"},
+     "help": "The remote's name as rclone knows it, without the colon."},
+    {"key": "extra_args", "label": "Extra rclone arguments", "kind": "list",
+     "when": {"key": "type", "value": "rclone"}, "placeholder": "--checksum",
+     "help": "Passed straight to rclone copy, separated by spaces."},
 ]
+
+
+def _connection_of(box: Any) -> dict[str, Any]:
+    """The connection fields of one entry, with the password withheld.
+
+    The page is told a password is set, never what it is -- the same treatment
+    every other secret on the settings page gets.
+    """
+    parts = split_client_url(getattr(box, "torrent_client", "") or "")
+    password = parts.pop("password", "")
+    parts["password_set"] = bool(password)
+    return parts
 
 
 @routes.get("/api/settings/seedboxes")
@@ -147,12 +171,52 @@ async def api_seedboxes(request: web.Request) -> web.Response:
     entries = []
     for box in cfg.seedbox:
         entry = msgspec.to_builtins(box)
-        # The connection URL carries a password. Same treatment as any secret:
-        # the page is told it is set, not what it is.
-        entry["torrent_client_set"] = bool(entry.get("torrent_client"))
-        entry["torrent_client"] = ""
+        entry.pop("torrent_client", None)
+        entry["connection"] = _connection_of(box)
         entries.append(entry)
-    return _json({"seedboxes": entries, "fields": SEEDBOX_FIELDS})
+    return _json(
+        {
+            "seedboxes": entries,
+            "fields": SEEDBOX_FIELDS,
+            "clients": [c.as_dict() for c in CLIENTS],
+        }
+    )
+
+
+def _compose_entries(entries: list[Any]) -> list[dict[str, Any]]:
+    """Turn what the page sends back into entries the config understands.
+
+    The page edits the connection as parts; the config stores it as one URL.
+    A password left blank means "the one already saved", so changing a category
+    does not mean retyping a password the browser was never given.
+
+    Args:
+        entries: Raw entries from the request body.
+
+    Returns:
+        Entries with ``torrent_client`` composed and ``connection`` removed.
+
+    Raises:
+        SettingsError: If an entry is not a set of fields, or its connection
+            cannot be made into a URL.
+    """
+    stored = {box.name: split_client_url(box.torrent_client or "") for box in cfg.seedbox}
+    out: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries or [], 1):
+        if not isinstance(entry, dict):
+            raise SettingsError(f"Torrent client {index} is not a set of fields.")
+        entry = dict(entry)
+        connection = entry.pop("connection", None)
+        if isinstance(connection, dict):
+            connection = dict(connection)
+            if not connection.get("password"):
+                connection["password"] = (stored.get(entry.get("name", "")) or {}).get("password", "")
+            try:
+                entry["torrent_client"] = build_client_url(connection)
+            except ValueError as e:
+                raise SettingsError(f"Torrent client {index}: {e}") from e
+        out.append(entry)
+    return out
 
 
 @routes.put("/api/settings/seedboxes")
@@ -163,15 +227,8 @@ async def api_seedboxes_save(request: web.Request) -> web.Response:
     if not isinstance(entries, list):
         return _json({"error": "seedboxes must be a list"}, status=400)
 
-    # A blank connection URL means "unchanged", so editing a category does not
-    # require retyping a password the page was never given.
-    existing = {box.name: box.torrent_client for box in cfg.seedbox}
-    for entry in entries:
-        if isinstance(entry, dict) and not entry.get("torrent_client"):
-            entry["torrent_client"] = existing.get(entry.get("name", ""), "")
-
     try:
-        stored = settings.set_seedboxes(entries)
+        stored = settings.set_seedboxes(_compose_entries(entries))
     except SettingsError as e:
         return _json({"error": str(e)}, status=400)
     except Exception as e:  # noqa: BLE001 - a bad entry must say so, not 500
@@ -229,7 +286,9 @@ def _temporarily(values: dict[str, Any]):
 async def api_settings_test(request: web.Request) -> web.Response:
     """Run a live check for one settings section.
 
-    Tests run against whatever is currently saved, so save before testing.
+    Anything typed but not yet saved is applied for the duration of the call
+    and rolled back afterwards, so a credential can be tested before it is
+    committed and a failing test never leaves the config half-changed.
     """
     target = request.match_info["target"]
     body = await request.json() if request.can_read_body else {}
@@ -352,28 +411,57 @@ async def _test_discogs(request: web.Request) -> web.Response:
     return ok(f"Token works. Test lookup returned {len(data.get('tracklist') or [])} tracks.")
 
 
+def _connect(name: str, url: str) -> dict[str, Any]:
+    """Sign in to one torrent client. Blocking, so it is called in a thread."""
+    from lox.clients import TorrentClientGenerator  # noqa: PLC0415
+
+    try:
+        client = TorrentClientGenerator.parse_libtc_url(url)
+    except Exception as e:  # noqa: BLE001 - reported per client
+        return {"name": name, "ok": False, "error": f"{type(e).__name__}: {e}"}
+    # Every client here answers a failed login with None rather than raising,
+    # so "it did not throw" is not the same as "it connected".
+    if client.client is None:
+        return {"name": name, "ok": False, "error": "refused the connection or the credentials"}
+    return {"name": name, "ok": True}
+
+
 async def _test_torrent_client(request: web.Request) -> web.Response:
-    """Connect to every configured torrent client and report its version."""
-    from lox.uploader.torrent_client import TorrentClientGenerator
+    """Sign in to each configured torrent client and report which answered.
 
-    entries = [s for s in cfg.seedbox if s.torrent_client]
-    if not entries:
-        return fail("No seedbox entry has a torrent_client URL.")
+    Tests whatever is currently in the editor when the page sends it, so a
+    connection can be checked before it is saved -- which is the order anyone
+    types one in.
+    """
+    body: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        body = await request.json()
 
-    results = []
-    for entry in entries:
+    pending = body.get("seedboxes")
+    if isinstance(pending, list):
         try:
-            client = TorrentClientGenerator.parse_libtc_url(entry.torrent_client)
-            client.login()
-            results.append({"name": entry.name or entry.type, "ok": True})
-        except Exception as e:  # noqa: BLE001 - reported per client
-            results.append({"name": entry.name or entry.type, "ok": False, "error": str(e)})
+            entries = [
+                (str(e.get("name") or f"client {i}"), str(e.get("torrent_client") or ""))
+                for i, e in enumerate(_compose_entries(pending), 1)
+            ]
+        except SettingsError as e:
+            return fail(str(e))
+    else:
+        entries = [(s.name or s.type, s.torrent_client) for s in cfg.seedbox]
+
+    entries = [(name, url) for name, url in entries if url]
+    if not entries:
+        return fail("No torrent client has an address yet. Add one below, then test.")
+
+    # login() opens a socket and waits on it. On the event loop that stalls
+    # every other request in the process, including the page you are on.
+    results = [await asyncio.to_thread(_connect, name, url) for name, url in entries]
 
     good = [r for r in results if r["ok"]]
     if not good:
         return fail("Could not connect to any torrent client.", clients=results)
     if len(good) < len(results):
-        return fail(f"Connected to {len(good)} of {len(results)} clients.", clients=results)
+        return fail(f"Connected to {len(good)} of {len(results)}.", clients=results)
     return ok(f"Connected to {len(good)} torrent client(s).", clients=results)
 
 

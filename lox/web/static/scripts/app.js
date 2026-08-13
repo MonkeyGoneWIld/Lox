@@ -2488,7 +2488,10 @@ They will not be listed again, even if a later scan finds them.`)) {
     );
     return el(
       'details',
-      { class: 'diff', open: table.rows.length <= 12 },
+      // Open, however many there are. What is already in the group is the whole
+      // basis for "is this a duplicate" -- collapsing it past twelve rows hid
+      // it in exactly the cases where there was most to check.
+      { class: 'diff', open: true },
       el('summary', {}, table.title,
         el('span', { class: 'card-sub' }, ` — ${table.rows.length} existing torrent${table.rows.length === 1 ? '' : 's'}`)),
       el('div', { class: 'table-scroll' },
@@ -2589,19 +2592,27 @@ They will not be listed again, even if a later scan finds them.`)) {
     }));
     const sections = groups.flatMap((g) => g.fields);
 
+    // Credits, lists, the tracklist and the comment are as tall as their
+    // content and read badly in a narrow column, so they take the full row.
+    // Marked in the class as well as in CSS, so the layout does not depend on
+    // :has() being available.
+    const isWide = (section) => ['artists', 'list', 'tracks', 'textarea'].includes(section.kind);
+
+    // A wide field owns its row, so its hint can sit beside the label where it
+    // reads as part of the heading. A narrow one shares a row, and a hint long
+    // enough to wrap there pushed its own input a line below its neighbours' --
+    // which is why "Original release year" sat lower than "Edition year". So
+    // for those the hint goes under the control, and every input in a row
+    // starts at the same height whatever its label says.
     const label = (section) =>
       el('div', { class: 'meta-form-head' },
          el('label', {}, section.label),
-         section.hint ? el('span', { class: 'meta-form-hint' }, section.hint) : null);
+         section.hint && isWide(section) ? el('span', { class: 'meta-form-hint' }, section.hint) : null);
 
     const body = el('div', { class: 'meta-groups' });
 
-    const drawField = (section) => {
-        // Credits, lists, the tracklist and the comment are as tall as their
-        // content and read badly in a narrow column, so they take the full
-        // row. Marked here as well as in CSS, so the layout does not depend on
-        // :has() being available.
-        const wide = ['artists', 'list', 'tracks', 'textarea'].includes(section.kind);
+    const buildField = (section) => {
+        const wide = isWide(section);
         const field = el('div', { class: `meta-form-field${wide ? ' meta-form-wide' : ''}` }, label(section));
 
         if (section.kind === 'artists') {
@@ -2675,6 +2686,14 @@ They will not be listed again, even if a later scan finds them.`)) {
         control.addEventListener('input', () => (section.value = control.value));
         field.append(control);
         return field;
+    };
+
+    const drawField = (section) => {
+      const field = buildField(section);
+      if (section.hint && !isWide(section)) {
+        field.append(el('p', { class: 'meta-form-hint meta-form-note' }, section.hint));
+      }
+      return field;
     };
 
     const draw = () => {
@@ -2885,16 +2904,6 @@ They will not be listed again, even if a later scan finds them.`)) {
         detail.push(el('p', { class: 'hint' },
           `${result.dry_run ? 'Would seed' : 'Seeded'} from ${o.folder}`));
       }
-      (o.kept || []).forEach((path) => detail.push(
-        el('div', { class: 'row result-kept' },
-           el('span', { class: 'hint' }, `Transcode kept at ${path}`),
-           el('button', {
-             type: 'button', class: 'danger',
-             onclick: (e) => deleteFolder(path, basename(path), async () => {
-               e.target.closest('.result-kept').remove();
-               loadFolders();
-             }),
-           }, 'Delete'))));
 
       const plain = rows.filter(([k]) => !DESCRIPTION_FIELDS.includes(k));
       if (plain.length) {
@@ -2930,10 +2939,125 @@ They will not be listed again, even if a later scan finds them.`)) {
     return el(
       'div',
       { class: 'flow-result' },
-      el('h3', { class: 'section-title' },
-         result.dry_run ? 'Dry run — nothing was posted or seeded' : 'Result'),
-      ...parts,
+      ...[
+        el('h3', { class: 'section-title' },
+           result.dry_run ? 'Dry run — nothing was posted or seeded' : 'Result'),
+        ...parts,
+        leftovers(result),
+      ].filter(Boolean),
     );
+  }
+
+  // What the run left on disk that nothing is going to use.
+  //
+  // A dry run posts nothing and adds nothing to a client, so everything it
+  // produced is dead weight: the hardlinked per-tracker folders — FLAC and all
+  // — and any downconversion it transcoded on the way. They are kept rather
+  // than deleted, because rehearsing exists to be inspected and a transcode
+  // deleted before you can look at it defeats the point. Clearing them is one
+  // button each, or one button for the lot.
+  //
+  // After a real run the same files are what the torrents are seeding from, so
+  // only the transcodes are listed and the label says what removing them costs.
+  function leftovers(result) {
+    const seen = new Set();
+    const items = [];
+    const add = (path, what) => {
+      if (!path || seen.has(path)) return;
+      seen.add(path);
+      items.push({ path, what });
+    };
+
+    if (result.dry_run) {
+      (result.outcomes || []).forEach((o) => {
+        if (o.folder && o.folder !== result.folder) add(o.folder, `Seeding folder — ${o.tracker}`);
+      });
+    }
+    (result.transcodes || []).forEach((p) => add(p, 'Downconversion'));
+    if (!items.length) return null;
+
+    const list = el('div', { class: 'leftover-list' });
+    const block = el(
+      'details',
+      { class: 'result-block', open: true },
+      el('summary', {},
+         el('strong', {}, result.dry_run ? 'Files this rehearsal left behind' : 'Transcodes kept'),
+         el('span', { class: 'card-sub' },
+            `${items.length} folder${items.length === 1 ? '' : 's'}`)),
+      el('p', { class: 'hint' },
+         result.dry_run
+           ? 'Nothing was posted or seeded, so none of this is in use. Delete what you do not want to keep.'
+           : 'These were uploaded and are seeding. Deleting one stops that torrent.'),
+      list,
+    );
+
+    const rows = new Map();
+    const drop = (path) => {
+      rows.get(path)?.remove();
+      rows.delete(path);
+      if (!rows.size) block.remove();
+    };
+
+    const remove = async (path) => {
+      await api('/api/folders/delete', { method: 'POST', body: { folder: path } });
+      drop(path);
+    };
+
+    items.forEach(({ path, what }) => {
+      const row = el(
+        'div',
+        { class: 'row result-kept' },
+        el('div', { class: 'leftover-what' },
+           el('span', {}, what),
+           el('span', { class: 'hint leftover-path' }, path)),
+        el('button', {
+          type: 'button', class: 'danger',
+          onclick: async () => {
+            if (!confirm(`Delete "${basename(path)}"?\n\n${path}\n\n`
+                         + 'This removes the files from disk and cannot be undone.')) return;
+            try {
+              await remove(path);
+              toast(`Deleted ${basename(path)}`, 'ok');
+              loadFolders();
+            } catch (e) {
+              toast(e.message, 'bad');
+            }
+          },
+        }, 'Delete'),
+      );
+      rows.set(path, row);
+      list.append(row);
+    });
+
+    if (items.length > 1) {
+      list.append(el(
+        'div',
+        { class: 'row leftover-all' },
+        el('button', {
+          type: 'button', class: 'danger',
+          onclick: async (e) => {
+            const paths = [...rows.keys()];
+            if (!confirm(`Delete all ${paths.length} folders?\n\n${paths.join('\n')}\n\n`
+                         + 'This removes the files from disk and cannot be undone.')) return;
+            e.target.disabled = true;
+            const failed = [];
+            for (const path of paths) {
+              try {
+                await remove(path);
+              } catch (err) {
+                failed.push(`${basename(path)}: ${err.message}`);
+              }
+            }
+            e.target.disabled = false;
+            if (failed.length) toast(`Could not delete ${failed.join('; ')}`, 'bad');
+            else toast(`Deleted ${paths.length} folders`, 'ok');
+            loadFolders();
+          },
+        }, `Delete all ${items.length}`),
+      ));
+    }
+
+    return block;
   }
 
   const DESCRIPTION_FIELDS = ['album description', 'release description'];
@@ -3399,7 +3523,7 @@ They will not be listed again, even if a later scan finds them.`)) {
       el(
         'p',
         { class: 'hint' },
-        'Changes apply immediately, no restart. Save before running a test — tests read what is stored, not what is typed.',
+        'Changes apply immediately, no restart. Tests use what is on screen, so a credential can be checked before it is saved.',
       ),
       ...categoriesOf(sections).flatMap(([name, group]) => [
         el('h2', { class: 'settings-category', id: `settings-${slug(name)}` }, name),
@@ -3594,73 +3718,170 @@ They will not be listed again, even if a later scan finds them.`)) {
     const host = $('#seedbox-editor');
     if (!host) return;
     try {
-      const { seedboxes, fields } = await api('/api/settings/seedboxes');
+      const { seedboxes, fields, clients } = await api('/api/settings/seedboxes');
       state.seedboxes = seedboxes;
       state.seedboxFields = fields;
+      state.seedboxClients = clients || [];
       renderSeedboxes();
     } catch (e) {
       host.replaceChildren(empty(e.message));
     }
   }
 
+  // One labelled control, in the shape the rest of the settings page uses.
+  function settingBox(label, control, help) {
+    return el(
+      'div',
+      { class: 'setting' },
+      el('label', {}, label),
+      control,
+      help ? el('p', { class: 'hint setting-help' }, help) : null,
+    );
+  }
+
+  // How to reach one torrent client.
+  //
+  // This was a single box asking for qbittorrent+http://user:pass@host:8080,
+  // with the other three clients' shapes listed underneath as a hint. That is
+  // a config file with a border drawn round it: the scheme is two schemes
+  // joined by a plus, which one depends on the client, the password goes in the
+  // middle of the host, and every way of getting it wrong reads as "could not
+  // connect". So it is a dropdown and the boxes that dropdown implies, and the
+  // server composes the URL.
+  function connectionFields(box) {
+    const conn = box.connection || (box.connection = {});
+    const clients = state.seedboxClients || [];
+    const spec = clients.find((c) => c.id === conn.client) || null;
+    const grid = el('div', { class: 'settings-grid' });
+
+    grid.append(settingBox(
+      'Client',
+      el('select', { onchange: (e) => { conn.client = e.target.value; renderSeedboxes(); } },
+         el('option', { value: '', selected: !conn.client }, 'Choose…'),
+         ...clients.map((c) => el('option', { value: c.id, selected: c.id === conn.client }, c.label))),
+      spec ? spec.help : 'Which program the finished torrent is handed to.',
+    ));
+    if (!spec) return grid;
+
+    grid.append(settingBox(
+      'Host',
+      el('input', { type: 'text', value: conn.host || '', placeholder: '192.168.1.10',
+                    oninput: (e) => (conn.host = e.target.value) }),
+      'A name or an IP. Pasting the whole address works — the rest is taken off.',
+    ));
+    grid.append(settingBox(
+      'Port',
+      el('input', { type: 'number', min: '1', max: '65535', value: conn.port ?? '',
+                    placeholder: String(spec.port),
+                    oninput: (e) => (conn.port = e.target.value) }),
+      `Blank means ${spec.port}.`,
+    ));
+    grid.append(settingBox(
+      'Username',
+      el('input', { type: 'text', autocomplete: 'off', value: conn.username || '',
+                    oninput: (e) => (conn.username = e.target.value) }),
+    ));
+    grid.append(settingBox(
+      'Password',
+      el('input', { type: 'password', autocomplete: 'new-password',
+                    placeholder: conn.password_set ? '•••••••• (saved — type to replace)' : 'Not set',
+                    oninput: (e) => (conn.password = e.target.value) }),
+    ));
+
+    if (spec.secure) {
+      grid.append(el('div', { class: 'setting' },
+        el('label', { class: 'check' },
+           el('input', { type: 'checkbox', checked: !!conn.secure,
+                         onchange: (e) => (conn.secure = e.target.checked) }),
+           'Reached over HTTPS')));
+    }
+    if (spec.path !== null && spec.path !== undefined) {
+      grid.append(settingBox(
+        'Path',
+        el('input', { type: 'text', value: conn.path || '', placeholder: spec.path || '/',
+                      oninput: (e) => (conn.path = e.target.value) }),
+        spec.path_required
+          ? 'Where the RPC plugin answers. The default is right for a stock install.'
+          : 'Only if a reverse proxy serves it under a sub-path.',
+      ));
+    }
+    return grid;
+  }
+
   function renderSeedboxes() {
     const host = $('#seedbox-editor');
     const boxes = state.seedboxes;
 
-    const card = (box, index) => {
+    const otherFields = (box) => {
       const grid = el('div', { class: 'settings-grid' });
       state.seedboxFields.forEach((field) => {
-        const set = field.key === 'torrent_client' && box.torrent_client_set;
-        let input;
+        // A field that only applies in one mode is not shown in the others.
+        // Three dead rclone boxes on a client that can already see the files
+        // is how a settings page turns back into a copy of the config file.
+        if (field.when && String(box[field.when.key] ?? '') !== field.when.value) return;
+        const optionLabel = (value) =>
+          (field.labels && field.labels[value] !== undefined ? field.labels[value] : value);
+
         if (field.kind === 'bool') {
-          input = el('input', { type: 'checkbox', checked: !!box[field.key],
-                                onchange: (e) => (box[field.key] = e.target.checked) });
           grid.append(el('div', { class: 'setting' },
-            el('label', { class: 'check' }, input, field.label),
+            el('label', { class: 'check' },
+               el('input', { type: 'checkbox', checked: !!box[field.key],
+                             onchange: (e) => (box[field.key] = e.target.checked) }),
+               field.label),
             field.help ? el('p', { class: 'hint setting-help' }, field.help) : null));
           return;
         }
+
+        let input;
         if (field.kind === 'choice') {
-          input = el('select', { onchange: (e) => (box[field.key] = e.target.value) },
-            ...field.choices.map((c) =>
-              el('option', { value: c, selected: (box[field.key] || '') === c }, c || 'Every tracker')));
+          input = el('select', {
+            onchange: (e) => {
+              box[field.key] = e.target.value;
+              // Another field may appear or disappear because of this one.
+              if (state.seedboxFields.some((f) => f.when && f.when.key === field.key)) renderSeedboxes();
+            },
+          }, ...field.choices.map((c) =>
+            el('option', { value: c, selected: (box[field.key] || '') === c }, optionLabel(c))));
         } else if (field.kind === 'list') {
           input = el('input', { type: 'text', value: (box[field.key] || []).join(' '),
-                                placeholder: '--checksum -P' });
+                                placeholder: field.placeholder || '' });
           input.addEventListener('input', () => {
             box[field.key] = input.value.split(/\s+/).filter(Boolean);
           });
         } else {
           input = el('input', {
-            type: field.kind === 'secret' ? 'password' : 'text',
-            autocomplete: 'new-password',
-            value: field.kind === 'secret' ? '' : (box[field.key] ?? ''),
-            placeholder: set ? '•••••••• (saved — type to replace)' : (field.kind === 'secret' ? 'Not set' : ''),
+            type: 'text',
+            value: box[field.key] ?? '',
+            placeholder: field.placeholder || '',
             oninput: (e) => (box[field.key] = e.target.value),
           });
         }
-        grid.append(el('div', { class: 'setting' },
-          el('label', {}, field.label, set ? el('span', { class: 'tag ok saved-tag' }, 'saved') : null),
-          input,
-          field.help ? el('p', { class: 'hint setting-help' }, field.help) : null));
+        grid.append(settingBox(field.label, input, field.help));
       });
+      return grid;
+    };
 
+    const card = (box, index) => {
+      const spec = (state.seedboxClients || []).find((c) => c.id === box.connection?.client);
       return el('div', { class: 'seedbox-card' },
         el('div', { class: 'row settings-head' },
            el('strong', {}, box.name || `Client ${index + 1}`),
+           spec ? el('span', { class: 'tag dim' }, spec.label) : null,
            el('button', { type: 'button', class: 'danger',
                           onclick: () => { boxes.splice(index, 1); renderSeedboxes(); } }, 'Remove')),
-        grid);
+        connectionFields(box),
+        el('hr', { class: 'seedbox-rule' }),
+        otherFields(box));
     };
 
     host.replaceChildren(
       boxes.length
         ? el('div', { class: 'seedbox-list' }, ...boxes.map(card))
-        : el('p', { class: 'hint' }, 'No torrent client configured. Uploads will not be seeded automatically.'),
+        : el('p', { class: 'hint' }, 'No torrent client yet, so finished uploads are not seeded automatically.'),
       el('div', { class: 'row' },
          el('button', { type: 'button', onclick: () => {
            boxes.push({ name: `client ${boxes.length + 1}`, enabled: true, type: 'local',
-                        directory: '', label: '', torrent_client: '', extra_args: [] });
+                        directory: '', label: '', extra_args: [], connection: {} });
            renderSeedboxes();
          } }, '+ Add a client'),
          el('button', { type: 'button', class: 'primary', onclick: saveSeedboxes }, 'Save clients')),
@@ -3715,10 +3936,13 @@ They will not be listed again, even if a later scan finds them.`)) {
 
     try {
       // Send whatever is typed but not yet saved, so Test works before Save.
-      const result = await api(`/api/settings/test/${target}`, {
-        method: 'POST',
-        body: { values: state.pending },
-      });
+      // The server applies it for the call and rolls it back afterwards.
+      const body = { values: state.pending };
+      // The torrent clients are a list, not dotted keys, so they travel
+      // separately — otherwise a connection could only be tested after saving
+      // it, which is the wrong way round.
+      if (target === 'qbittorrent') body.seedboxes = state.seedboxes || [];
+      const result = await api(`/api/settings/test/${target}`, { method: 'POST', body });
       box.className = `test-result ${result.ok ? 'pass' : 'warn'}`;
       const detail = result.detail && Object.keys(result.detail).length
         ? el(

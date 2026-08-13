@@ -81,6 +81,8 @@ async def main() -> int:
         ("upload.default_editor", "every editor is a form now"),
         ("upload.web_interface.display_host", "the spectral viewer it linked to is gone"),
         ("upload.multi_tracker_upload", "trackers are ticked per upload instead"),
+        ("upload.description.copy_uploaded_url_to_clipboard",
+         "it copies to the server's clipboard, which is not the machine you are on"),
     ):
         check(f"{dead} is gone -- {why}", dead not in keys, "")
 
@@ -89,7 +91,6 @@ async def main() -> int:
         "upload.requests.always_ask_for_request_fill",
         "upload.compression.lma_comment_in_t_desc",
         "upload.description.fullwidth_replacements",
-        "upload.description.copy_uploaded_url_to_clipboard",
         "upload.compression.use_upc_as_catno",
         "upload.search.blacklisted_genres",
         "upload.formatting.blacklisted_substitution",

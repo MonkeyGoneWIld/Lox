@@ -76,6 +76,15 @@ jobs:
       - name: Sign-in accounts
         run: uv run python tests/test_accounts.py
 
+      - name: Torrent clients, set up without writing a libtc URL
+        run: uv run python tests/test_torrent_clients.py
+
+      - name: Upload page layout
+        # Nothing in CI can see a screen, so these are the specific layout
+        # mistakes that shipped and had to be reported by someone looking at
+        # one, asserted against the stylesheet and the script.
+        run: uv run python tests/test_upload_layout.py
+
       - name: Dry run shows everything and writes nothing
         run: uv run python tests/test_dry_run.py
 

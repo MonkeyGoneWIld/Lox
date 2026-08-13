@@ -140,7 +140,8 @@ SECTIONS: tuple[Section, ...] = (
         "The defaults are conservative guesses, not measured limits.",
         category="Accounts",
     ),
-    Section("upload", "Uploading", "Behaviour of the upload pipeline itself.", category="Uploading"),
+    Section("upload", "Uploading", "How the pipeline behaves while it works through a release.",
+            category="Uploading"),
     Section("requests", "Requests and duplicates", "What the pipeline checks against the tracker while uploading.",
             category="Uploading"),
     Section("formatting", "Naming", "How release folders and files are named.", category="Uploading"),
@@ -157,9 +158,8 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "torrent",
         "Torrent client",
-        "Where finished uploads are injected for seeding. Add a client, give it a connection URL, and set "
-        "the save path it should use — {tracker} in the path or the category expands to RED, OPS or DIC. "
-        "Test connection says which ones answered.",
+        "Where a finished upload is handed over to start seeding. Pick the program, say where it is and "
+        "which account to use, and Test connection will tell you whether it answered — before you save it.",
         test="qbittorrent",
         category="Files",
     ),
@@ -194,12 +194,15 @@ FIELDS: tuple[Field, ...] = (
     # --- Trackers -----------------------------------------------------
     Field("tracker.red.session", "Session cookie", "secret", "red"),
     Field("tracker.red.api_key", "API key", "secret", "red", "Needs upload privileges."),
-    Field("tracker.red.dottorrents_dir", "Torrent output directory", "path", "red"),
+    Field("tracker.red.dottorrents_dir", "Torrent output directory", "path", "red",
+          "Only if RED's .torrent files should go somewhere of their own. Blank uses the one under Paths."),
     Field("tracker.ops.session", "Session cookie", "secret", "ops"),
     Field("tracker.ops.api_key", "API key", "secret", "ops", "Needs upload privileges."),
-    Field("tracker.ops.dottorrents_dir", "Torrent output directory", "path", "ops"),
+    Field("tracker.ops.dottorrents_dir", "Torrent output directory", "path", "ops",
+          "Only if OPS's .torrent files should go somewhere of their own. Blank uses the one under Paths."),
     Field("tracker.dic.session", "Session cookie", "secret", "dic"),
-    Field("tracker.dic.dottorrents_dir", "Torrent output directory", "path", "dic"),
+    Field("tracker.dic.dottorrents_dir", "Torrent output directory", "path", "dic",
+          "Only if DIC's .torrent files should go somewhere of their own. Blank uses the one under Paths."),
 
     # --- Checker ------------------------------------------------------
     Field("checker.tracker_budget", "Calls allowed per window", "int", "checker", minimum=1),
@@ -215,29 +218,39 @@ FIELDS: tuple[Field, ...] = (
           placeholder="2026-12-31"),
     Field("checker.min_confidence", "Minimum request match confidence", "float", "checker",
           "Artist and title must also clear their own thresholds.", minimum=0.0, maximum=1.0),
-    Field("checker.state_dir", "Scan history directory", "path", "paths"),
+    Field("checker.state_dir", "Scan history directory", "path", "paths",
+          "Which albums and requests have already been checked, so a rescan does not spend tracker budget "
+          "asking again."),
 
     # --- Linking ------------------------------------------------------
     Field("linking.enabled", "Hardlink releases per tracker", "bool", "linking"),
     Field("linking.link_dir", "Seeding directory", "path", "linking", "Must share a filesystem with downloads."),
-    Field("linking.method", "Method", "choice", "linking", choices=("hardlink", "symlink", "copy")),
+    Field("linking.method", "Method", "choice", "linking",
+          "Hardlink unless your client cannot follow them. Copy means a second full copy of every release.",
+          choices=("hardlink", "symlink", "copy")),
     Field("linking.per_tracker_dirs", "Separate folder per tracker", "bool", "linking"),
     Field("linking.fallback_to_copy", "Fall back to a real copy if linking fails", "bool", "linking",
           "Leave off so a cross-filesystem mistake fails loudly instead of doubling disk usage."),
 
     # --- Images -------------------------------------------------------
     Field("image.image_uploader", "General images", "choice", "images",
+          "Anything that is neither the cover nor a spectral.",
           choices=("ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox")),
     Field("image.cover_uploader", "Cover art", "choice", "images",
-          choices=("ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox")),
+          "The image the group is created with. Whichever host you pick has to still be serving it years "
+          "from now.", choices=("ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox")),
     Field("image.specs_uploader", "Spectrals", "choice", "images",
+          "Linked from the torrent description as proof of what was checked.",
           choices=("ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox")),
     Field("image.ptpimg_key", "ptpimg key", "secret", "images", test="image:ptpimg"),
     Field("image.ptscreens_key", "ptscreens key", "secret", "images", test="image:ptscreens"),
     Field("image.oeimg_key", "oeimg key", "secret", "images", test="image:oeimg"),
     Field("image.imgbb_key", "imgbb key", "secret", "images", test="image:imgbb"),
-    Field("image.auto_compress_cover", "Compress covers automatically", "bool", "images"),
-    Field("image.remove_auto_downloaded_cover_image", "Delete covers lox downloaded", "bool", "images"),
+    Field("image.auto_compress_cover", "Compress covers automatically", "bool", "images",
+          "For hosts that refuse a large file."),
+    Field("image.remove_auto_downloaded_cover_image", "Delete covers lox downloaded", "bool", "images",
+          "When a release arrives with no cover, one is fetched to upload with. This removes it again "
+          "afterwards instead of leaving it in the release folder."),
 
     # --- Verification sources ----------------------------------------
     Field("metadata.discogs_token", "Discogs token", "secret", "metadata",
@@ -260,8 +273,12 @@ FIELDS: tuple[Field, ...] = (
           "Do everything except post to the tracker and add to the download client."),
     Field("upload.yes_all", "Auto-answer prompts", "bool", "upload",
           "The lossy-master question always asks regardless."),
-    Field("upload.upload_to_seedbox", "Inject into the torrent client", "bool", "upload"),
-    Field("upload.simultaneous_threads", "Worker threads", "int", "upload", minimum=1, maximum=16),
+    Field("upload.upload_to_seedbox", "Hand finished uploads to a torrent client", "bool", "upload",
+          "The switch for the whole feature. Off, nothing reaches a client whatever is set up under "
+          "Files → Torrent client."),
+    Field("upload.simultaneous_threads", "Files worked on at once", "int", "upload",
+          "How many tracks are read, hashed or drawn as spectrals in parallel. Higher is faster until the "
+          "disk becomes the limit.", minimum=1, maximum=16),
     Field("upload.debug", "Debug mode", "bool", "debug",
           "Verbose logging, shown below. Credentials are redacted before anything is written."),
     Field("upload.debug_tracker_connection", "Also log tracker requests and responses", "bool", "debug", "Noisy."),
@@ -272,8 +289,11 @@ FIELDS: tuple[Field, ...] = (
     Field("logging.max_total_bytes", "Maximum total log size", "bytes", "debug",
           "Older files are deleted to stay under it.", minimum=1048576),
     Field("upload.compression.flac_compression_level", "FLAC compression level", "int", "upload",
+          "8 is smallest and slowest, 0 the reverse. Lossless either way, and it only applies where lox "
+          "re-encodes a file — recompressing a release, or repairing a corrupt track.",
           minimum=0, maximum=8),
-    Field("upload.compression.compress_spectrals", "Compress spectrals before upload", "bool", "upload"),
+    Field("upload.compression.compress_spectrals", "Compress spectrals before upload", "bool", "upload",
+          "Smaller images to the host. Turn off if the compression is costing detail you need to see."),
     Field("upload.compression.use_upc_as_catno", "Use the barcode as the catalogue number", "bool", "upload",
           "When the release has no catalogue number of its own."),
     Field("upload.search.blacklisted_genres", "Genres to drop", "list", "upload",
@@ -287,10 +307,15 @@ FIELDS: tuple[Field, ...] = (
 
     # --- Formatting ---------------------------------------------------
     Field("upload.formatting.folder_template", "Folder template", "text", "formatting",
+          "Takes {artists}, {title}, {year}, {source}, {format}, {encoding} and {label}. "
+          "A field the release does not have is dropped along with the brackets around it.",
           placeholder="{artists} - {title} ({year}) [{source} {format}]"),
     Field("upload.formatting.file_template", "File template", "text", "formatting",
+          "Takes {tracknumber}, {artist}, {title}, {album} and {date} — the track's own tags, not the "
+          "release's.",
           placeholder="{tracknumber}. {artist} - {title}"),
-    Field("upload.formatting.one_album_artist_file_template", "File template, single artist", "text", "formatting"),
+    Field("upload.formatting.one_album_artist_file_template", "File template, single artist", "text", "formatting",
+          "Used instead of the template above when the whole release is by one artist."),
     Field("upload.formatting.no_artist_in_filename_if_only_one_album_artist",
           "Drop the artist from filenames when there is only one", "bool", "formatting"),
     Field("upload.formatting.various_artist_threshold", "Artists before a release is Various", "int", "formatting",
@@ -310,16 +335,21 @@ FIELDS: tuple[Field, ...] = (
           "Includes the approval comment when a release is flagged as lossy mastered."),
     Field("upload.description.fullwidth_replacements", "Full-width lookalikes for illegal characters",
           "bool", "description", "Uses ： and ？ instead of dropping a colon or a question mark."),
-    Field("upload.description.copy_uploaded_url_to_clipboard", "Copy the upload URL to the clipboard",
-          "bool", "description", "Needs a desktop clipboard; ignored on a headless server."),
+    # Deliberately not here: upload.description.copy_uploaded_url_to_clipboard.
+    # It copies to the clipboard of the machine the *server* runs on, which for
+    # anyone using this page is not the machine they are sitting at. A setting
+    # that cannot do anything from the UI does not belong on it. It still works
+    # from config.toml for the command line, where it makes sense.
 
     # --- Paths --------------------------------------------------------
     Field("directory.download_directory", "Download directory", "path", "paths",
           "Where releases live. Created if missing. Overrides LOX_DOWNLOAD_DIR."),
     Field("directory.dottorrents_dir", "Torrent output directory", "path", "paths",
           "Where .torrent files are written. Created if missing. Overrides LOX_TORRENTS_DIR."),
-    Field("directory.tmp_dir", "Spectral scratch directory", "path", "paths"),
-    Field("directory.clean_tmp_dir", "Wipe scratch directory at startup", "bool", "paths"),
+    Field("directory.tmp_dir", "Spectral scratch directory", "path", "paths",
+          "Working space for the spectral images. Each upload clears its own when it finishes."),
+    Field("directory.clean_tmp_dir", "Empty the scratch directory at startup", "bool", "paths",
+          "Clears anything a run that was interrupted left behind."),
 )
 
 FIELDS_BY_KEY: dict[str, Field] = {f.key: f for f in FIELDS}

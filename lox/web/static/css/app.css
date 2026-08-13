@@ -761,6 +761,26 @@ select {
   margin-top: 14px;
 }
 
+/* One torrent client per card: how to reach it above the rule, what to do with
+   it below. Without the border the two clients ran into each other and the
+   fields of one looked like the fields of the next. */
+.seedbox-list { display: flex; flex-direction: column; gap: 14px; margin: 14px 0; }
+.seedbox-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 16px 16px;
+  background: var(--bg);
+}
+.seedbox-card .settings-head {
+  margin: 0 -16px;
+  padding: 11px 16px;
+  background: var(--bg-input);
+  border-radius: var(--radius) var(--radius) 0 0;
+  border-bottom: 1px solid var(--border);
+}
+.seedbox-card .settings-head strong { margin-right: auto; }
+.seedbox-rule { border: 0; border-top: 1px solid var(--border); margin: 18px 0 0; }
+
 /* Same field layout as the settings page, reused wherever a form needs to say
    what it accepts rather than expecting you to remember. */
 .filters {
@@ -770,12 +790,19 @@ select {
   margin: 12px 0 14px;
 }
 
-/* Prompts, options and cards stop growing at a readable width. On an ultrawide
-   a question stretched the full 2000px, so reading one option meant tracking
-   across the whole screen and back. */
-.step { max-width: 1100px; }
-.matches { max-width: 1100px; }
-.step-prompt, .step > .hint { max-width: 90ch; }
+/* The card fills its panel, and everything in it fills the card.
+   It used to be capped at 1100px and then each thing inside it capped again --
+   the prompt at 90ch, the URL row at 720px -- so the grey box stopped halfway
+   across the panel and the content stopped halfway across the grey box. Two
+   ragged right edges and a squeezed button that broke "Use this" over two
+   lines. The one thing that still needs a limit is prose, which is why the
+   limit is on the prompt and nowhere else. */
+.step-prompt { max-width: 100ch; }
+/* No cap on the detail line: it is the pipeline's own prompt, one sentence
+   long, and breaking "[N]ew group / [a]bort / [d]elete music folder" across
+   two lines to honour a measure meant for paragraphs made it read as truncated
+   rather than wrapped. */
+.step > .hint { max-width: none; }
 
 /* A release found on the tracker: the thing the question is about, so it gets
    room to say what it is instead of being squeezed onto the button row and cut
@@ -870,7 +897,15 @@ select {
 /* ---------- flows: an upload you can actually click ---------- */
 
 .flow-card { border-left: 3px solid var(--accent); }
-.flow-card h2 { flex: 1; }
+
+/* The title, the state and Cancel travel together.
+   h2 { flex: 1 } threw the tag and the button to the far right edge of a panel
+   that is most of the screen wide, so the only control for the run sat a foot
+   away from the run with a blank band between them. Nothing is gained by
+   spreading three short things across 1900px. */
+.flow-card h2 { flex: 0 1 auto; }
+.flow-head { gap: 11px; padding-bottom: 11px; border-bottom: 1px solid var(--border); }
+.flow-head .ghost { margin-left: 3px; }
 
 .step {
   background: var(--bg-input);
@@ -953,12 +988,13 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
    out the same height -- each is exactly as wide as its own aspect ratio needs
    at that height. Sizing the boxes any other way letterboxes the images inside
    them, which is where the gaps came from. */
-/* Against the right edge, as large as the detail supports, with the panel
+/* Against the left edge, as large as the detail supports, with the panel
    hugging it rather than framing it. Centred in a 1100px column left the
    images small with grey on both sides, which is the opposite of what looking
    at a spectral is for; and past about 1700px the extra width is upscaling,
-   not detail, so it stops there and sits right rather than stretching. */
-.spectrals { margin: 14px 0 0 auto; max-width: 1700px; }
+   not detail, so it stops there and sits left -- in line with everything else
+   on the page -- rather than stretching. */
+.spectrals { margin: 14px auto 0 0; max-width: 1700px; }
 
 .spectral-row { padding: 6px 0 18px; }
 /* Room under the last one, since the panel's own bottom padding is gone. */
@@ -975,21 +1011,22 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 }
 
 .spectral-pair { display: flex; flex-flow: row nowrap; align-items: flex-start; }
-/* The step holding spectrals is as wide as the pane; every other step stays
-   readable. A 1900px-wide paragraph of prompt text is not readable.
-   Its right and bottom padding go, so the grey stops where the image does. */
+/* The step holding spectrals is as wide as the images; every other step stays
+   at the reading width above. Its left and bottom padding go, so the grey
+   stops where the image does. */
 .step:has(.spectrals) {
-  /* Capped to the same width as the images and pushed right, so the grey stops
-     where they do instead of framing them in a band of it.
+  /* Capped to the same width as the images, so the grey stops where they do
+     instead of framing them in a band of it.
      A definite cap rather than width: fit-content -- the images are sized in
      percentages, which gives a shrink-to-fit parent nothing to resolve against,
      and the panel collapsed to 219px. */
   max-width: 1716px;   /* the block's 1700 plus the 16px caption gutter */
-  margin-left: auto;
-  padding-right: 0;
+  padding-left: 0;
   padding-bottom: 0;
 }
-.step:has(.spectrals) .step-controls { padding: 0 16px 16px 0; }
+/* Everything in the step starts where the images start: the prompt, the
+   captions and the buttons all share one left edge. */
+.step:has(.spectrals) .step-controls { padding: 0 0 16px; }
 .spectral-full { width: 86%; }
 .spectral-zoom { width: 13.85%; margin-left: 0.15%; }
 .spectral-pair img {
@@ -1013,6 +1050,20 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .result-block > summary .card-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .result-block[open] > summary { margin-bottom: 10px; }
 .result-kept { justify-content: space-between; gap: 10px; margin: 6px 0; }
+
+/* What a run left on disk. One row per folder with its own Delete, and a
+   Delete all under them, because after a dry run every one of these is dead
+   and removing them one at a time is a chore with a downconversion per
+   tracker. */
+.leftover-list { display: flex; flex-direction: column; gap: 2px; }
+.leftover-what { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.leftover-path {
+  margin: 0;
+  font-size: 11.5px;
+  font-family: ui-monospace, "SFMono-Regular", "Consolas", monospace;
+  overflow-wrap: anywhere;
+}
+.leftover-all { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 
 /* The description a dry run would have posted, in full. Reading it is the
    reason for rehearsing, and "1179 chars" is not something you can read. */
@@ -1065,9 +1116,14 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .meta-form-field:has(.meta-tracks),
 .meta-form-field:has(textarea) { grid-column: 1 / -1; }
 
+/* Exactly one line tall, so every input in a grid row starts at the same
+   height. A hint beside the label that wrapped used to push its own field down
+   a line and break the alignment of the whole row. */
 .meta-form-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
 .meta-form-head label { font-size: 12.5px; font-weight: 600; }
 .meta-form-hint { color: var(--text-dim); font-size: 11.5px; }
+/* The hint of a narrow field, under its control rather than beside its label. */
+.meta-form-note { margin: 0; line-height: 1.45; }
 .meta-form-field input,
 .meta-form-field select,
 .meta-form-field textarea { width: 100%; }
@@ -1127,11 +1183,15 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .diff-group td { background: var(--bg); font-weight: 600; color: var(--text); padding-top: 10px; }
 
 /* A typed answer offered alongside the buttons, for prompts that name pasting
-   a URL as one of their options. */
-.step-text-answer { margin-top: 12px; max-width: 720px; }
+   a URL as one of their options. Spans the step, like everything else in it. */
+.step-text-answer { margin-top: 12px; }
 .step-text-answer > label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 5px; }
 .step-text-answer .row { flex-wrap: nowrap; }
 .step-text-answer input { flex: 1 1 auto; min-width: 0; }
+/* The field takes the slack; the button is the width of its own label. Without
+   this the button was a flex item free to shrink, and "Use this" came out
+   stacked over two lines in a box narrower than the word. */
+.step-text-answer button { flex: none; }
 
 /* Accounts. Each row is a couple of fields and the button that uses them. */
 .accounts-head { margin: 16px 0 8px; font-size: 13px; }

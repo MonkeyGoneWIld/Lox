@@ -31,4 +31,7 @@ data/music/
 data/links/
 data/torrents/
 data/tmp/
-tests/_detail/
+# Each suite writes its own settings, state and downloads under tests/_<name>.
+# Listing them one at a time meant every new suite left untracked directories
+# behind until someone noticed.
+tests/_*/
