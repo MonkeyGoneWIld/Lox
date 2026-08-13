@@ -1067,9 +1067,15 @@ async def upload_and_report(
             bold=True,
         )
 
-    # Copy URL to clipboard
+    # Copy URL to clipboard. Guarded: pyperclip raises when there is no
+    # clipboard to copy to, which on a headless server is always -- and it
+    # raised *after* the torrent had been posted, so a successful upload
+    # reported as a failure.
     if cfg.upload.description.copy_uploaded_url_to_clipboard and not cfg.upload.dry_run:
-        pyperclip.copy(url)
+        try:
+            pyperclip.copy(url)
+        except Exception as e:  # noqa: BLE001 - no clipboard is not an upload failure
+            click.secho(f"Could not copy the URL to the clipboard: {e}", fg="yellow")
 
     # Add to seedbox upload queue
     if cfg.upload.upload_to_seedbox:

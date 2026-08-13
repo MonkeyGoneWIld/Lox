@@ -62,6 +62,7 @@ jobs:
           uv run python tests/test_prompts.py
           uv run python tests/smoke_test.py
           uv run python tests/test_found_and_progress.py
+          uv run python tests/test_settings_page.py
 
       - name: Request collection and filters
         run: uv run python tests/test_requests.py

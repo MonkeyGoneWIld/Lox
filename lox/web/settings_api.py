@@ -171,12 +171,26 @@ async def api_settings_test(request: web.Request) -> web.Response:
         "ops": _test_ops,
         "dic": _test_dic,
         "discogs": _test_discogs,
+        "apple": _test_apple_music,
+        "qobuz": _test_qobuz,
+        "tidal": _test_tidal,
         "qbittorrent": _test_torrent_client,
         "discord": _test_discord,
         "linking": _test_linking,
         "paths": _test_paths,
         "images": _test_images,
     }.get(target)
+    # One key, one test. A section holding four independent image-host
+    # credentials cannot be answered by a single button, so each key names its
+    # own host here.
+    if handler is None and target.startswith("image:"):
+        host = target.split(":", 1)[1]
+
+        async def image_handler(_request: web.Request) -> web.Response:
+            return await _test_image_host(host)
+
+        handler = image_handler
+
     if handler is None:
         return _json({"error": f"no test named {target}"}, status=404)
     try:
@@ -383,26 +397,140 @@ async def _test_paths(request: web.Request) -> web.Response:
     return ok("Every configured directory exists and is writable.", paths=results)
 
 
-async def _test_images(request: web.Request) -> web.Response:
-    """Report which image hosts are selected and whether their keys are present.
+# The hosts that need a key, and where that key lives. catbox and imgbox take
+# anonymous uploads, so they have nothing to test.
+_IMAGE_KEYS = {
+    "ptpimg": "ptpimg_key",
+    "ptscreens": "ptscreens_key",
+    "oeimg": "oeimg_key",
+    "imgbb": "imgbb_key",
+}
 
-    No upload is attempted — proving a key works would mean putting a real file
-    on a public host, which is not something a settings test should do quietly.
+
+def _image_roles(host: str) -> list[str]:
+    """Which of the three uploader slots a host is currently selected for."""
+    return [
+        role
+        for role, chosen in (
+            ("general images", cfg.image.image_uploader),
+            ("cover art", cfg.image.cover_uploader),
+            ("spectrals", cfg.image.specs_uploader),
+        )
+        if chosen == host
+    ]
+
+
+async def _test_image_host(host: str) -> web.Response:
+    """Check one image host's key against the host itself.
+
+    A real request, not a presence check: a key that is set but wrong fails at
+    the moment a release is being uploaded, which is the worst time to find out.
+    Nothing is uploaded -- these are read-only endpoints -- because a settings
+    test should not quietly put a file on a public host.
     """
-    needs_key = {
-        "ptpimg": cfg.image.ptpimg_key,
-        "ptscreens": cfg.image.ptscreens_key,
-        "oeimg": cfg.image.oeimg_key,
-        "imgbb": cfg.image.imgbb_key,
-    }
+    attribute = _IMAGE_KEYS.get(host)
+    if attribute is None:
+        return fail(f"{host} takes anonymous uploads, so there is no key to test.")
+
+    key = getattr(cfg.image, attribute, "")
+    roles = _image_roles(host)
+    used_for = f"Selected for {', '.join(roles)}." if roles else "Not currently selected for anything."
+    if not key:
+        return fail(f"No {host} key set. {used_for}")
+
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            if host == "ptpimg":
+                # ptpimg has no whoami; the upload endpoint answers 400 for a
+                # good key with no file and 403 for a bad one.
+                async with session.post("https://ptpimg.me/upload.php", data={"api_key": key}) as resp:
+                    if resp.status in (401, 403):
+                        return fail(f"ptpimg rejected the key. {used_for}")
+                    return ok(f"ptpimg accepted the key. {used_for}")
+            if host == "imgbb":
+                async with session.get("https://api.imgbb.com/1/upload", params={"key": key}) as resp:
+                    body = (await resp.text())[:200]
+                    if resp.status in (400, 415):
+                        # "no image" rather than "invalid key" means the key passed.
+                        if "key" in body.lower() and "invalid" in body.lower():
+                            return fail(f"imgbb rejected the key. {used_for}")
+                        return ok(f"imgbb accepted the key. {used_for}")
+                    if resp.status in (401, 403):
+                        return fail(f"imgbb rejected the key. {used_for}")
+                    return ok(f"imgbb answered HTTP {resp.status}. {used_for}")
+            base = "https://ptscreens.com" if host == "ptscreens" else "https://oeimg.com"
+            async with session.get(f"{base}/api/1/upload", params={"key": key}) as resp:
+                if resp.status in (401, 403):
+                    return fail(f"{host} rejected the key. {used_for}")
+                return ok(f"{host} accepted the key. {used_for}")
+    except TimeoutError:
+        return fail(f"{host} did not answer in time.")
+    except aiohttp.ClientError as e:
+        return fail(f"Could not reach {host}: {e}")
+
+
+async def _test_images(request: web.Request) -> web.Response:
+    """Report whether the three selected hosts each have what they need."""
     selected = {cfg.image.image_uploader, cfg.image.cover_uploader, cfg.image.specs_uploader}
-    missing = [host for host in selected if host in needs_key and not needs_key[host]]
+    missing = [
+        host for host in selected
+        if host in _IMAGE_KEYS and not getattr(cfg.image, _IMAGE_KEYS[host], "")
+    ]
     if missing:
         return fail(f"Selected but missing an API key: {', '.join(sorted(missing))}.")
-    return ok(
-        f"Using {', '.join(sorted(selected))}. Keys present. "
-        f"Not verified against the host — that would mean uploading a real image."
-    )
+    return ok(f"Using {', '.join(sorted(selected))}. Test each key for whether it actually works.")
+
+
+async def _test_apple_music(request: web.Request) -> web.Response:
+    """Check the Apple Music developer token against the catalog API."""
+    token = cfg.metadata.apple_music_token
+    if not token:
+        return fail("No Apple Music token set. Request verification works without it, just less well.")
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session, session.get(
+        "https://api.music.apple.com/v1/catalog/us/albums/1440857781",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as resp:
+        if resp.status in (401, 403):
+            return fail("Apple Music rejected the token. Developer tokens expire — six months at most.")
+        if resp.status != 200:
+            return fail(f"Apple Music returned HTTP {resp.status}.")
+    return ok("Token works.")
+
+
+async def _test_qobuz(request: web.Request) -> web.Response:
+    """Check the Qobuz app ID, and the auth token if one is set."""
+    app_id = cfg.metadata.qobuz.app_id
+    if not app_id:
+        return fail("No Qobuz app ID set.")
+    params = {"album_id": "0060254764852", "app_id": app_id}
+    headers = {}
+    if cfg.metadata.qobuz.user_auth_token:
+        headers["X-User-Auth-Token"] = cfg.metadata.qobuz.user_auth_token
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session, session.get(
+        "https://www.qobuz.com/api.json/0.2/album/get", params=params, headers=headers
+    ) as resp:
+        if resp.status in (400, 401):
+            return fail("Qobuz rejected the app ID or the auth token.")
+        if resp.status != 200:
+            return fail(f"Qobuz returned HTTP {resp.status}.")
+    return ok("App ID works." + (" Auth token accepted." if headers else " No auth token set, which is fine."))
+
+
+async def _test_tidal(request: web.Request) -> web.Response:
+    """Check the Tidal token against the album endpoint."""
+    token = cfg.metadata.tidal.token
+    if not token:
+        return fail("No Tidal token set.")
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session, session.get(
+        "https://api.tidal.com/v1/albums/77646169",
+        params={"countryCode": "US"},
+        headers={"x-tidal-token": token},
+    ) as resp:
+        if resp.status in (401, 403):
+            return fail("Tidal rejected the token.")
+        if resp.status != 200:
+            return fail(f"Tidal returned HTTP {resp.status}.")
+    return ok("Token works.")
 
 
 # ----------------------------------------------------------------------
