@@ -163,6 +163,28 @@ async def main() -> int:
     check("the fake only applies to dry runs", source.count("if cfg.upload.dry_run:") == 2,
           str(source.count("if cfg.upload.dry_run:")))
 
+    # --- a dry run leaves its work on disk ---------------------------
+    # It tags the files, renames the folder and runs the downconversion just as
+    # a real run does, and those are the things worth checking before a real
+    # one. The transcodes it made were being deleted the moment it finished,
+    # so the one output you most wanted to look at was gone before you could.
+    flow_src = open(
+        os.path.join(os.path.dirname(ROOT), "lox", "upload_flow.py"), encoding="utf-8"
+    ).read()
+    check("transcodes are no longer deleted after a dry run",
+          "_discard_transcodes" not in flow_src, "")
+    check("they are reported where they were left",
+          "Dry run: kept transcode" in flow_src, "")
+
+    uploader_src = text
+    check("tagging is not skipped in a dry run",
+          "await tag_files(path, tags, metadata, auto_rename)" in uploader_src
+          and "dry_run" not in uploader_src.split("await tag_files")[0].rsplit("\n", 3)[-1], "")
+    check("renaming is not skipped either",
+          "path = await rename_folder(path, metadata, auto_rename)" in uploader_src, "")
+    check("nor is the downconversion",
+          "await execute_downconversion_tasks(" in uploader_src, "")
+
     # The seeding side is asserted on its source: importing it pulls in the
     # torrent-client libraries, which are not installed everywhere this runs,
     # and what matters is that the guard is in front of the transfer.

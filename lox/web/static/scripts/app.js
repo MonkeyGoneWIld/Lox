@@ -2434,7 +2434,7 @@
     // multi-value field twice -- once as an empty label, once as a group
     // header over its own values.
     if (table.kind === 'previous' || table.kind === 'pending') return metaTable(table);
-    if (table.kind === 'renames') return renameTable(table);
+    if (table.kind === 'renames' || table.kind === 'folder') return renameTable(table);
     // Rows can be grouped -- by filename for a tag diff, by field for a
     // metadata list -- so a group header is emitted whenever it changes.
     const rows = [];
@@ -2477,8 +2477,11 @@
     const rows = table.rows.filter((r) => r.label || r.before);
     return el(
       'details',
-      // Closed by default: it is context for the question, not the question.
-      { class: 'diff meta-block' },
+      // Open. It is what the question is about, and having to click to see the
+      // metadata before answering a question about the metadata is a click
+      // that never had a reason. "Previous metadata" stays collapsed -- that
+      // one really is background.
+      { class: 'diff meta-block', open: table.kind !== 'previous' },
       el('summary', {}, table.title, el('span', { class: 'card-sub' }, ` — ${rows.length} fields`)),
       el(
         'table',
@@ -2501,11 +2504,145 @@
 
   const ARTIST_ROLES = ['main', 'guest', 'composer', 'conductor', 'dj', 'remixer', 'producer', 'arranger'];
 
+  // The whole release, editable at once.
+  //
+  // The pipeline does this as a menu: it prints the record, asks which single
+  // field you want to change, opens an editor for that one field, prints the
+  // record again and asks again. Four changes meant four round trips, and you
+  // could never see the release while editing part of it. This is every field
+  // with the control that suits it and one Save.
+  function metadataForm(step, send) {
+    const sections = (step.options || []).map((s) => ({
+      ...s,
+      rows: (s.rows || []).map((r) => ({ ...r })),
+    }));
+
+    const label = (section) =>
+      el('div', { class: 'meta-form-head' },
+         el('label', {}, section.label),
+         section.hint ? el('span', { class: 'meta-form-hint' }, section.hint) : null);
+
+    const body = el('div', { class: 'meta-form' });
+
+    const draw = () => {
+      body.replaceChildren(...sections.map((section) => {
+        // Credits, lists, the tracklist and the comment are as tall as their
+        // content and read badly in a narrow column, so they take the full
+        // row. Marked here as well as in CSS, so the layout does not depend on
+        // :has() being available.
+        const wide = ['artists', 'list', 'tracks', 'textarea'].includes(section.kind);
+        const field = el('div', { class: `meta-form-field${wide ? ' meta-form-wide' : ''}` }, label(section));
+
+        if (section.kind === 'artists') {
+          const list = el('div', { class: 'editor-rows' });
+          const paint = () => list.replaceChildren(
+            ...section.rows.map((row, i) =>
+              el('div', { class: 'editor-row' },
+                el('input', {
+                  type: 'text', value: row.name || '', placeholder: 'Artist name',
+                  oninput: (e) => (row.name = e.target.value),
+                }),
+                el('select', { onchange: (e) => (row.role = e.target.value) },
+                   ...ARTIST_ROLES.map((role) =>
+                     el('option', { value: role, selected: (row.role || 'main') === role },
+                        role === 'dj' ? 'DJ / Compiler' : role[0].toUpperCase() + role.slice(1)))),
+                el('button', { type: 'button', class: 'danger row-drop', title: 'Remove this credit',
+                               onclick: () => { section.rows.splice(i, 1); paint(); } }, '−'))),
+            el('button', { type: 'button', class: 'ghost',
+                           onclick: () => { section.rows.push({ name: '', role: 'main' }); paint(); } },
+               '+ Add artist'),
+          );
+          paint();
+          field.append(list);
+          return field;
+        }
+
+        if (section.kind === 'list') {
+          const list = el('div', { class: 'editor-rows' });
+          const paint = () => list.replaceChildren(
+            ...section.rows.map((row, i) =>
+              el('div', { class: 'editor-row' },
+                el('input', {
+                  type: 'text', value: row.value || '',
+                  oninput: (e) => (row.value = e.target.value),
+                }),
+                el('button', { type: 'button', class: 'danger row-drop', title: 'Remove',
+                               onclick: () => { section.rows.splice(i, 1); paint(); } }, '−'))),
+            el('button', { type: 'button', class: 'ghost',
+                           onclick: () => { section.rows.push({ value: '' }); paint(); } }, '+ Add'),
+          );
+          paint();
+          field.append(list);
+          return field;
+        }
+
+        if (section.kind === 'tracks') {
+          field.append(el('div', { class: 'meta-tracks' },
+            ...section.rows.map((row) => {
+              const input = el('input', { type: 'text' });
+              input.value = row.value || '';
+              input.addEventListener('input', () => (row.value = input.value));
+              return el('div', { class: 'meta-track' },
+                el('span', { class: 'meta-track-no' }, row.label || ''),
+                input,
+                row.artists ? el('span', { class: 'meta-track-artists' }, row.artists) : null);
+            })));
+          return field;
+        }
+
+        if (section.kind === 'select') {
+          field.append(el('select', { onchange: (e) => (section.value = e.target.value) },
+            ...(section.choices || []).map((choice) =>
+              el('option', { value: choice, selected: section.value === choice }, choice))));
+          return field;
+        }
+
+        const control = section.kind === 'textarea'
+          ? el('textarea', { rows: '3' })
+          : el('input', { type: section.kind === 'number' ? 'number' : 'text' });
+        control.value = section.value ?? '';
+        control.addEventListener('input', () => (section.value = control.value));
+        field.append(control);
+        return field;
+      }));
+    };
+    draw();
+
+    const answer = () => {
+      const out = {};
+      sections.forEach((section) => {
+        if (section.kind === 'artists') {
+          out.artists = section.rows.map((r) => ({ name: r.name, role: r.role }));
+        } else if (section.kind === 'list') {
+          out[section.key] = section.rows.map((r) => r.value);
+        } else if (section.kind === 'tracks') {
+          out.tracks = Object.fromEntries(section.rows.map((r) => [r.key, r.value ?? '']));
+        } else {
+          out[section.key] = section.value ?? '';
+        }
+      });
+      return out;
+    };
+
+    return el(
+      'div',
+      { class: 'step' },
+      el('div', { class: 'step-prompt' }, step.prompt),
+      step.detail ? el('p', { class: 'hint' }, step.detail) : null,
+      body,
+      el('div', { class: 'row step-controls' },
+         el('button', { type: 'button', class: 'primary', onclick: () => send(answer()) }, 'Save metadata'),
+         // Null is what the pipeline reads as "leave it as it is".
+         el('button', { type: 'button', onclick: () => send(null) }, 'Leave unchanged')),
+    );
+  }
+
   // Editing metadata as a form. The pipeline does this by opening $EDITOR,
   // which in a container is vim with no terminal -- it blocks forever. Each
   // thing it edits has a known shape, so each gets the controls it deserves:
   // credits are rows with a role, a genre list is a list, a title is a field.
   function editorStep(step, send) {
+    if (step.edit_shape === 'metadata') return metadataForm(step, send);
     const rows = (step.options || []).map((r) => ({ ...r }));
     const body = el('div', { class: 'editor-rows' });
 
@@ -2638,7 +2775,10 @@
       'details',
       { class: 'diff', open: true },
       el('summary', {}, table.title,
-         el('span', { class: 'card-sub' }, ` — ${table.rows.length} file${table.rows.length === 1 ? '' : 's'}`)),
+         el('span', { class: 'card-sub' },
+            table.kind === 'folder'
+              ? ''
+              : ` — ${table.rows.length} file${table.rows.length === 1 ? '' : 's'}`)),
       el('div', { class: 'table-scroll' },
         el('table', { class: 'table diff-table' },
           el('thead', {}, el('tr', {}, el('th', {}, 'Now'), el('th', {}, 'After'))),

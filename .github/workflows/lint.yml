@@ -74,6 +74,9 @@ jobs:
       - name: Dry run shows everything and writes nothing
         run: uv run python tests/test_dry_run.py
 
+      - name: Metadata is one form, and the questions show their work
+        run: uv run python tests/test_metadata_form.py
+
       - name: Request detail and BBCode rendering
         # The tracker refuses to be framed, so this code renders the request
         # itself -- which puts it between someone else's BBCode and the page.
