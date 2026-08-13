@@ -3463,11 +3463,88 @@ They will not be listed again, even if a later scan finds them.`)) {
           { class: 'row' },
           el('button', { onclick: () => clearHistory('albums') }, 'Clear album history'),
           el('button', { onclick: () => clearHistory('requests') }, 'Clear request history'),
-          el('button', { onclick: signOut }, 'Sign out of this browser'),
         ),
         el('p', { class: 'hint' }, 'Clearing history makes the next scan re-check everything, costing tracker budget again.'),
       ),
+      el('section', { class: 'panel', id: 'accounts-panel' }, el('h2', {}, 'Accounts'), spinner('Loading')),
     );
+    loadAccounts();
+  }
+
+  // Who can sign in. Changing a password ends every session it had, including
+  // this one on other devices, because the session signature is derived from
+  // the stored hashes.
+  async function loadAccounts() {
+    const panel = $('#accounts-panel');
+    if (!panel) return;
+    let data;
+    try {
+      data = await api('/api/accounts');
+    } catch (e) {
+      panel.replaceChildren(el('h2', {}, 'Accounts'), empty(e.message));
+      return;
+    }
+
+    const field = (id, placeholder, type = 'text') =>
+      el('input', { type, id, placeholder, autocomplete: type === 'password' ? 'new-password' : 'off' });
+
+    const current = field('acct-current', 'Current password', 'password');
+    const next = field('acct-new', `New password (at least ${data.min_password})`, 'password');
+    const newUser = field('acct-user', 'Username');
+    const newPass = field('acct-pass', `Password (at least ${data.min_password})`, 'password');
+
+    panel.replaceChildren(
+      el('h2', {}, 'Accounts'),
+      el('p', { class: 'hint' },
+         data.you
+           ? `Signed in as ${data.you}. Changing a password signs out every other browser using it.`
+           : 'Signed in with the shared access token, so there is no password to change here.'),
+
+      data.you ? el('h3', { class: 'accounts-head' }, 'Change your password') : null,
+      data.you
+        ? el('div', { class: 'row accounts-row' }, current, next,
+             el('button', { class: 'primary', onclick: async (e) => {
+               await accountAction(e.target, '/api/accounts/password',
+                 { current: current.value, password: next.value },
+                 'Password changed');
+             } }, 'Change'))
+        : null,
+
+      el('h3', { class: 'accounts-head' }, 'Add an account'),
+      el('div', { class: 'row accounts-row' }, newUser, newPass,
+         el('button', { onclick: async (e) => {
+           await accountAction(e.target, '/api/accounts',
+             { username: newUser.value, password: newPass.value }, 'Account created');
+         } }, 'Add')),
+
+      el('h3', { class: 'accounts-head' }, `Existing (${data.accounts.length})`),
+      el('div', { class: 'row' },
+         ...data.accounts.map((name) =>
+           el('span', { class: 'chip' }, name,
+              data.accounts.length > 1
+                ? el('button', { class: 'link chip-drop', title: `Remove ${name}`,
+                                 onclick: async (e) => {
+                                   if (!confirm(`Remove the account "${name}"?`)) return;
+                                   await accountAction(e.target, '/api/accounts/delete',
+                                     { username: name }, `Removed ${name}`);
+                                 } }, '×')
+                : null))),
+      el('div', { class: 'row accounts-row' },
+         el('button', { onclick: signOut }, 'Sign out of this browser')),
+    );
+  }
+
+  async function accountAction(button, path, body, done) {
+    button.disabled = true;
+    try {
+      await api(path, { method: 'POST', body });
+      toast(done, 'ok');
+      loadAccounts();
+    } catch (e) {
+      toast(e.message, 'bad');
+    } finally {
+      button.disabled = false;
+    }
   }
 
   async function loadDebug() {

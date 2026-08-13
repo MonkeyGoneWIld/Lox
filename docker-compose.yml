@@ -7,9 +7,10 @@
 #
 # Two things to get right:
 #
-# 1. LOX_AUTH_TOKEN. The UI can spend your tracker API budget, read your Deezer
-#    session and start uploads. Without a token, anything that can reach the
-#    port can do all of that.
+# 1. Sign-in. The first person to open the UI is asked to create a username
+#    and password; until that exists every route goes to setup, so the port is
+#    never briefly open. LOX_AUTH_TOKEN below is optional and only there for
+#    scripts and the healthcheck.
 #
 # 2. The downloads directory and the seeding directory must be on the SAME
 #    filesystem. Hardlinks cannot cross filesystems. Mounting their common
@@ -44,8 +45,10 @@ services:
       # --- bootstrap: read before the settings page exists ---------------
       LOX_HOST: "0.0.0.0"
       LOX_PORT: "5015"
-      # openssl rand -hex 32
-      LOX_AUTH_TOKEN: ${LOX_AUTH_TOKEN:?set LOX_AUTH_TOKEN in your .env}
+      # Optional: an additional shared secret for scripts and the healthcheck.
+      # People sign in with an account created on first use, so leaving this
+      # empty is fine. openssl rand -hex 32 if you want one.
+      LOX_AUTH_TOKEN: ${LOX_AUTH_TOKEN:-}
       LOX_DOWNLOAD_DIR: "/data/media/deemix"
       LOX_TORRENTS_DIR: "/config/torrents"
       LOX_TMP_DIR: "/config/spectrals"
@@ -68,7 +71,9 @@ services:
       - ${NAS:-./data}/data:/data
 
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,os,sys; r=urllib.request.Request('http://127.0.0.1:5015/api/status', headers={'X-Auth-Token': os.environ.get('LOX_AUTH_TOKEN','')}); sys.exit(0 if urllib.request.urlopen(r, timeout=5).status==200 else 1)"]
+      # /api/health needs no credentials and reveals nothing, so this keeps
+      # working whether or not a shared token is set.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5015/api/health', timeout=5).status==200 else 1)"]
       interval: 60s
       timeout: 10s
       retries: 3

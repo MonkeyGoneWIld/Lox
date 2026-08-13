@@ -68,7 +68,7 @@ async def main() -> int:
 
             async with s.get(f"{BASE}/login") as r:
                 body = await r.text()
-                check("/login serves the sign-in page", r.status == 200 and "Access token" in body)
+                check("/login serves the sign-in page", r.status == 200 and "Password" in body, body[:80])
 
             async with s.post(f"{BASE}/api/auth", json={"token": "wrong"}) as r:
                 check("wrong token rejected", r.status == 401, f"got {r.status}")

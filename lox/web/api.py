@@ -19,7 +19,7 @@ from urllib.parse import quote
 import msgspec
 from aiohttp import web
 
-from lox import cfg, debug
+from lox import cfg, debug, settings
 from lox.checker.deezer_requests import DeezerRequestChecker
 from lox.checker.gateway import TrackerGateway
 from lox.checker.missing import Candidate, MissingScanner
@@ -35,6 +35,13 @@ from lox.deezer.gw import DeezerGW, DeezerGWError
 from lox.flow import FlowRegistry
 from lox.notify.discord import DiscordNotifier
 from lox.upload_flow import run_uploads
+from lox.web.accounts import (
+    MIN_PASSWORD,
+    AccountError,
+    AccountStore,
+    issue_session,
+    read_session,
+)
 from lox.web.jobs import JobRegistry
 
 routes = web.RouteTableDef()
@@ -44,7 +51,9 @@ AUTH_HEADER = "X-Auth-Token"
 
 # Reachable without a session: the login page itself, the endpoint that creates
 # the session, and static assets, which carry nothing sensitive.
-AUTH_EXEMPT_PATHS = frozenset({"/login", "/api/auth"})
+AUTH_EXEMPT_PATHS = frozenset(
+    {"/login", "/api/auth", "/api/auth/state", "/api/auth/setup", "/api/health"}
+)
 
 SESSION_DAYS = 30
 
@@ -56,23 +65,50 @@ LOGIN_MAX_ATTEMPTS = 10
 LOGIN_FAIL_DELAY = 0.5
 
 
+def accounts_of(request: web.Request) -> AccountStore:
+    """The account store attached to the running app."""
+    return request.app["accounts"]
+
+
 def auth_required() -> bool:
-    """True when an auth token is configured."""
-    return bool(cfg.upload.web_interface.auth_token)
+    """Whether anything is guarding this instance.
+
+    False only when there are no accounts *and* no token, which is the state a
+    brand-new install is in for exactly as long as it takes to make the first
+    account. The middleware sends that case to setup rather than opening the
+    door.
+    """
+    return True
 
 
 def _token_ok(supplied: str | None) -> bool:
-    """Compare a supplied token against the configured one in constant time."""
+    """Compare a supplied token against the configured one in constant time.
+
+    The token is still accepted, for scripts, the healthcheck and the ``?token=``
+    bookmark. It is no longer the only way in, and it is no longer required.
+    """
     expected = cfg.upload.web_interface.auth_token
     if not expected:
-        return True
+        return False
     return bool(supplied) and secrets.compare_digest(supplied, expected)
 
 
 def is_authenticated(request: web.Request) -> bool:
-    """True when the request carries a valid token by any accepted means."""
-    supplied = request.headers.get(AUTH_HEADER) or request.cookies.get(AUTH_COOKIE) or request.query.get("token")
+    """True when the request proves who it is, by session cookie or by token."""
+    store = accounts_of(request)
+    cookie = request.cookies.get(AUTH_COOKIE)
+    if read_session(store, cookie):
+        return True
+    # The cookie may also hold the shared token itself: that is what the
+    # ?token= link plants, and what a token sign-in stores. Dropping it here
+    # signed out every script and bookmark that had one.
+    supplied = request.headers.get(AUTH_HEADER) or request.query.get("token") or cookie
     return _token_ok(supplied)
+
+
+def current_user(request: web.Request) -> str:
+    """Who the request is, or "" when it authenticated with the shared token."""
+    return read_session(accounts_of(request), request.cookies.get(AUTH_COOKIE)) or ""
 
 
 def _set_session(response: web.Response, token: str, remember: bool = True) -> None:
@@ -103,8 +139,15 @@ async def auth_middleware(request: web.Request, handler):
     launch uploads, so on any non-loopback bind it must not be open. Browsers
     get bounced to a login page; API clients get a 401 they can act on.
     """
-    if not auth_required() or request.path.startswith("/static") or request.path in AUTH_EXEMPT_PATHS:
+    if request.path.startswith("/static") or request.path in AUTH_EXEMPT_PATHS:
         return await handler(request)
+
+    # Nobody has signed up yet: everything goes to setup, so a fresh instance is
+    # never briefly open while you get round to configuring it.
+    if accounts_of(request).empty and not cfg.upload.web_interface.auth_token:
+        if request.path.startswith("/api/"):
+            return error("setup required", status=401)
+        raise web.HTTPFound("/login")
 
     if is_authenticated(request):
         response = await handler(request)
@@ -203,6 +246,9 @@ async def setup_services(app: web.Application) -> None:
     app["notifier"] = DiscordNotifier()
     app["jobs"] = JobRegistry()
     app["flows"] = FlowRegistry()
+    # Beside settings.toml, so accounts live on the same mounted volume as
+    # everything else the UI writes.
+    app["accounts"] = AccountStore(os.path.dirname(settings.path))
 
 
 async def teardown_services(app: web.Application) -> None:
@@ -258,31 +304,158 @@ async def api_status(request: web.Request) -> web.Response:
     )
 
 
+@routes.get("/api/health")
+async def api_health(request: web.Request) -> web.Response:
+    """Liveness, with nothing in it worth authenticating for.
+
+    The container healthcheck used to call /api/status with the shared token,
+    which stopped working the moment that token became optional. This says only
+    that the process is answering.
+    """
+    return json_response({"ok": True})
+
+
+@routes.get("/api/auth/state")
+async def api_auth_state(request: web.Request) -> web.Response:
+    """What the login page should ask for. No authentication needed.
+
+    A brand-new instance has no accounts, so the page offers to create the
+    first one instead of asking for a password nobody has set yet.
+    """
+    store = accounts_of(request)
+    return json_response(
+        {
+            "setup": store.empty,
+            "token_accepted": bool(cfg.upload.web_interface.auth_token),
+            "min_password": MIN_PASSWORD,
+        }
+    )
+
+
+@routes.post("/api/auth/setup")
+async def api_auth_setup(request: web.Request) -> web.Response:
+    """Create the first account.
+
+    Only while there are none: once one exists this is closed, so it cannot be
+    used to add a second account from outside.
+    """
+    store = accounts_of(request)
+    if not store.empty:
+        return error("Setup is already done. Sign in instead.", status=409)
+
+    body = await request.json()
+    try:
+        account = store.create(str(body.get("username") or ""), str(body.get("password") or ""))
+    except AccountError as e:
+        return error(str(e))
+
+    debug.log("created the first account, username=%s", account.username, level=20)
+    response = json_response({"ok": True, "username": account.username})
+    _set_session(response, issue_session(store, account.username), True)
+    return response
+
+
 @routes.post("/api/auth")
 async def api_auth(request: web.Request) -> web.Response:
-    """Exchange the configured token for a session cookie.
+    """Sign in with a username and password, or with the shared token.
 
-    This is what the login page posts to. It stays outside the auth middleware,
-    so it is the one place a wrong token can be submitted — hence the throttle.
+    Outside the auth middleware, so it is the one place a wrong password can be
+    submitted -- hence the throttle and the deliberate delay on failure.
     """
-    if not auth_required():
-        return json_response({"ok": True, "auth_required": False})
-
     address = request.remote or "unknown"
     body = await request.json()
-    token = str(body.get("token") or "")
+    store = accounts_of(request)
 
-    if _token_ok(token):
-        _LOGIN_ATTEMPTS.pop(address, None)
-        response = json_response({"ok": True})
-        _set_session(response, token, bool(body.get("remember", True)))
-        return response
+    username = str(body.get("username") or "")
+    password = str(body.get("password") or "")
+    remember = bool(body.get("remember", True))
+
+    if username or password:
+        account = await asyncio.to_thread(store.verify, username, password)
+        if account is not None:
+            _LOGIN_ATTEMPTS.pop(address, None)
+            response = json_response({"ok": True, "username": account.username})
+            _set_session(response, issue_session(store, account.username, remember), remember)
+            return response
+    else:
+        # The old shape: a bare token, from a script or a saved bookmark.
+        token = str(body.get("token") or "")
+        if _token_ok(token):
+            _LOGIN_ATTEMPTS.pop(address, None)
+            response = json_response({"ok": True})
+            _set_session(response, token, remember)
+            return response
 
     if _throttled(address):
         return error("Too many attempts. Wait a few minutes and try again.", status=429)
-    # Slow down guessing without holding a worker for long.
     await asyncio.sleep(LOGIN_FAIL_DELAY)
-    return error("That token was not accepted.", status=401)
+    return error("That username and password were not accepted.", status=401)
+
+
+@routes.get("/api/accounts")
+async def api_accounts(request: web.Request) -> web.Response:
+    """Who can sign in, and who you are."""
+    store = accounts_of(request)
+    return json_response(
+        {"accounts": store.usernames(), "you": current_user(request), "min_password": MIN_PASSWORD}
+    )
+
+
+@routes.post("/api/accounts")
+async def api_accounts_create(request: web.Request) -> web.Response:
+    """Add another account. Requires being signed in."""
+    body = await request.json()
+    try:
+        account = accounts_of(request).create(
+            str(body.get("username") or ""), str(body.get("password") or "")
+        )
+    except AccountError as e:
+        return error(str(e))
+    return json_response({"ok": True, "username": account.username})
+
+
+@routes.post("/api/accounts/password")
+async def api_accounts_password(request: web.Request) -> web.Response:
+    """Change a password.
+
+    Changing your own requires the current one, so a borrowed browser cannot
+    lock you out of your own instance. Every existing session ends either way,
+    including this one, because the signing key is derived from the hashes.
+    """
+    body = await request.json()
+    store = accounts_of(request)
+    you = current_user(request)
+    target = str(body.get("username") or you)
+    if not target:
+        return error("Signed in with the shared token; name the account to change.")
+
+    if target.lower() == you.lower():
+        current = str(body.get("current") or "")
+        if await asyncio.to_thread(store.verify, target, current) is None:
+            await asyncio.sleep(LOGIN_FAIL_DELAY)
+            return error("That is not your current password.", status=401)
+
+    try:
+        store.set_password(target, str(body.get("password") or ""))
+    except AccountError as e:
+        return error(str(e))
+
+    response = json_response({"ok": True, "signed_out": True})
+    if target.lower() == you.lower():
+        response = json_response({"ok": True, "signed_out": True})
+        _set_session(response, issue_session(store, target), True)
+    return response
+
+
+@routes.post("/api/accounts/delete")
+async def api_accounts_delete(request: web.Request) -> web.Response:
+    """Remove an account. The last one cannot be removed."""
+    body = await request.json()
+    try:
+        accounts_of(request).delete(str(body.get("username") or ""))
+    except AccountError as e:
+        return error(str(e))
+    return json_response({"ok": True})
 
 
 @routes.post("/api/auth/logout")

@@ -173,9 +173,13 @@ section with a Test button, and stored in `settings.toml` on the mounted volume.
 
 Two things will bite you if you skip them:
 
-**Set `LOX_AUTH_TOKEN`.** The UI can spend your tracker API budget, read your authenticated Deezer session, and start
-uploads to your tracker accounts. The compose file binds to `127.0.0.1` by default for exactly that reason. lox prints
-a loud warning at startup if you bind publicly without a token.
+**The first person to open the UI creates the account.** There is no password to set in advance: lox asks for a
+username and one the first time it is opened, stores it as an scrypt hash in `accounts.toml`, and wants it from then
+on. Until that account exists every route redirects to setup, so a fresh instance is never briefly open.
+
+`LOX_AUTH_TOKEN` is still read and still works — it is how the healthcheck and any script authenticates — but it is
+optional, and it is no longer the only way in. The UI can spend your tracker API budget, read your authenticated
+Deezer session and start uploads to your tracker accounts, so compose binds to `127.0.0.1` by default regardless.
 
 **Put the download directory and the seeding directory on the same filesystem.** Different volumes means no hardlinks.
 Mounting their common parent as one volume is the simplest guarantee — and the Seeding layout test will tell you
@@ -219,11 +223,11 @@ whatever the bootstrap says.
 
 Three values are read before a web server exists, so they cannot come from a page the server has not started yet:
 
-| Environment | Config key |
-|---|---|
-| `LOX_HOST` | `upload.web_interface.host` |
-| `LOX_PORT` | `upload.web_interface.port` |
-| `LOX_AUTH_TOKEN` | `upload.web_interface.auth_token` |
+| Environment | Config key | |
+|---|---|---|
+| `LOX_HOST` | `upload.web_interface.host` | |
+| `LOX_PORT` | `upload.web_interface.port` | |
+| `LOX_AUTH_TOKEN` | `upload.web_interface.auth_token` | Optional. For scripts and the healthcheck; people sign in with an account. |
 
 The directories are bootstrapped the same way, but they are *not* in that list — the server does not need them to serve
 a page, and a wrong path has to be fixable from the UI rather than only by editing compose:

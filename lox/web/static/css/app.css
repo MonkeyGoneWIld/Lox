@@ -953,13 +953,16 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
    out the same height -- each is exactly as wide as its own aspect ratio needs
    at that height. Sizing the boxes any other way letterboxes the images inside
    them, which is where the gaps came from. */
-/* Left-aligned and as wide as the pane allows, not a centred column: on a wide
-   screen the centred version left the spectrals small in the middle with empty
-   space on both sides, which is the opposite of what looking at a spectral is
-   for. */
-.spectrals { margin: 14px 0; }
+/* Against the right edge, as large as the detail supports, with the panel
+   hugging it rather than framing it. Centred in a 1100px column left the
+   images small with grey on both sides, which is the opposite of what looking
+   at a spectral is for; and past about 1700px the extra width is upscaling,
+   not detail, so it stops there and sits right rather than stretching. */
+.spectrals { margin: 14px 0 0 auto; max-width: 1700px; }
 
-.spectral-row { padding: 6px 0 16px; }
+.spectral-row { padding: 6px 0 18px; }
+/* Room under the last one, since the panel's own bottom padding is gone. */
+.spectral-row:last-child { padding-bottom: 16px; }
 
 .spectral-num {
   color: var(--text-dim);
@@ -973,8 +976,20 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 
 .spectral-pair { display: flex; flex-flow: row nowrap; align-items: flex-start; }
 /* The step holding spectrals is as wide as the pane; every other step stays
-   readable. A 1900px-wide paragraph of prompt text is not readable. */
-.step:has(.spectrals) { max-width: none; }
+   readable. A 1900px-wide paragraph of prompt text is not readable.
+   Its right and bottom padding go, so the grey stops where the image does. */
+.step:has(.spectrals) {
+  /* Capped to the same width as the images and pushed right, so the grey stops
+     where they do instead of framing them in a band of it.
+     A definite cap rather than width: fit-content -- the images are sized in
+     percentages, which gives a shrink-to-fit parent nothing to resolve against,
+     and the panel collapsed to 219px. */
+  max-width: 1716px;   /* the block's 1700 plus the 16px caption gutter */
+  margin-left: auto;
+  padding-right: 0;
+  padding-bottom: 0;
+}
+.step:has(.spectrals) .step-controls { padding: 0 16px 16px 0; }
 .spectral-full { width: 86%; }
 .spectral-zoom { width: 13.85%; margin-left: 0.15%; }
 .spectral-pair img {
@@ -1117,3 +1132,10 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .step-text-answer > label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 5px; }
 .step-text-answer .row { flex-wrap: nowrap; }
 .step-text-answer input { flex: 1 1 auto; min-width: 0; }
+
+/* Accounts. Each row is a couple of fields and the button that uses them. */
+.accounts-head { margin: 16px 0 8px; font-size: 13px; }
+.accounts-row { margin-bottom: 6px; }
+.accounts-row input { flex: 0 1 260px; min-width: 0; }
+.chip-drop { background: none; border: 0; padding: 0 0 0 8px; color: var(--text-dim); cursor: pointer; }
+.chip-drop:hover { color: var(--bad); }

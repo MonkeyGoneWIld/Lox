@@ -73,6 +73,9 @@ jobs:
         # still caught.
         run: uv run python tests/test_upload_prompts.py
 
+      - name: Sign-in accounts
+        run: uv run python tests/test_accounts.py
+
       - name: Dry run shows everything and writes nothing
         run: uv run python tests/test_dry_run.py
 

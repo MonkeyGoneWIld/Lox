@@ -3,28 +3,43 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>lox — sign in</title>
+  <title>Lox — sign in</title>
   <link rel="icon" href="{{ static_root_url }}/images/favicon.ico">
   <link rel="stylesheet" href="{{ static_root_url }}/css/app.css?v={{ asset_version }}">
 </head>
 <body class="login-body">
   <main class="login-card">
     <img src="{{ static_root_url }}/images/logo.png" alt="" class="login-logo">
-    <h1>lox</h1>
-    <p class="hint">
+    <h1>Lox</h1>
+    <p class="hint" id="blurb">
       This interface can spend your tracker API budget, read your Deezer session and start uploads.
-      Enter the access token from your config to continue.
     </p>
 
     <form id="login-form" autocomplete="on">
       <input
-        type="password"
-        id="token"
-        name="password"
-        placeholder="Access token"
-        autocomplete="current-password"
+        type="text"
+        id="username"
+        name="username"
+        placeholder="Username"
+        autocomplete="username"
         autofocus
         required>
+      <input
+        type="password"
+        id="password"
+        name="password"
+        placeholder="Password"
+        autocomplete="current-password"
+        required>
+      <!-- Setup only: typing it twice is the cheapest guard against locking
+           yourself out of a fresh install with a typo. -->
+      <input
+        type="password"
+        id="confirm"
+        name="confirm"
+        placeholder="Repeat password"
+        autocomplete="new-password"
+        hidden>
       <label class="check">
         <input type="checkbox" id="remember" checked> Stay signed in on this device for 30 days
       </label>
@@ -32,28 +47,74 @@
     </form>
 
     <p class="login-error" id="error" hidden></p>
-    <p class="hint login-foot">
-      The token is <code>upload.web_interface.auth_token</code> in your config.toml.
-    </p>
+    <p class="hint login-foot" id="foot"></p>
   </main>
 
   <script>
     const form = document.getElementById('login-form');
     const errorBox = document.getElementById('error');
     const submit = document.getElementById('submit');
+    const username = document.getElementById('username');
+    const password = document.getElementById('password');
+    const confirm = document.getElementById('confirm');
+    const blurb = document.getElementById('blurb');
+    const foot = document.getElementById('foot');
+
+    // Whether this instance has any accounts yet decides what this page is:
+    // a sign-in, or the one-time setup that creates the first one.
+    let setup = false;
+
+    const fail = (message) => {
+      errorBox.textContent = message;
+      errorBox.hidden = false;
+    };
+
+    (async () => {
+      try {
+        const state = await fetch('/api/auth/state').then((r) => r.json());
+        setup = !!state.setup;
+        if (setup) {
+          document.title = 'Lox — create your account';
+          blurb.textContent =
+            'Nobody has signed up on this instance yet. Choose a username and password — '
+            + 'this is the account you will sign in with from now on.';
+          password.setAttribute('autocomplete', 'new-password');
+          password.placeholder = `Password (at least ${state.min_password} characters)`;
+          confirm.hidden = false;
+          confirm.required = true;
+          submit.textContent = 'Create account';
+          foot.textContent = 'Stored as a scrypt hash in accounts.toml. It is never written to the log.';
+        } else {
+          foot.textContent = state.token_accepted
+            ? 'Scripts can still authenticate with the access token from your config.'
+            : '';
+        }
+      } catch {
+        foot.textContent = '';
+      }
+    })();
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       errorBox.hidden = true;
+
+      if (setup && password.value !== confirm.value) {
+        fail('Those two passwords are not the same.');
+        confirm.select();
+        return;
+      }
+
       submit.disabled = true;
-      submit.textContent = 'Checking…';
+      const label = submit.textContent;
+      submit.textContent = setup ? 'Creating…' : 'Checking…';
 
       try {
-        const response = await fetch('/api/auth', {
+        const response = await fetch(setup ? '/api/auth/setup' : '/api/auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            token: document.getElementById('token').value,
+            username: username.value,
+            password: password.value,
             remember: document.getElementById('remember').checked,
           }),
         });
@@ -65,16 +126,13 @@
           location.replace(next && next.startsWith('/') ? next : '/');
           return;
         }
-
-        errorBox.textContent = data.error || 'That token was not accepted.';
-        errorBox.hidden = false;
+        fail(data.error || 'That username and password were not accepted.');
       } catch (e) {
-        errorBox.textContent = `Could not reach the server: ${e.message}`;
-        errorBox.hidden = false;
+        fail(`Could not reach the server: ${e.message}`);
       } finally {
         submit.disabled = false;
-        submit.textContent = 'Sign in';
-        document.getElementById('token').select();
+        submit.textContent = label;
+        password.select();
       }
     });
   </script>
