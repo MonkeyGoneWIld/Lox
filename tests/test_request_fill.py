@@ -293,13 +293,56 @@ async def main() -> int:
             return await StubTracker.request(self, action, data)
 
     seen, value, _ = await drive(["n"], tracker=Empty())
-    check("with nothing found it does not ask at all", not seen and value is None, str(seen))
+    check("with nothing found a real upload does not ask at all", not seen and value is None, str(seen))
 
     cfg.upload.requests.always_ask_for_request_fill = True
     seen, value, _ = await drive([URL_9902, "y"], tracker=Empty())
     check("unless you asked to be asked anyway", len(seen) == 2, str(len(seen)))
     check("and pasting one still works then", value == 9902, str(value))
     cfg.upload.requests.always_ask_for_request_fill = False
+
+    # --- a dry run rehearses the step whatever the search found --------
+    #
+    # A rehearsal exists to show every part of a run before any of it happens
+    # for real, and a step that silently does not run is indistinguishable from
+    # one that is broken. Nothing is filled either way: the upload itself is
+    # what posts the fill, and in a dry run that is replaced by a report.
+    cfg.upload.dry_run = True
+    try:
+        seen, value, log = await drive(["n"], tracker=Empty())
+        check("a dry run asks even when nothing matched", len(seen) == 1, str(len(seen)))
+        check("and says so rather than offering a list that is not there",
+              seen and "nothing matched" in seen[0]["prompt"].lower(),
+              seen[0]["prompt"] if seen else "")
+        check("with the paste field, so an unmatched request can still be filled",
+              seen and seen[0]["text_label"] != "", seen[0]["text_label"] if seen else "")
+        check("and declining still fills nothing", value is None, str(value))
+
+        seen, value, _ = await drive([URL_9902, "y"], tracker=Empty())
+        check("pasting one in a dry run reaches the payload", value == 9902, str(value))
+
+        # With matches, a dry run is the same question a real upload asks.
+        seen, value, _ = await drive([URL_8811, "y"])
+        check("and with matches it is the same question as a real upload",
+              seen and seen[0]["values"][:2] == [URL_8811, URL_9902], str(seen[0]["values"]) if seen else "")
+        check("still returning the request so the rehearsal can report it",
+              value == 8811, str(value))
+    finally:
+        cfg.upload.dry_run = False
+
+    # Nothing here posts a fill. The fill rides on the upload, and a dry run
+    # replaces the upload with a report -- asserted against the source, since
+    # importing the tracker to prove it would need a configured site.
+    with open(os.path.join(os.path.dirname(ROOT), "lox", "trackers", "base.py"), encoding="utf-8") as handle:
+        base = handle.read()
+    body = base[base.index("    async def upload(self, data: dict"):]
+    body = body[: body.index("_log_dry_run_upload(self")]
+    check("a dry run never reaches the code that posts an upload",
+          body.index("if cfg.upload.dry_run:") < body.index("api_key_upload"), "")
+    check("and reports the request it would have filled",
+          '[DRY RUN] Would have filled request' in base, "")
+    check("with the id in the payload it prints",
+          '"requestid"' in base, "")
 
     # --- and it is off when it is off ----------------------------------
     check("the setting that turns it off is the one the page shows",

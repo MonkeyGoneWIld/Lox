@@ -25,11 +25,23 @@ async def check_requests(gazelle_site: "BaseGazelleApi", searchstrs: list[str]) 
         searchstrs: Search strings to find requests.
 
     Returns:
-        Request ID if user chooses to fill one, None otherwise.
+        Request ID if user chooses to fill one, None otherwise. Nothing is ever
+        filled in a dry run -- the whole upload is skipped there -- but the id
+        is still returned, so it appears in the payload the rehearsal reports.
     """
     results = await get_request_results(gazelle_site, searchstrs)
     print_request_results(gazelle_site, results, " / ".join(searchstrs))
-    if not results and not cfg.upload.requests.always_ask_for_request_fill:
+
+    # A dry run asks even when the search found nothing.
+    #
+    # A real upload has a reason to stay quiet: no requests matched, so there is
+    # nothing to decide, and one fewer question between you and a posted
+    # torrent. A rehearsal has the opposite job. It exists so you can watch
+    # every step happen before one of them happens for real, and a step that
+    # silently does not run looks exactly like a step that is broken -- which is
+    # what this looked like. So it asks, with an empty list and the paste field,
+    # and you can still fill a request the search did not turn up.
+    if not results and not (cfg.upload.requests.always_ask_for_request_fill or cfg.upload.dry_run):
         return None
 
     # Asked again when the id turns out not to exist, rather than abandoning
@@ -171,11 +183,16 @@ async def _prompt_for_request_id(gazelle_site, results):
     Returns:
         A request id, or None to fill nothing.
     """
+    # "Choose from results" is only true when there are some. The question is
+    # asked with an empty list during a dry run, and telling someone to choose
+    # from a list that is not there is how a prompt reads as broken.
+    question = (
+        "\nFill a request? Choose from results, paste a url, or do[n]t."
+        if results
+        else "\nNothing matched. Paste a url to fill a request anyway, or do[n]t."
+    )
     while True:
-        request_id = await click.prompt(
-            click.style("\nFill a request? Choose from results, paste a url, or do[n]t.", fg="magenta"),
-            default="N",
-        )
+        request_id = await click.prompt(click.style(question, fg="magenta"), default="N")
         request_id = str(request_id or "").strip()
 
         from_url = _id_from_url(request_id)
