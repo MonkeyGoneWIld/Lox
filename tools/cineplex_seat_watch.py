@@ -91,7 +91,7 @@ REALERT_SECONDS = 300
 # "every-check" mirrors every poll to the status topic, so the topic reads as
 # a live log rather than a liveness light. "interval" throttles to
 # HEARTBEAT_SECONDS. "off" is silent.
-HEARTBEAT_MODE = "interval"
+HEARTBEAT_MODE = "every-check"
 HEARTBEAT_SECONDS = 300               # only consulted when mode is "interval"
 HEARTBEAT_TOPIC = ""                  # "" = NTFY_TOPIC + "-status"
 
