@@ -32,6 +32,20 @@ async def check_requests(gazelle_site: "BaseGazelleApi", searchstrs: list[str]) 
     results = await get_request_results(gazelle_site, searchstrs)
     print_request_results(gazelle_site, results, " / ".join(searchstrs))
 
+    # Auto-answering means not being asked. This prompt's own default is "fill
+    # nothing", and that is the only safe thing to do unattended: filling a
+    # request is a claim against someone else's specific request, not a
+    # yes-or-no about your own upload, so it is not something to decide on a
+    # default while nobody is watching. Said out loud rather than skipped
+    # silently, because an unattended run that quietly declined to fill a
+    # request you were expecting it to fill is its own kind of wrong.
+    if cfg.upload.yes_all:
+        click.secho(
+            f"Not filling a request: prompts are being auto-answered ({len(results)} found).",
+            fg="yellow",
+        )
+        return None
+
     # A dry run asks even when the search found nothing.
     #
     # A real upload has a reason to stay quiet: no requests matched, so there is

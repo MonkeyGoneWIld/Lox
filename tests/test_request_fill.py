@@ -205,6 +205,12 @@ async def drive(answers: list, tracker=None):
 
 
 async def main() -> int:
+    class Empty(StubTracker):
+        async def request(self, action, data=None, **_):
+            if action == "requests":
+                return {"results": []}
+            return await StubTracker.request(self, action, data)
+
     cfg.upload.requests.check_requests = True
     cfg.upload.requests.always_ask_for_request_fill = False
     cfg.upload.yes_all = False
@@ -286,12 +292,6 @@ async def main() -> int:
     check("an empty confirmation is a yes, not an IndexError", value == 8811, str(value))
 
     # --- nothing found -------------------------------------------------
-    class Empty(StubTracker):
-        async def request(self, action, data=None, **_):
-            if action == "requests":
-                return {"results": []}
-            return await StubTracker.request(self, action, data)
-
     seen, value, _ = await drive(["n"], tracker=Empty())
     check("with nothing found a real upload does not ask at all", not seen and value is None, str(seen))
 
@@ -329,6 +329,72 @@ async def main() -> int:
               value == 8811, str(value))
     finally:
         cfg.upload.dry_run = False
+
+    # --- auto-answered prompts are not prompts -------------------------
+    #
+    # Turning prompts off has to turn this one off too. It did not, so an
+    # unattended run stopped on a question nobody was there to click -- and
+    # after the dry-run change above, it stopped on every release rather than
+    # only the ones with a matching request.
+    cfg.upload.yes_all = True
+    try:
+        for label, tracker, dry in (
+            ("with matches", None, False),
+            ("with none", Empty(), False),
+            ("in a dry run", Empty(), True),
+        ):
+            cfg.upload.dry_run = dry
+            seen, value, log = await drive(["n"], tracker=tracker)
+            check(f"auto-answering asks nothing {label}", not seen, str([s["prompt"] for s in seen]))
+            check(f"and fills nothing {label}", value is None, str(value))
+            check(f"but says why {label}",
+                  any("auto-answered" in line for line in log), "")
+    finally:
+        cfg.upload.yes_all = False
+        cfg.upload.dry_run = False
+
+    # --- a question only carries evidence from its own phase -----------
+    #
+    # With prompts auto-answered nothing consumed the tag diff or the folder
+    # rename, so they queued up and arrived attached to the next question --
+    # a request question wearing a "Folder rename" table, which reads as a
+    # rename prompt that has lost its buttons.
+    flow = Flow("upload", "tables")
+    with FlowPrompts(flow, os.environ["LOX_DOWNLOAD_DIR"]) as prompts:
+        prompts._echo("Checking metadata...")  # noqa: SLF001
+        prompts._echo("Renaming folder...")  # noqa: SLF001
+        prompts._echo("Old Name >>> New Name")  # noqa: SLF001
+        prompts._echo("")  # noqa: SLF001
+        carried = [t["title"] for t in prompts._tables]  # noqa: SLF001
+        check("a folder rename is captured as a table", carried == ["Folder rename"], str(carried))
+
+        same_stage = asyncio.get_running_loop().create_task(prompts._prompt("Rename it? [Y]es, [n]o"))  # noqa: SLF001
+        for _ in range(200):
+            if flow.step:
+                break
+            await asyncio.sleep(0.01)
+        titles = [t["title"] for t in (flow.step.tables if flow.step else [])]
+        check("and shown with the question asked in that same phase",
+              titles == ["Folder rename"], str(titles))
+        flow.answer(flow.step.id, "y")
+        await same_stage
+
+        prompts._echo("Renaming folder...")  # noqa: SLF001
+        prompts._echo("Old Name >>> New Name")  # noqa: SLF001
+        prompts._echo("")  # noqa: SLF001
+        # The pipeline moves on to another phase without anything having asked.
+        prompts._echo("No requests were found on RED")  # noqa: SLF001
+        later = asyncio.get_running_loop().create_task(prompts._prompt("Fill a request? do[n]t"))  # noqa: SLF001
+        for _ in range(200):
+            if flow.step:
+                break
+            await asyncio.sleep(0.01)
+        titles = [t["title"] for t in (flow.step.tables if flow.step else [])]
+        check("but not with a question from a later phase", titles == [], str(titles))
+        check("which is the phase the run had moved on to",
+              flow.stage == "Checking requests", flow.stage)
+        flow.answer(flow.step.id, "n")
+        await later
 
     # Nothing here posts a fill. The fill rides on the upload, and a dry run
     # replaces the upload with a report -- asserted against the source, since

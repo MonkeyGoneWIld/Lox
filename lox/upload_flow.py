@@ -430,6 +430,9 @@ class FlowPrompts:
         # prints a tag diff and a metadata comparison as prose; both are tables
         # and are far easier to check as tables.
         self._tables: list[dict[str, Any]] = []
+        # The phase those tables came from, so they are only shown with a
+        # question asked in the same phase.
+        self._table_stage: str | None = None
         # What a dry run said it would post, kept for the result panel.
         self.dry_run_payload: dict[str, str] = {}
         # The descriptions a dry run would have posted, in full. Summarising
@@ -530,7 +533,12 @@ class FlowPrompts:
             self._offered = (prompt, found)
         elif self._offered and self._offered[0] == prompt:
             found = self._offered[1]
-        tables, self._tables, self._block = self._tables, [], None
+        # Only the tables from this phase. One captured while the files were
+        # being retagged is not evidence for a question asked while the
+        # requests are being checked, and showing it there makes the question
+        # look like it is about something it is not.
+        tables = self._tables if self._table_stage == self.flow.stage else []
+        self._tables, self._block, self._table_stage = [], None, None
         options = options or parse_extra_options(prompt)
 
         # "Press enter once you are finished viewing" wants acknowledgement,
@@ -769,6 +777,13 @@ class FlowPrompts:
                 # came back repeated four times over.
                 self._start_post()
             self._block = {"kind": kind, "title": title, "rows": []}
+            # Which phase this table belongs to. A table is evidence for the
+            # question asked in the phase that produced it, and for no other:
+            # with prompts auto-answered nothing consumed the tag diff or the
+            # folder rename, so they queued up and arrived attached to whatever
+            # was asked next -- a request question wearing a "Folder rename"
+            # table, which reads as a rename prompt with the wrong buttons.
+            self._table_stage = self.flow.stage
             self._tables.append(self._block)
             self._file = ""
             return True
