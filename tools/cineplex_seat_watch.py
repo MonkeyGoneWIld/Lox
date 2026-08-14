@@ -101,6 +101,11 @@ HEARTBEAT_TOPIC = ""                  # "" = NTFY_TOPIC + "-status"
 # the wrong half of the answer when you're deciding whether to restart.
 LABEL = "live"
 
+# ntfy priority for status pushes. "default" notifies with sound; "low" and
+# "min" are silent, and on Android a silent notification is easy to mistake
+# for no notification at all. Alerts are always urgent and ignore this.
+STATUS_PRIORITY = "default"
+
 # --------------------------------------------------------------------------
 
 API_HOST = "https://apis.cineplex.com"
@@ -410,11 +415,11 @@ def _ntfy_once(title, body, click=None, buy=None, priority="urgent"):
 
 
 def heartbeat(text, tag="hourglass_flowing_sand"):
-    """Quiet push to the status topic.
+    """Push to the status topic, at STATUS_PRIORITY.
 
-    Priority low, not min: both are silent -- no sound, no vibration -- but
-    min buries the notification under the fold, and the point of this topic
-    is that you can see it.
+    Silent priorities are a trap here: a status topic you can't tell apart
+    from a dead one defeats its own purpose, and that is exactly how it
+    failed in practice. Audible by default; --status-priority dials it back.
     """
     topic = heartbeat_topic()
     write_beat(text)
@@ -429,7 +434,7 @@ def heartbeat(text, tag="hourglass_flowing_sand"):
                 # shows titles first -- you want to read which watcher this is
                 # without opening anything.
                 "Title": "Alive: %s" % LABEL,
-                "Priority": "low",
+                "Priority": STATUS_PRIORITY,
                 "Tags": tag,
             },
             method="POST",
@@ -565,10 +570,11 @@ def do_watch(once=False):
     if not NTFY_TOPIC:
         log("NOTE: NTFY_TOPIC is empty -- console only, no phone push.")
     if HEARTBEAT_MODE != "off" and heartbeat_topic():
-        log("Status: ntfy topic %s, %s (silent)"
+        log("Status: ntfy topic %s, %s (priority %s)"
             % (heartbeat_topic(),
                "every check" if HEARTBEAT_MODE == "every-check"
-               else "every %dm" % (HEARTBEAT_SECONDS // 60)))
+               else "every %dm" % (HEARTBEAT_SECONDS // 60),
+               STATUS_PRIORITY))
         log("Alerts: ntfy topic %s, urgent (sound)" % NTFY_TOPIC)
 
     checks = 0
@@ -734,6 +740,10 @@ def main():
     ap.add_argument("--label",
                     help="name this watcher in its heartbeats, so several "
                          "running at once stay tellable apart (default: live)")
+    ap.add_argument("--status-priority",
+                    choices=["min", "low", "default", "high", "urgent"],
+                    help="ntfy priority for status pushes (default: default, "
+                         "which makes a sound; min/low are silent)")
     ap.add_argument("--any-seat-type", action="store_true",
                     help="also match wheelchair/companion seats")
     args = ap.parse_args()
@@ -743,6 +753,7 @@ def main():
     global ROW_FIRST, ROW_LAST, SEAT_FIRST, SEAT_LAST, MIN_TOGETHER
     global NTFY_TOPIC, ALLOWED_SEAT_TYPES
     global HEARTBEAT_SECONDS, HEARTBEAT_TOPIC, LABEL, HEARTBEAT_MODE
+    global STATUS_PRIORITY
 
     if args.interval:
         POLL_SECONDS = max(10, args.interval)
@@ -778,6 +789,8 @@ def main():
         HEARTBEAT_TOPIC = args.heartbeat_topic
     if args.label:
         LABEL = args.label
+    if args.status_priority:
+        STATUS_PRIORITY = args.status_priority
 
     target_date = TARGET_DATE or coming_saturday()
 
