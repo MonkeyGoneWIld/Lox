@@ -79,6 +79,12 @@ jobs:
       - name: Torrent clients, set up without writing a libtc URL
         run: uv run python tests/test_torrent_clients.py
 
+      - name: Filling a request from an upload
+        # Runs the pipeline's own request-fill code through the real prompt
+        # bridge: the requests it found have to arrive as answers, and a wrong
+        # one must not cost the upload it is attached to.
+        run: uv run python tests/test_request_fill.py
+
       - name: Upload page layout
         # Nothing in CI can see a screen, so these are the specific layout
         # mistakes that shipped and had to be reported by someone looking at

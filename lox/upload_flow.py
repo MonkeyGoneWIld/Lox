@@ -39,6 +39,16 @@ _BRACKET = re.compile(r"([A-Za-z]*)\[([A-Za-z])\]([A-Za-z]*)")
 # with the id and the url on the same logical line. Capturing them turns
 # "paste a URL" into a row of buttons.
 _GROUP_LINE = re.compile(r"^\s*\d+\s*>>\s*(\d+)\s*\|\s*(.+?)(?:\s*\|\s*(https?://\S+))?\s*$")
+# Open requests print with the URL where a group prints its id:
+# "01 >> https://site/requests.php?action=view&id=8811 | Artist - Title (2023) [Album]"
+# so _GROUP_LINE never matched one and every request the pipeline found was
+# written to the log and offered as nothing. The question says "choose from
+# results" -- there have to be results to choose from.
+_REQUEST_LINE = re.compile(
+    r"^\s*\d+\s*>>\s*(https?://\S*requests\.php\S*)\s*\|\s*(.+?)\s*$", re.IGNORECASE
+)
+# The line under a request, listing what it will accept.
+_REQUIREMENTS = re.compile(r"^Requirements:\s*(.+?)\s*/?\s*$", re.IGNORECASE)
 # Metadata candidates print differently: "> 01 Artist - Title {Tracks: 14} | https://..."
 _RESULT_LINE = re.compile(r"^>?\s*(\d{1,2})\s+(.+?)(?:\s*\|\s*(https?://\S+))?\s*$")
 # Numbered menus, as used by downconversion: "  1. MP3 320"
@@ -409,6 +419,9 @@ class FlowPrompts:
         # Group candidates printed since the last question, so the next prompt
         # can offer them instead of asking for a pasted URL.
         self._candidates: list[dict[str, Any]] = []
+        # The last question's candidates, kept so a rejected answer does not
+        # take the buttons with it when the pipeline asks again.
+        self._offered: tuple[str, list[dict[str, Any]]] | None = None
         self._line = ""
         self._spectrals_ready = False
         # Track number to filename, as the pipeline's own viewer was given it.
@@ -509,6 +522,14 @@ class FlowPrompts:
         # option, so a found duplicate group is a button rather than a URL you
         # have to copy out of the log.
         found, self._candidates = self._candidates, []
+        # A prompt that did not like your answer asks again without reprinting
+        # its list, so the second time round the buttons were gone and the only
+        # way left to answer was the one that had just been rejected. The
+        # candidates belong to the question, not to the attempt.
+        if found:
+            self._offered = (prompt, found)
+        elif self._offered and self._offered[0] == prompt:
+            found = self._offered[1]
         tables, self._tables, self._block = self._tables, [], None
         options = options or parse_extra_options(prompt)
 
@@ -637,8 +658,32 @@ class FlowPrompts:
             body.append(text[1:].lstrip())
             return
 
+        request = _REQUEST_LINE.match(text)
+        requirements = _REQUIREMENTS.match(text)
         group = _GROUP_LINE.match(text)
-        if group:
+        if request:
+            url, description = request[1], request[2].strip()
+            # The URL is the value, not the row number. The pipeline reads a
+            # bare number as an index into its own list, so sending "2" back
+            # depends on that list being in the order the buttons were built
+            # in -- and getting it wrong fills someone else's request, which no
+            # part of a tracker lets you undo. A URL names exactly one request.
+            self._candidates.append(
+                {
+                    "value": url,
+                    "label": description,
+                    "detail": "",
+                    "url": url,
+                    "kind": "group",
+                    "link_label": "Open request ↗",
+                }
+            )
+        elif requirements and self._last_request() is not None:
+            # Printed on the line after its request, and it is the whole reason
+            # to pick one request over another: what the requester will accept.
+            wanted = requirements[1].strip().rstrip("/").strip()
+            self._last_request()["detail"] = f"Accepts {wanted}"  # pyright: ignore[reportOptionalSubscript]
+        elif group:
             group_id, description, url = group[1], group[2].strip(), group[3]
             # Not truncated: this is the line you decide on, and the edition and
             # tags that distinguish one group from another live at the end of
@@ -684,6 +729,12 @@ class FlowPrompts:
         if self._capture_block(text):
             return
         self.flow.note(text)
+
+    def _last_request(self) -> dict[str, Any] | None:
+        """The request candidate just added, if the last line was one."""
+        if self._candidates and self._candidates[-1].get("link_label", "").startswith("Open request"):
+            return self._candidates[-1]
+        return None
 
     def _report_stage(self, text: str) -> None:
         """Say what the pipeline is doing, from what it just said it did.

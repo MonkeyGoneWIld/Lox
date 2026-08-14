@@ -29,14 +29,23 @@ async def check_requests(gazelle_site: "BaseGazelleApi", searchstrs: list[str]) 
     """
     results = await get_request_results(gazelle_site, searchstrs)
     print_request_results(gazelle_site, results, " / ".join(searchstrs))
-    # Should add an option to still prompt if there are no results.
-    if results or cfg.upload.requests.always_ask_for_request_fill:
+    if not results and not cfg.upload.requests.always_ask_for_request_fill:
+        return None
+
+    # Asked again when the id turns out not to exist, rather than abandoning
+    # the upload. This runs after the cover has been uploaded to an image host
+    # and the spectrals generated, immediately before the release is posted --
+    # so a typo in a pasted request URL used to throw all of that away and post
+    # nothing, which is a lot to lose to a wrong digit.
+    while True:
         request_id = await _prompt_for_request_id(gazelle_site, results)
-        if request_id:
-            confirmation = await _confirm_request_id(gazelle_site, request_id)
-            if confirmation is True:
-                return request_id
-    return None
+        if not request_id:
+            return None
+        confirmation = await _confirm_request_id(gazelle_site, request_id)
+        if confirmation is True:
+            return request_id
+        if confirmation is False:
+            return None
 
 
 async def get_request_results(gazelle_site: "BaseGazelleApi", searchstrs: list[str]) -> list[dict[str, Any]]:
@@ -52,10 +61,13 @@ async def get_request_results(gazelle_site: "BaseGazelleApi", searchstrs: list[s
     results = []
     for searchstr in searchstrs:
         response = await gazelle_site.request("requests", {"search": searchstr})
-        for req in response["results"]:
+        for req in (response or {}).get("results") or []:
             if req not in results:
                 results.append(req)
-    return [item for item in results if item["categoryName"] == "Music"]
+    # Read with .get: a request without the field raised KeyError here, and
+    # this runs after the torrent has been built, so losing it costs the run.
+    # Anything that does not say what it is, is not assumed to be music.
+    return [item for item in results if isinstance(item, dict) and item.get("categoryName") == "Music"]
 
 
 def print_request_results(gazelle_site, results, searchstr):
@@ -79,12 +91,8 @@ def print_request_results(gazelle_site, results, searchstr):
                 url = gazelle_site.request_url(r["requestId"])
                 # User doesn't get to pick a zero index
                 click.echo(f" {r_index + 1:02d} >> {url} | ", nl=False)
-                if len(r["artists"][0]) > 3:
-                    r["artist"] = "Various Artists"
-                else:
-                    r["artist"] = ""
-                    for a in r["artists"][0]:
-                        r["artist"] += a["name"] + " "
+                names = [a["name"] for a in r["artists"][0]]
+                r["artist"] = "Various Artists" if len(names) > 3 else " & ".join(names)
                 click.secho(f"{r['artist']}", fg="cyan", nl=False)
                 click.secho(f" - {r['title']} ", fg="cyan", nl=False)
                 click.secho(f"({r['year']}) [{r['releaseType']}] ", fg="yellow")
@@ -136,63 +144,111 @@ def _print_request_details(gazelle_site, req):
     click.echo(description)
 
 
+def _id_from_url(text: str) -> int | None:
+    """The request id in a requests.php URL, or None if it is not one.
+
+    Matched on the path and the query rather than on the site's own base URL:
+    that comparison was ``text.lower().startswith(base_url + "/requests.php")``,
+    which fails on a URL pasted with different capitalisation, with a www., or
+    from the tracker's other domain -- and a URL that fails it falls through
+    every branch, which is how this prompt used to loop forever.
+    """
+    try:
+        parsed = parse.urlparse(text.strip())
+    except ValueError:
+        return None
+    if "requests.php" not in parsed.path.lower():
+        return None
+    ids = parse.parse_qs(parsed.query).get("id") or []
+    if not ids or not str(ids[0]).strip().isdigit():
+        return None
+    return int(str(ids[0]).strip())
+
+
 async def _prompt_for_request_id(gazelle_site, results):
-    """Have the user choose a group ID"""
+    """Ask which request to fill, if any.
+
+    Returns:
+        A request id, or None to fill nothing.
+    """
     while True:
         request_id = await click.prompt(
             click.style("\nFill a request? Choose from results, paste a url, or do[n]t.", fg="magenta"),
             default="N",
         )
-        if request_id.strip().isdigit():
+        request_id = str(request_id or "").strip()
+
+        from_url = _id_from_url(request_id)
+        if from_url is not None:
+            return from_url
+
+        if request_id.isdigit():
             raw_input = int(request_id)
             list_index = max(0, raw_input - 1)  # 1-based → 0-based, clamp to 0
             if list_index < len(results):
-                return int(results[list_index]["requestId"])
-            else:
-                click.echo(f"Interpreting {raw_input} as a request id")
-                return raw_input
+                chosen = int(results[list_index]["requestId"])
+                # Say which one, out loud. A bare number is a row number here,
+                # not a request id, and the two are indistinguishable on sight
+                # -- so typing the id of the request you meant quietly selects
+                # a different one. Naming it gives the confirmation that
+                # follows something to disagree with.
+                click.secho(f"Row {raw_input} of the results above: request {chosen}.", fg="cyan")
+                return chosen
+            click.echo(f"No row {raw_input} in the results; reading it as a request id")
+            return raw_input
 
-        elif request_id.strip().lower().startswith(gazelle_site.base_url + "/requests.php"):
-            parsed_id = parse.parse_qs(parse.urlparse(request_id).query)["id"][0]
-            return int(parsed_id)
-        elif request_id.lower().startswith("n") or not request_id.strip():
+        if request_id.lower().startswith("n") or not request_id:
             click.echo("Not filling a request")
             return None
 
+        # Every branch missed. Saying so is the difference between a prompt you
+        # can recover from and one that repeats forever with no explanation,
+        # which is what this did to an upload that could only then be cancelled.
+        click.secho(
+            f"Did not understand {request_id!r}. Give a row number from the list, a request URL, "
+            "or n to fill nothing.",
+            fg="red",
+        )
 
-async def _confirm_request_id(gazelle_site: "BaseGazelleApi", request_id: str | int) -> bool:
-    """Have the user decide whether or not they want to fill request.
+
+async def _confirm_request_id(gazelle_site: "BaseGazelleApi", request_id: str | int) -> bool | None:
+    """Show the request and ask whether to fill it.
 
     Args:
         gazelle_site: The tracker API instance.
         request_id: The request ID to confirm.
 
     Returns:
-        True if user confirms, False otherwise.
+        True to fill it, False to fill nothing, or None when there is no such
+        request -- which is a reason to ask again, not a reason to stop.
     """
     try:
         req = await gazelle_site.request("request", {"id": request_id})
         artists = ((req.get("musicInfo") or {}).get("artists")) or []
         req["artist"] = (
             "Various Artists" if len(artists) > 3
-            else " ".join(a.get("name", "") for a in artists if isinstance(a, dict))
+            else " & ".join(a.get("name", "") for a in artists if isinstance(a, dict))
         )
     except RequestError:
-        click.secho(f"{request_id} does not exist.", fg="red")
-        raise click.Abort from None
+        # Not an abort. The release is built and about to be posted; losing it
+        # over a wrong request id is a worse answer than asking again.
+        click.secho(f"There is no request {request_id} on {gazelle_site.site_string}.", fg="red")
+        return None
     _print_request_details(gazelle_site, req)
     if cfg.upload.yes_all:
         return True
 
     while True:
-        resp = (
-            await click.prompt(
-                click.style("\nAre you sure you would you like to fill this request [Y]es, [n]o", fg="magenta"),
-                default="Y",
-            )
-        )[0].lower()
+        answer = await click.prompt(
+            click.style("\nAre you sure you would you like to fill this request [Y]es, [n]o", fg="magenta"),
+            default="Y",
+        )
+        # Indexing [0] straight off the answer raised IndexError on an empty
+        # one, which aborted the upload after the torrent had been built.
+        resp = str(answer or "y").strip().lower()[:1] or "y"
         if resp == "y":
             return True
-        elif resp == "n":
+        if resp == "n":
             click.secho("Not filling this request", fg="red")
             return False
+        click.secho(f"Answer y or n, not {answer!r}.", fg="red")
