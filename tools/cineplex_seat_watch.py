@@ -87,7 +87,11 @@ REALERT_SECONDS = 300
 # so it pushes a silent heartbeat to a SEPARATE topic. Subscribe to that topic
 # too and the timestamp on its newest message is your "still running" light.
 # Keeping it off the alert topic matters: a buzz there always means seats.
-HEARTBEAT_SECONDS = 900               # 0 disables
+# "every-check" mirrors every poll to the status topic, so the topic reads as
+# a live log rather than a liveness light. "interval" throttles to
+# HEARTBEAT_SECONDS. "off" is silent.
+HEARTBEAT_MODE = "every-check"
+HEARTBEAT_SECONDS = 900               # only consulted when mode is "interval"
 HEARTBEAT_TOPIC = ""                  # "" = NTFY_TOPIC + "-status"
 
 # Names this watcher in its heartbeats. With more than one running -- say a
@@ -375,11 +379,15 @@ def ntfy(title, body, click=None, buy=None, priority="urgent"):
 
 
 def heartbeat(text, tag="hourglass_flowing_sand"):
-    """Silent push to the status topic. Priority min = no sound, no vibration;
-    it just lands in the ntfy app with a fresh timestamp."""
+    """Quiet push to the status topic.
+
+    Priority low, not min: both are silent -- no sound, no vibration -- but
+    min buries the notification under the fold, and the point of this topic
+    is that you can see it.
+    """
     topic = heartbeat_topic()
     write_beat(text)
-    if not topic or not HEARTBEAT_SECONDS:
+    if not topic or HEARTBEAT_MODE == "off":
         return
     try:
         req = urllib.request.Request(
@@ -390,7 +398,7 @@ def heartbeat(text, tag="hourglass_flowing_sand"):
                 # shows titles first -- you want to read which watcher this is
                 # without opening anything.
                 "Title": "Alive: %s" % LABEL,
-                "Priority": "min",
+                "Priority": "low",
                 "Tags": tag,
             },
             method="POST",
@@ -524,9 +532,12 @@ def do_watch(once=False):
         % (block_label(), MIN_TOGETHER, POLL_SECONDS))
     if not NTFY_TOPIC:
         log("NOTE: NTFY_TOPIC is empty -- console only, no phone push.")
-    if HEARTBEAT_SECONDS and heartbeat_topic():
-        log("Heartbeat: ntfy topic %s every %dm (silent)"
-            % (heartbeat_topic(), HEARTBEAT_SECONDS // 60))
+    if HEARTBEAT_MODE != "off" and heartbeat_topic():
+        log("Status: ntfy topic %s, %s (silent)"
+            % (heartbeat_topic(),
+               "every check" if HEARTBEAT_MODE == "every-check"
+               else "every %dm" % (HEARTBEAT_SECONDS // 60)))
+        log("Alerts: ntfy topic %s, urgent (sound)" % NTFY_TOPIC)
 
     checks = 0
     fails = 0
@@ -588,6 +599,23 @@ def do_watch(once=False):
         rows = matching_seats(layout, availability)
         runs = qualifying_runs(rows)
 
+        # Mirror the check to the status topic before handling the result, so
+        # a --once run (the scheduled job's shape) still reports in, and so a
+        # check is never lost to an early return below.
+        due = (HEARTBEAT_MODE == "every-check"
+               or (HEARTBEAT_MODE == "interval"
+                   and time.time() - last_beat >= HEARTBEAT_SECONDS))
+        if due:
+            free = sum(len(v) for v in rows.values())
+            heartbeat("check %d at %s\n%d seat(s) free in %s\n"
+                      "%s left in the auditorium overall\n"
+                      "watching %s %s %s"
+                      % (checks, datetime.now().strftime("%H:%M:%S"), free,
+                         block_label(), session["seats"], target_date,
+                         TARGET_TIME, session["auditorium"]),
+                      tag="tickets" if runs else "mag")
+            last_beat = time.time()
+
         if runs:
             # Only the seats in qualifying runs count as the hit.
             hit_rows = {}
@@ -616,16 +644,6 @@ def do_watch(once=False):
             write_beat(tick)
             if once:
                 return 1
-
-        if HEARTBEAT_SECONDS and time.time() - last_beat >= HEARTBEAT_SECONDS:
-            free = sum(len(v) for v in rows.values())
-            heartbeat("last check %s (#%d)\n%d seat(s) free in %s\n"
-                      "%s left in the auditorium overall\n"
-                      "watching %s %s %s"
-                      % (datetime.now().strftime("%H:%M:%S"), checks, free,
-                         block_label(), session["seats"], target_date,
-                         TARGET_TIME, session["auditorium"]))
-            last_beat = time.time()
 
         time.sleep(POLL_SECONDS + random.uniform(0, POLL_JITTER_SECONDS))
 
@@ -673,8 +691,8 @@ def main():
     ap.add_argument("--status", action="store_true",
                     help="report whether a watcher is beating, then exit")
     ap.add_argument("--heartbeat", type=int, metavar="MIN",
-                    help="silent proof-of-life push every MIN minutes "
-                         "(0 disables; default 15)")
+                    help="throttle status pushes to one every MIN minutes "
+                         "(0 disables them; default is one per check)")
     ap.add_argument("--heartbeat-topic",
                     help="ntfy topic for heartbeats "
                          "(default: <topic>-status)")
@@ -689,7 +707,7 @@ def main():
     global REQUIRE_EXPERIENCE, THEATRE_ID, TIME_TOLERANCE_MIN
     global ROW_FIRST, ROW_LAST, SEAT_FIRST, SEAT_LAST, MIN_TOGETHER
     global NTFY_TOPIC, ALLOWED_SEAT_TYPES
-    global HEARTBEAT_SECONDS, HEARTBEAT_TOPIC, LABEL
+    global HEARTBEAT_SECONDS, HEARTBEAT_TOPIC, LABEL, HEARTBEAT_MODE
 
     if args.interval:
         POLL_SECONDS = max(10, args.interval)
@@ -716,7 +734,11 @@ def main():
     if args.any_seat_type:
         ALLOWED_SEAT_TYPES = ("Standard", "Wheelchair", "Companion", "DBox")
     if args.heartbeat is not None:
-        HEARTBEAT_SECONDS = max(0, args.heartbeat) * 60
+        if args.heartbeat <= 0:
+            HEARTBEAT_MODE = "off"
+        else:
+            HEARTBEAT_MODE = "interval"
+            HEARTBEAT_SECONDS = args.heartbeat * 60
     if args.heartbeat_topic:
         HEARTBEAT_TOPIC = args.heartbeat_topic
     if args.label:
