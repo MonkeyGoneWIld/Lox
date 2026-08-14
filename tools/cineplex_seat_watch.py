@@ -33,6 +33,7 @@ Usage:
 """
 
 import argparse
+import gzip
 import json
 import os
 import random
@@ -110,6 +111,7 @@ SUBSCRIPTION_KEY = "dcdac5601d864addbc2675a2e96cb1f8"
 HEADERS = {
     "Ocp-Apim-Subscription-Key": SUBSCRIPTION_KEY,
     "Accept": "application/json, text/plain, */*",
+    "Accept-Encoding": "identity",
     "Accept-Language": "en-CA,en;q=0.9",
     "Origin": "https://www.cineplex.com",
     "Referer": "https://www.cineplex.com/",
@@ -163,7 +165,15 @@ def _get(url):
     req = urllib.request.Request(url, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=25,
                                 context=ssl.create_default_context()) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read()
+        encoding = (resp.headers.get("Content-Encoding") or "").lower()
+    # The API sometimes gzips even though we ask for identity -- an upstream
+    # proxy decides, not us -- and urllib doesn't decompress on its own. Sniff
+    # the magic number as well as the header, since the header goes missing
+    # when something in the middle rewrites it.
+    if encoding == "gzip" or raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    return json.loads(raw.decode("utf-8"))
 
 
 def fetch_showtimes(theatre_id, day):
