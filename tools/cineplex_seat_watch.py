@@ -349,9 +349,28 @@ def block_label():
 # Alerts
 # --------------------------------------------------------------------------
 
-def ntfy(title, body, click=None, buy=None, priority="urgent"):
+def ntfy(title, body, click=None, buy=None, priority="urgent", attempts=5):
+    """Push, retrying through a network blip. Returns True if it landed.
+
+    Worth retrying properly: this is the one message that matters, and a
+    dropped connection at the wrong moment is the difference between knowing
+    a seat opened and not. The caller re-queues on a False.
+    """
     if not NTFY_TOPIC:
-        return
+        return False
+    delay = 2
+    for attempt in range(1, attempts + 1):
+        if _ntfy_once(title, body, click, buy, priority):
+            return True
+        if attempt < attempts:
+            log("  -> push retry %d/%d in %ds" % (attempt, attempts - 1, delay))
+            time.sleep(delay)
+            delay = min(30, delay * 2)
+    log("  !! push failed after %d attempts -- will retry next check" % attempts)
+    return False
+
+
+def _ntfy_once(title, body, click=None, buy=None, priority="urgent"):
     try:
         headers = {
             "Title": title.encode("ascii", "ignore").decode(),
@@ -374,8 +393,10 @@ def ntfy(title, body, click=None, buy=None, priority="urgent"):
         )
         urllib.request.urlopen(req, timeout=15).read()
         log("  -> phone push sent (ntfy topic %s)" % NTFY_TOPIC)
+        return True
     except Exception as exc:
         log("  -> ntfy failed: %r" % (exc,))
+        return False
 
 
 def heartbeat(text, tag="hourglass_flowing_sand"):
@@ -430,7 +451,8 @@ def alert(session, rows, target_date):
     log("=" * 68)
     log("  seat map -> " + session["seatmap_url"])
     log("  buy      -> " + session["buy_url"])
-    ntfy(title, body, click=session["seatmap_url"], buy=session["buy_url"])
+    return ntfy(title, body, click=session["seatmap_url"],
+                buy=session["buy_url"])
 
 
 # --------------------------------------------------------------------------
@@ -626,9 +648,12 @@ def do_watch(once=False):
             now = time.time()
             changed = labels != last_seen
             if changed or now - last_alert >= REALERT_SECONDS:
-                alert(session, hit_rows, target_date)
-                last_alert = now
-                last_seen = labels
+                delivered = alert(session, hit_rows, target_date)
+                # An undelivered alert is the one failure that costs you the
+                # seat, so don't let the re-alert timer swallow the retry:
+                # leave the clock untouched and try again next check.
+                last_alert = now if delivered else 0.0
+                last_seen = labels if delivered else None
                 if not once:
                     log("Re-pushing every %ds while seats hold, and "
                         "immediately if the set changes. Ctrl+C when booked."
