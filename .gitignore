@@ -35,3 +35,7 @@ data/tmp/
 # Listing them one at a time meant every new suite left untracked directories
 # behind until someone noticed.
 tests/_*/
+
+# Runtime proof-of-life from tools/cineplex_seat_watch.py, rewritten every
+# poll -- tracking it means the tree is dirty the whole time it's watching.
+tools/seat_watch_heartbeat.txt
