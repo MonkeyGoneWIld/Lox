@@ -73,7 +73,7 @@ ALLOWED_SEAT_TYPES = ("Standard",)
 MIN_TOGETHER = 1
 
 POLL_SECONDS = 30                     # base interval; jitter added automatically
-POLL_JITTER_SECONDS = 8
+POLL_JITTER_SECONDS = 5
 
 # Phone push via ntfy.sh -- free, no signup. Same topic the desktop watcher
 # used, so the app on your phone is already subscribed.
@@ -90,8 +90,8 @@ REALERT_SECONDS = 300
 # "every-check" mirrors every poll to the status topic, so the topic reads as
 # a live log rather than a liveness light. "interval" throttles to
 # HEARTBEAT_SECONDS. "off" is silent.
-HEARTBEAT_MODE = "every-check"
-HEARTBEAT_SECONDS = 900               # only consulted when mode is "interval"
+HEARTBEAT_MODE = "interval"
+HEARTBEAT_SECONDS = 300               # only consulted when mode is "interval"
 HEARTBEAT_TOPIC = ""                  # "" = NTFY_TOPIC + "-status"
 
 # Names this watcher in its heartbeats. With more than one running -- say a
