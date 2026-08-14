@@ -90,6 +90,12 @@ REALERT_SECONDS = 300
 HEARTBEAT_SECONDS = 900               # 0 disables
 HEARTBEAT_TOPIC = ""                  # "" = NTFY_TOPIC + "-status"
 
+# Names this watcher in its heartbeats. With more than one running -- say a
+# live one on a box you're sat at and a scheduled one elsewhere -- an
+# unlabelled heartbeat tells you something is alive but not what, which is
+# the wrong half of the answer when you're deciding whether to restart.
+LABEL = "live"
+
 # --------------------------------------------------------------------------
 
 API_HOST = "https://apis.cineplex.com"
@@ -380,7 +386,10 @@ def heartbeat(text, tag="hourglass_flowing_sand"):
             "https://ntfy.sh/" + topic,
             data=text.encode("utf-8"),
             headers={
-                "Title": "Seat watcher alive",
+                # The label goes in the title because ntfy's notification list
+                # shows titles first -- you want to read which watcher this is
+                # without opening anything.
+                "Title": "Alive: %s" % LABEL,
                 "Priority": "min",
                 "Tags": tag,
             },
@@ -529,8 +538,8 @@ def do_watch(once=False):
     layout_for = None
     announced_missing = False
 
-    heartbeat("Watcher started %s\nWatching %s %s %s in %s"
-              % (datetime.now().strftime("%H:%M"), target_date, TARGET_TIME,
+    heartbeat("started %s\nwatching %s %s %s in %s"
+              % (datetime.now().strftime("%H:%M:%S"), target_date, TARGET_TIME,
                  REQUIRE_EXPERIENCE, block_label()), tag="white_check_mark")
     last_beat = time.time()
 
@@ -610,10 +619,12 @@ def do_watch(once=False):
 
         if HEARTBEAT_SECONDS and time.time() - last_beat >= HEARTBEAT_SECONDS:
             free = sum(len(v) for v in rows.values())
-            heartbeat("%s -- check %d, still watching.\n%s: %d seat(s) free in "
-                      "%s.\n%s seats left in the auditorium overall."
-                      % (datetime.now().strftime("%H:%M"), checks, TARGET_TIME,
-                         free, block_label(), session["seats"]))
+            heartbeat("last check %s (#%d)\n%d seat(s) free in %s\n"
+                      "%s left in the auditorium overall\n"
+                      "watching %s %s %s"
+                      % (datetime.now().strftime("%H:%M:%S"), checks, free,
+                         block_label(), session["seats"], target_date,
+                         TARGET_TIME, session["auditorium"]))
             last_beat = time.time()
 
         time.sleep(POLL_SECONDS + random.uniform(0, POLL_JITTER_SECONDS))
@@ -667,6 +678,9 @@ def main():
     ap.add_argument("--heartbeat-topic",
                     help="ntfy topic for heartbeats "
                          "(default: <topic>-status)")
+    ap.add_argument("--label",
+                    help="name this watcher in its heartbeats, so several "
+                         "running at once stay tellable apart (default: live)")
     ap.add_argument("--any-seat-type", action="store_true",
                     help="also match wheelchair/companion seats")
     args = ap.parse_args()
@@ -675,7 +689,7 @@ def main():
     global REQUIRE_EXPERIENCE, THEATRE_ID, TIME_TOLERANCE_MIN
     global ROW_FIRST, ROW_LAST, SEAT_FIRST, SEAT_LAST, MIN_TOGETHER
     global NTFY_TOPIC, ALLOWED_SEAT_TYPES
-    global HEARTBEAT_SECONDS, HEARTBEAT_TOPIC
+    global HEARTBEAT_SECONDS, HEARTBEAT_TOPIC, LABEL
 
     if args.interval:
         POLL_SECONDS = max(10, args.interval)
@@ -705,6 +719,8 @@ def main():
         HEARTBEAT_SECONDS = max(0, args.heartbeat) * 60
     if args.heartbeat_topic:
         HEARTBEAT_TOPIC = args.heartbeat_topic
+    if args.label:
+        LABEL = args.label
 
     target_date = TARGET_DATE or coming_saturday()
 
