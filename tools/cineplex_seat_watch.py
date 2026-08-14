@@ -34,6 +34,7 @@ Usage:
 
 import argparse
 import json
+import os
 import random
 import re
 import ssl
@@ -81,6 +82,14 @@ NTFY_TOPIC = "odyssey-imax-x4lty08gwx"
 # Re-push this often while seats stay available, so one missed buzz isn't fatal.
 REALERT_SECONDS = 300
 
+# Proof-of-life. A watcher that died quietly looks exactly like a watcher that
+# has found nothing yet, and from a phone you can't see the process at all --
+# so it pushes a silent heartbeat to a SEPARATE topic. Subscribe to that topic
+# too and the timestamp on its newest message is your "still running" light.
+# Keeping it off the alert topic matters: a buzz there always means seats.
+HEARTBEAT_SECONDS = 900               # 0 disables
+HEARTBEAT_TOPIC = ""                  # "" = NTFY_TOPIC + "-status"
+
 # --------------------------------------------------------------------------
 
 API_HOST = "https://apis.cineplex.com"
@@ -105,9 +114,29 @@ HEADERS = {
 LAYOUT_TTL_SECONDS = 1800
 
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+BEAT_PATH = os.path.join(HERE, "seat_watch_heartbeat.txt")
+
+
 def log(msg):
     print("%s  %s" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg),
           flush=True)
+
+
+def write_beat(text):
+    """Local proof-of-life, for when you're back at a machine with the disk."""
+    try:
+        with open(BEAT_PATH, "w", encoding="utf-8") as fh:
+            fh.write("%s  %s\n"
+                     % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), text))
+    except OSError:
+        pass
+
+
+def heartbeat_topic():
+    if HEARTBEAT_TOPIC:
+        return HEARTBEAT_TOPIC
+    return (NTFY_TOPIC + "-status") if NTFY_TOPIC else ""
 
 
 def coming_saturday(today=None):
@@ -339,6 +368,29 @@ def ntfy(title, body, click=None, buy=None, priority="urgent"):
         log("  -> ntfy failed: %r" % (exc,))
 
 
+def heartbeat(text, tag="hourglass_flowing_sand"):
+    """Silent push to the status topic. Priority min = no sound, no vibration;
+    it just lands in the ntfy app with a fresh timestamp."""
+    topic = heartbeat_topic()
+    write_beat(text)
+    if not topic or not HEARTBEAT_SECONDS:
+        return
+    try:
+        req = urllib.request.Request(
+            "https://ntfy.sh/" + topic,
+            data=text.encode("utf-8"),
+            headers={
+                "Title": "Seat watcher alive",
+                "Priority": "min",
+                "Tags": tag,
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception as exc:
+        log("  -> heartbeat push failed: %r" % (exc,))
+
+
 def alert(session, rows, target_date):
     runs = qualifying_runs(rows)
     total = sum(len(seats) for seats in rows.values())
@@ -429,6 +481,31 @@ def do_seats(target_date):
     return 1
 
 
+def do_status():
+    """Is a watcher alive? Reads the heartbeat file this box's watcher writes.
+
+    Only meaningful on the machine running the watcher -- from a phone, use
+    the heartbeat topic in the ntfy app instead.
+    """
+    if not os.path.exists(BEAT_PATH):
+        print("No heartbeat file at %s -- no watcher has run here." % BEAT_PATH)
+        return 1
+    text = open(BEAT_PATH, encoding="utf-8").read().strip()
+    try:
+        stamp = datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        print(text)
+        return 1
+    age = (datetime.now() - stamp).total_seconds()
+    print(text)
+    print("Last beat %.0fs ago." % age)
+    if age > max(180, POLL_SECONDS * 4):
+        print("STALE -- the watcher looks dead. Restart it.")
+        return 1
+    print("Alive.")
+    return 0
+
+
 def do_watch(once=False):
     target_date = TARGET_DATE or coming_saturday()
     log("Watching %s | %s | %s ~%s %s"
@@ -438,15 +515,24 @@ def do_watch(once=False):
         % (block_label(), MIN_TOGETHER, POLL_SECONDS))
     if not NTFY_TOPIC:
         log("NOTE: NTFY_TOPIC is empty -- console only, no phone push.")
+    if HEARTBEAT_SECONDS and heartbeat_topic():
+        log("Heartbeat: ntfy topic %s every %dm (silent)"
+            % (heartbeat_topic(), HEARTBEAT_SECONDS // 60))
 
     checks = 0
     fails = 0
     last_alert = 0.0
     last_seen = None            # set of seat labels at the previous alert
+    last_beat = 0.0
     layout = None
     layout_fetched = 0.0
     layout_for = None
     announced_missing = False
+
+    heartbeat("Watcher started %s\nWatching %s %s %s in %s"
+              % (datetime.now().strftime("%H:%M"), target_date, TARGET_TIME,
+                 REQUIRE_EXPERIENCE, block_label()), tag="white_check_mark")
+    last_beat = time.time()
 
     while True:
         checks += 1
@@ -514,11 +600,21 @@ def do_watch(once=False):
                 return 0
         else:
             last_seen = None
-            log("check %d -- %s: %s sold out in %s (%s seats left elsewhere)"
-                % (checks, TARGET_TIME, block_label(),
-                   session["auditorium"], session["seats"]))
+            tick = ("check %d -- %s: %s sold out in %s (%s seats left elsewhere)"
+                    % (checks, TARGET_TIME, block_label(),
+                       session["auditorium"], session["seats"]))
+            log(tick)
+            write_beat(tick)
             if once:
                 return 1
+
+        if HEARTBEAT_SECONDS and time.time() - last_beat >= HEARTBEAT_SECONDS:
+            free = sum(len(v) for v in rows.values())
+            heartbeat("%s -- check %d, still watching.\n%s: %d seat(s) free in "
+                      "%s.\n%s seats left in the auditorium overall."
+                      % (datetime.now().strftime("%H:%M"), checks, TARGET_TIME,
+                         free, block_label(), session["seats"]))
+            last_beat = time.time()
 
         time.sleep(POLL_SECONDS + random.uniform(0, POLL_JITTER_SECONDS))
 
@@ -563,6 +659,14 @@ def main():
     ap.add_argument("--together", type=int,
                     help="require N seats side by side (default 1)")
     ap.add_argument("--ntfy", help="override ntfy topic; '' to disable push")
+    ap.add_argument("--status", action="store_true",
+                    help="report whether a watcher is beating, then exit")
+    ap.add_argument("--heartbeat", type=int, metavar="MIN",
+                    help="silent proof-of-life push every MIN minutes "
+                         "(0 disables; default 15)")
+    ap.add_argument("--heartbeat-topic",
+                    help="ntfy topic for heartbeats "
+                         "(default: <topic>-status)")
     ap.add_argument("--any-seat-type", action="store_true",
                     help="also match wheelchair/companion seats")
     args = ap.parse_args()
@@ -571,6 +675,7 @@ def main():
     global REQUIRE_EXPERIENCE, THEATRE_ID, TIME_TOLERANCE_MIN
     global ROW_FIRST, ROW_LAST, SEAT_FIRST, SEAT_LAST, MIN_TOGETHER
     global NTFY_TOPIC, ALLOWED_SEAT_TYPES
+    global HEARTBEAT_SECONDS, HEARTBEAT_TOPIC
 
     if args.interval:
         POLL_SECONDS = max(10, args.interval)
@@ -596,10 +701,16 @@ def main():
         NTFY_TOPIC = args.ntfy
     if args.any_seat_type:
         ALLOWED_SEAT_TYPES = ("Standard", "Wheelchair", "Companion", "DBox")
+    if args.heartbeat is not None:
+        HEARTBEAT_SECONDS = max(0, args.heartbeat) * 60
+    if args.heartbeat_topic:
+        HEARTBEAT_TOPIC = args.heartbeat_topic
 
     target_date = TARGET_DATE or coming_saturday()
 
     try:
+        if args.status:
+            return do_status()
         if args.list:
             return do_list(target_date)
         if args.seats:
