@@ -26,6 +26,12 @@ jobs:
             node --check "$f" || exit 1
           done
 
+      - name: A running job shows a bar, and the bar goes forwards
+        # Runs the real jobProgress() out of the shipped app.js against a small
+        # DOM. A string match can say the function exists; only this says the
+        # bar moves, and that no long operation is left printing a bare line.
+        run: node tests/test_job_progress.js
+
       - name: Check for builtins shadowed in annotations
         # Ruff and compileall both miss this: a method named `list` makes a
         # later `-> list[X]` annotation resolve to the method, which only fails

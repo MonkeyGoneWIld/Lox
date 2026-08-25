@@ -994,9 +994,11 @@
 
     try {
       const { job_id } = await api(`/api/album/${album.id}/check`, { method: 'POST', body: { trackers } });
-      target.replaceChildren(workingOn(`Asking ${trackers.join(' and ')}`, job_id));
+      const log = el('div', { class: 'joblog' });
+      target.replaceChildren(workingOn(`Asking ${trackers.join(' and ')}`, job_id), log);
       followJob(job_id, {
         onUpdate: (job) => {
+          jobProgress(log, job);
           if (job.results.length) state.albumCheck = job.results[job.results.length - 1];
         },
         onDone: (job) => {
@@ -1403,6 +1405,41 @@
     return job.status;
   }
 
+  // A running job's progress as a bar, with its line underneath.
+  //
+  // "working 3/25" is two numbers you have to read and divide. Everything long
+  // running here reports the same shape -- phase, current, total -- so they all
+  // get the same bar, the same one the downloads list and an upload already use.
+  //
+  // Rebuilt only when the box is not already a bar and a line: replacing the
+  // children on every poll restarts the CSS transition, which makes the bar
+  // twitch instead of advance.
+  function jobProgress(box, job, extra = '') {
+    if (!box) return;
+    box.hidden = false;
+    let bar = box.querySelector('.joblog-bar');
+    if (!bar) {
+      box.replaceChildren(
+        el('div', { class: 'bar joblog-bar' }, el('div', { class: 'bar-fill' })),
+        el('div', { class: 'joblog-line' }),
+      );
+      bar = box.querySelector('.joblog-bar');
+    }
+    const p = job.progress || {};
+    const pct = p.total ? Math.min(100, Math.round((p.current / p.total) * 100)) : null;
+    bar.hidden = pct === null;
+    if (pct !== null) bar.firstElementChild.style.width = `${pct}%`;
+    const line = box.querySelector('.joblog-line');
+    line.textContent = [jobLine(job), extra].filter(Boolean).join('\n');
+  }
+
+  // The end of a job: the bar goes, the sentence stays.
+  function jobFinished(box, text) {
+    if (!box) return;
+    box.hidden = false;
+    box.replaceChildren(el('div', { class: 'joblog-line' }, text));
+  }
+
   // ---------------------------------------------------------------- missing
 
   // One press. Expanding the sources and checking what comes out were two
@@ -1432,14 +1469,15 @@
         onUpdate: (job) => {
           state.candidates.push(...job.results);
           const events = job.events.filter((e) => e.event.startsWith('source')).slice(-4);
-          log.textContent = [jobLine(job), ...events.map((e) => `${e.source}: ${e.error || `${e.albums} albums`}`)].join('\n');
+          jobProgress(log, job,
+            events.map((e) => `${e.source}: ${e.error || `${e.albums} albums`}`).join('\n'));
         },
         onDone: (job) => {
           if (job.error) {
             $('#missing-scan').disabled = false;
             return toast(job.error, 'bad');
           }
-          log.textContent = `${state.candidates.length} album(s) after the Deezer-side filters.`;
+          jobFinished(log, `${state.candidates.length} album(s) after the Deezer-side filters.`);
           // Seeded once, here. Deriving it inside the render meant unticking
           // "select all" emptied the set and the next render immediately
           // refilled it, so the control appeared to do nothing.
@@ -1600,16 +1638,16 @@
       await new Promise((resolve) => {
         followJob(job_id, {
           onUpdate: (job) => {
-            log.textContent = jobLine(job);
+            jobProgress(log, job);
             job.results.forEach(applyScanResult);
           },
           onDone: (job) => {
             $('#missing-check').disabled = false;
             refreshStatus();
             const stopped = job.events.find((e) => e.event === 'budget_exhausted');
-            log.textContent = stopped
+            jobFinished(log, stopped
               ? `Stopped early to protect the budget: ${stopped.checked} checked, ${stopped.remaining ?? '?'} left. Run again when the window rolls over.`
-              : `Done. ${job.result_count} album(s) checked.`;
+              : `Done. ${job.result_count} album(s) checked.`);
             if (job.error) toast(job.error, 'bad');
             resolve();
           },
@@ -1983,16 +2021,16 @@
       log.after(jobCancel(job_id, 'Stop checking'));
       followJob(job_id, {
         onUpdate: (job) => {
-          log.textContent = jobLine(job);
+          jobProgress(log, job);
           job.results.forEach(applyRequestResult);
         },
         onDone: (job) => {
           done();
           refreshStatus();
           const stopped = job.events.find((e) => e.event === 'budget_exhausted');
-          log.textContent = stopped
+          jobFinished(log, stopped
             ? `Stopped early to protect the budget after ${stopped.checked} request(s).`
-            : `Done. ${job.result_count} request(s) checked.`;
+            : `Done. ${job.result_count} request(s) checked.`);
         },
       });
     } catch (e) {
@@ -2405,10 +2443,15 @@ They will not be listed again, even if a later scan finds them.`)) {
     const body = $('#found-body');
     try {
       const { job_id } = await api('/api/missing/check', { method: 'POST', body: { candidates, trackers } });
-      body.before(jobCancel(job_id, 'Stop re-checking'));
+      const log = $('#found-log');
+      log.hidden = false;
+      log.textContent = 'Starting…';
+      log.after(jobCancel(job_id, 'Stop re-checking'));
       followJob(job_id, {
+        onUpdate: (job) => jobProgress(log, job),
         onDone: (job) => {
           refreshStatus();
+          jobFinished(log, job.error || `Re-checked ${job.result_count} release(s).`);
           toast(job.error || `Re-checked ${job.result_count} release(s)`, job.error ? 'bad' : 'ok');
           loadFound();
         },

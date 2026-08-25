@@ -1216,3 +1216,9 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 
 /* Checking sits with the results it acts on, not above an empty list. */
 .requests-actions { margin-bottom: 12px; }
+
+/* A job's progress inside its log box: the bar first, its line under it.
+   Every long-running thing here reports phase/current/total, so they all show
+   the same bar rather than each spelling out "working 3/25". */
+.joblog-bar { margin: 2px 0 8px; }
+.joblog-line { white-space: pre-wrap; }
