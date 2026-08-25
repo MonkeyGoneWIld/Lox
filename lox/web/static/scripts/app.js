@@ -1846,14 +1846,21 @@
       ]) {
         for (const value of chosen(id)) params.append(key, value);
       }
-      const { requests, calls, complete } = await api(`/api/requests/list?${params}`);
+      const { requests, calls, complete, filtered } = await api(`/api/requests/list?${params}`);
       state.requestRows = requests;
       state.selectedRequests = new Set(requests.map((r) => r.id));
       renderRequestRows();
       // Say what was actually spent and whether the tracker ran dry, so a short
       // list is not mistaken for a failed fetch.
+      //
+      // `filtered` is the part that needs saying out loud: OPS returns requests
+      // that are already filled however politely it is asked not to, and on a
+      // real fetch that was three of every four rows. Without this line, asking
+      // for four pages and getting twenty-seven rows reads as a broken fetch
+      // rather than as the tracker having sent mostly closed requests.
       const spent = `${requests.length} request(s) from ${calls} call${calls === 1 ? '' : 's'}`;
-      toast(complete ? spent : `${spent} — that is everything matching`, 'ok');
+      const dropped = filtered ? ` — ${filtered} already filled, dropped` : '';
+      toast(complete ? spent + dropped : `${spent}${dropped} — that is everything matching`, 'ok');
       refreshStatus();
     } catch (e) {
       container.replaceChildren(empty(e.message));

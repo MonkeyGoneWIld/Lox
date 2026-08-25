@@ -67,6 +67,31 @@ class FakeGateway:
         return f"https://example.invalid/requests.php?action=view&id={request_id}"
 
 
+class IgnoresShowFilled(FakeGateway):
+    """OPS, as it actually behaved.
+
+    Asked for unfilled requests it answers with filled ones anyway. Measured on
+    a real four-page fetch: 73 of 100 rows came back carrying isFilled, a
+    fillerName and a torrentId. Every third row here is unfilled, so a page of
+    25 yields 8 usable ones and the parameter is provably being ignored.
+    """
+
+    async def call_action(self, tracker: str, action: str, params: dict) -> dict:
+        data = await FakeGateway.call_action(self, tracker, action, params)
+        for i, row in enumerate(data["results"]):
+            if i % 3:
+                row.update(
+                    {
+                        "isFilled": True,
+                        "fillerId": 38096,
+                        "fillerName": "someone",
+                        "torrentId": 3730745,
+                        "timeFilled": "2026-08-20 11:14:26",
+                    }
+                )
+        return data
+
+
 async def main() -> int:
     """Run the checks."""
     from lox.checker.deezer_requests import DeezerRequestChecker
@@ -116,6 +141,49 @@ async def main() -> int:
     gw = FakeGateway(total=25)
     await checker_for(gw).collect_requests("RED", show_filled=True, limit=25)
     check("filled requests can be asked for", gw.calls[0].get("show_filled") == "true")
+
+    # --- a tracker that ignores show_filled -------------------------------
+    #
+    # OPS does. Asking is not the same as being obeyed, and the answer carries
+    # isFilled on every row, so the answer is what gets believed. Without this,
+    # three quarters of a paid-for fetch was Deezer lookups against requests
+    # that had already been closed.
+    gw = IgnoresShowFilled(total=500)
+    found = await checker_for(gw).collect_requests("OPS", limit=100)
+    check("a tracker ignoring show_filled is still asked",
+          gw.calls[0].get("show_filled") == "false", str(gw.calls[0].get("show_filled")))
+    kept = found["requests"]
+    check("but the filled rows it sends back are dropped",
+          len(kept) == 36, f"{len(kept)} kept")
+    check("and how many were dropped is reported",
+          found["filtered"] == 64, str(found.get("filtered")))
+    check("the fetch still costs only the pages asked for",
+          found["calls"] == 4, f"{found['calls']} calls")
+    check("a short list after filtering is not called complete",
+          found["complete"] is False, str(found["complete"]))
+
+    # A page that is entirely filled must not look like the end of the results.
+    class AllFilledFirstPage(IgnoresShowFilled):
+        async def call_action(self, tracker, action, params):
+            data = await IgnoresShowFilled.call_action(self, tracker, action, params)
+            if int(params.get("page", 1)) == 1:
+                for row in data["results"]:
+                    row["isFilled"] = True
+            return data
+
+    gw = AllFilledFirstPage(total=500)
+    found = await checker_for(gw).collect_requests("OPS", limit=75)
+    check("a page of nothing but filled requests does not end the fetch",
+          found["calls"] == 3, f"{found['calls']} calls")
+    check("and the later pages still contribute",
+          len(found["requests"]) > 0, str(len(found["requests"])))
+
+    # Asking for filled ones keeps them.
+    gw = IgnoresShowFilled(total=100)
+    found = await checker_for(gw).collect_requests("OPS", show_filled=True, limit=25)
+    check("asking for filled requests keeps them",
+          len(found["requests"]) == 25 and found["filtered"] == 0,
+          f"{len(found['requests'])} kept, {found['filtered']} dropped")
 
     # --- the two trackers do not speak the same language ------------------
     # Transcribed from the live search forms. Getting these wrong does not

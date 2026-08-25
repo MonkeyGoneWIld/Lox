@@ -18,7 +18,7 @@ import msgspec
 from lox import cfg, debug
 from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import MIN_TOTAL_SCORE, find_best_deezer_match
-from lox.checker.request_filters import build_params
+from lox.checker.request_filters import PAGE_SIZE, build_params
 from lox.checker.store import CheckerStore
 from lox.checker.trackcount import TrackCountVerifier, track_count_from_description
 from lox.deezer.gw import DeezerGW, DeezerGWError
@@ -110,7 +110,7 @@ class DeezerRequestChecker:
         search: str = "",
         page: int = 1,
         **filters: Any,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[list[dict[str, Any]], int, int]:
         """List one page of requests on a tracker.
 
         Args:
@@ -122,8 +122,9 @@ class DeezerRequestChecker:
                 what each tracker calls them and which IDs it uses.
 
         Returns:
-            The page's request summaries, and how many pages the tracker says
-            there are (0 when it does not say).
+            The page's request summaries, how many pages the tracker says there
+            are (0 when it does not say), and how many rows were dropped as
+            already filled.
 
         Raises:
             TrackerBudgetExceeded: If the tracker's budget is spent.
@@ -136,8 +137,23 @@ class DeezerRequestChecker:
         except (TypeError, ValueError):
             pages = 0
 
+        # OPS answers show_filled=false with filled requests anyway. Measured on
+        # a real fetch: 73 of 100 rows across four pages came back carrying
+        # isFilled, a filler and a torrent id, which is a request nobody can
+        # fill again -- so three quarters of a paid-for page was spent looking
+        # up Deezer albums for requests that were already closed.
+        #
+        # The row says so itself, so that is what gets believed. Asking the
+        # tracker nicely and then trusting the answer is what produced this;
+        # every row is checked here whatever the parameter did.
+        want_filled = bool(filters.get("show_filled"))
+        dropped = 0
+
         summaries = []
         for row in rows:
+            if not want_filled and self._is_filled(row):
+                dropped += 1
+                continue
             request_id = self._id_of(row)
             if request_id is None:
                 continue
@@ -151,7 +167,29 @@ class DeezerRequestChecker:
                     "url": self.gateway.request_url(tracker, int(request_id)),
                 }
             )
-        return summaries, pages
+        if dropped:
+            debug.log(
+                "requests %s page %s: %s rows, %s already filled and dropped, %s usable",
+                tracker, page, len(rows), dropped, len(summaries), level=20,
+            )
+        else:
+            debug.log(
+                "requests %s page %s: %s rows, none filled", tracker, page, len(rows), level=10
+            )
+        return summaries, pages, dropped
+
+    @staticmethod
+    def _is_filled(row: dict) -> bool:
+        """Whether the tracker says this request has already been filled.
+
+        Read from several fields because one alone is not reliable across the
+        two sites: a filled request carries ``isFilled``, but it also names its
+        filler and the torrent that filled it, and a row that has those has
+        been filled whatever the flag says.
+        """
+        if row.get("isFilled") in (True, 1, "1", "true"):
+            return True
+        return bool(row.get("torrentId") or row.get("fillerId") or row.get("timeFilled"))
 
     @staticmethod
     def _id_of(row: dict) -> str | None:
@@ -192,8 +230,9 @@ class DeezerRequestChecker:
             **filters: Selections by label, translated per tracker.
 
         Returns:
-            ``requests``, the number of ``calls`` spent, and ``complete``, which
-            is False when the tracker ran out of results before the limit.
+            ``requests``, the number of ``calls`` spent, ``filtered`` -- how many
+            already-filled rows were dropped -- and ``complete``, which is False
+            when the tracker ran out of results before the limit.
 
         Raises:
             TrackerBudgetExceeded: If the budget runs out mid-collection.
@@ -201,12 +240,26 @@ class DeezerRequestChecker:
         gathered: list[dict[str, Any]] = []
         seen: set[str] = set()
         calls = 0
+        filtered = 0
         page = 1
         total_pages = 0
 
-        while len(gathered) < limit:
-            rows, pages = await self.search_requests(tracker, search, page, **filters)
+        # The limit is a page count in disguise: the UI asks for pages, because
+        # a page is a tracker call and calls are the thing worth counting. So
+        # the ceiling here is calls, not rows.
+        #
+        # Looping until `limit` rows were gathered was fine while every row
+        # counted. Now that the filled ones are dropped -- three quarters of
+        # them on OPS -- the same loop would have kept paying for pages until it
+        # scraped together a hundred, turning a four-call fetch into fifteen and
+        # spending a budget nobody agreed to. Ask for four pages, pay for four
+        # pages, and be told what they contained.
+        max_calls = max(1, -(-limit // PAGE_SIZE))
+
+        while len(gathered) < limit and calls < max_calls:
+            rows, pages, dropped = await self.search_requests(tracker, search, page, **filters)
             calls += 1
+            filtered += dropped
             total_pages = pages or total_pages
             # A page that repeats what we already have means the tracker is
             # ignoring the page parameter; stop rather than loop forever.
@@ -214,15 +267,26 @@ class DeezerRequestChecker:
             seen.update(row["id"] for row in fresh)
             gathered.extend(fresh)
 
-            if not rows or not fresh:
+            # `rows` is what survived the filter, so a page can legitimately be
+            # empty while the tracker still has plenty left. Stopping on that
+            # would end the fetch on the first page that happened to be all
+            # filled. Only an empty page from the tracker itself means the end.
+            if not rows and not dropped:
+                break
+            if not fresh and not dropped:
                 break
             if total_pages and page >= total_pages:
                 break
             page += 1
 
+        debug.log(
+            "requests %s: %s call(s), %s usable, %s already filled",
+            tracker, calls, len(gathered), filtered, level=20,
+        )
         return {
             "requests": gathered[:limit],
             "calls": calls,
+            "filtered": filtered,
             "complete": len(gathered) >= limit,
             "pages": total_pages,
         }
