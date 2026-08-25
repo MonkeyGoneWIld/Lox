@@ -1763,20 +1763,21 @@
       // Pages, not a row count. One page is one call against the budget, so
       // pages are the unit the cost is actually measured in -- picking "200"
       // and being told it costs 8 calls was arithmetic the page could do.
+      // Typed, not picked from a list. The list stopped at 20 for no reason
+      // anyone could act on -- a tracker with 872 pages of open requests does
+      // not care that the dropdown ran out, and the only way to fetch more was
+      // to fetch 20 again. The cost line underneath is what keeps this honest.
       filterField(
         'requests-limit',
         'Pages to fetch',
-        el(
-          'select',
-          { id: 'requests-limit', onchange: requestsCost },
-          ...[1, 2, 3, 4, 5, 8, 10, 20].map((pages) =>
-            el(
-              'option',
-              { value: String(pages), selected: pages === 4 },
-              `${pages} page${pages === 1 ? '' : 's'} — up to ${pages * (spec.page_size || 25)} requests`,
-            ),
-          ),
-        ),
+        el('input', {
+          id: 'requests-limit',
+          type: 'number',
+          min: '1',
+          step: '1',
+          value: '4',
+          oninput: requestsCost,
+        }),
         `${state.requestsTracker} serves ${spec.page_size} per page, and each page is one call.`,
       ),
     );
@@ -1809,7 +1810,16 @@
     const pages = Number(limitEl.value) || 1;
     const budget = state.trackers.find((t) => t.code === state.requestsTracker);
     const note = `Costs up to ${pages} call${pages === 1 ? '' : 's'}`;
-    $('#requests-cost').textContent = budget ? `${note} of ${budget.remaining} left on ${budget.code}.` : `${note}.`;
+    const cost = $('#requests-cost');
+    cost.textContent = budget ? `${note} of ${budget.remaining} left on ${budget.code}.` : `${note}.`;
+    // With the page count typed rather than picked, asking for more than the
+    // budget holds is now possible, so it says so rather than letting the fetch
+    // stop halfway through and look broken.
+    const over = budget && pages > budget.remaining;
+    cost.classList.toggle('cost-over', !!over);
+    if (over) {
+      cost.textContent = `${note}, but only ${budget.remaining} left on ${budget.code} — it will stop when they run out.`;
+    }
   }
 
   const ticked = (id) => !!$(`#${id}`)?.checked;
@@ -1871,8 +1881,20 @@
       container.replaceChildren(empty('No open requests found.'));
       return;
     }
-    $('#requests-selected-count').textContent = `${state.selectedRequests.size} selected`;
     container.replaceChildren(
+      // The action belongs with the thing it acts on. This used to sit above
+      // the paste box, pressable with an empty list behind it.
+      el(
+        'div',
+        { class: 'row requests-actions' },
+        el('button', {
+          class: 'primary requests-check-btn',
+          disabled: state.selectedRequests.size === 0,
+          onclick: () => requestsCheck([...state.selectedRequests]),
+        }, `Check ${state.selectedRequests.size} selected`),
+        el('span', { class: 'hint' },
+           `${state.selectedRequests.size} of ${state.requestRows.length} selected — one call each.`),
+      ),
       el(
         'table',
         { class: 'table' },
@@ -1929,25 +1951,29 @@
     );
   }
 
-  async function requestsCheck() {
-    const pasted = $('#requests-ids').value
-      .split('\n')
-      .map((line) => (line.match(/(\d+)/) || [])[1])
-      .filter(Boolean);
-    const ids = pasted.length ? pasted : [...state.selectedRequests];
-    if (!ids.length) return toast('Select or paste at least one request', 'bad');
+  // Check a specific set of request ids.
+  //
+  // It used to read the paste box and the selection itself, from a button that
+  // sat above an empty list and was pressable with nothing to press it on. The
+  // caller says what to check now, and each caller only exists where there is
+  // something to check.
+  async function requestsCheck(ids, { placeholders = false } = {}) {
+    if (!ids.length) return toast('Nothing to check', 'bad');
 
     const log = $('#requests-log');
     log.hidden = false;
     log.textContent = 'Starting…';
-    $('#requests-check').disabled = true;
+    $$('.requests-check-btn').forEach((b) => { b.disabled = true; });
 
-    if (pasted.length) {
-      state.requestRows = pasted.map((id) => (
+    // Pasted or uploaded ids have no rows yet, so stand some up to fill in.
+    if (placeholders) {
+      state.requestRows = ids.map((id) => (
         { id, artist: '', title: `Request ${id}`, year: '', bounty: '', age: '', filled: false, url: '#' }));
-      state.selectedRequests = new Set(pasted);
+      state.selectedRequests = new Set(ids);
       renderRequestRows();
     }
+
+    const done = () => $$('.requests-check-btn').forEach((b) => { b.disabled = false; });
 
     try {
       const { job_id } = await api('/api/requests/check', {
@@ -1961,7 +1987,7 @@
           job.results.forEach(applyRequestResult);
         },
         onDone: (job) => {
-          $('#requests-check').disabled = false;
+          done();
           refreshStatus();
           const stopped = job.events.find((e) => e.event === 'budget_exhausted');
           log.textContent = stopped
@@ -1970,10 +1996,16 @@
         },
       });
     } catch (e) {
-      $('#requests-check').disabled = false;
+      done();
       toast(e.message, 'bad');
     }
   }
+
+  // Ids out of a pasted blob or an uploaded file.
+  const idsFrom = (text) => String(text || '')
+    .split(/\r?\n/)
+    .map((line) => (line.match(/(\d+)/) || [])[1])
+    .filter(Boolean);
 
   function applyRequestResult(match) {
     const cell = $(`#requests-results tr[data-request="${match.request_id}"] .result`);
@@ -2275,7 +2307,8 @@
         { class: 'table' },
         el('thead', {}, el('tr', {},
           el('th', {}, selectAllBox(state.found.map((f) => f.id), state.selectedFound, renderFound)),
-          el('th', {}, 'Release'), el('th', {}, 'Where'), el('th', {}, 'From'), el('th', {}, 'When'))),
+          el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'Why'),
+          el('th', {}, 'From'), el('th', {}, 'Last checked'))),
         el('tbody', {}, ...state.found.map((f) =>
           el('tr', {},
             el('td', {}, el('input', {
@@ -2287,9 +2320,14 @@
               href: '#',
               onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
             }, `${f.artist || ''} — ${f.title || ''}`)),
-            el('td', {}, (f.missing_from || []).length
-              ? el('span', { class: 'tag ok' }, `not on ${f.missing_from.join(', ')}`)
-              : el('span', { class: 'tag warn' }, `fills a ${f.tracker || ''} request`)),
+            // One tag per tracker, saying what the last check found there.
+            // A single "not on RED, OPS" line could not say that a re-check had
+            // since found it on one of them, which is how a release that is on
+            // both sat here looking like it was on neither.
+            el('td', { class: 'found-trackers' }, ...trackerTags(f)),
+            el('td', {}, f.kind === 'request'
+              ? el('span', { class: 'tag warn' }, `fills a ${f.tracker || ''} request`)
+              : el('span', { class: 'tag dim' }, 'scan')),
             el('td', {}, f.kind === 'request'
               ? el('a', { href: f.request_url, target: '_blank', rel: 'noopener' }, 'request')
               : 'scan'),
@@ -2297,6 +2335,20 @@
           ))),
       ),
     );
+  }
+
+  // What the last check found, per tracker. Green means there is something to
+  // upload there; dim means that one already has it.
+  function trackerTags(row) {
+    const missing = row.missing_from || [];
+    const found = row.found_on || [];
+    if (!missing.length && !found.length) {
+      return [el('span', { class: 'tag dim' }, 'not checked on any tracker')];
+    }
+    return [
+      ...missing.map((t) => el('span', { class: 'tag ok' }, `${t} missing`)),
+      ...found.map((t) => el('span', { class: 'tag dim' }, `${t} has it`)),
+    ];
   }
 
   const foundSelection = () => state.found.filter((f) => state.selectedFound.has(f.id));
@@ -4077,18 +4129,23 @@ They will not be listed again, even if a later scan finds them.`)) {
     // subset makes sense.
     $('#missing-check').addEventListener('click', () => missingCheck());
     $('#requests-fetch').addEventListener('click', requestsFetch);
-    $('#requests-check').addEventListener('click', requestsCheck);
+    $('#requests-check-pasted').addEventListener('click', () => {
+      const ids = idsFrom($('#requests-ids').value);
+      if (!ids.length) return toast('Paste at least one request ID or URL', 'bad');
+      requestsCheck(ids, { placeholders: true });
+    });
+    // Picking a file starts the check. Loading the ids into a box and waiting
+    // for a second press was a step with nothing in it -- you chose the file
+    // because you wanted it checked.
     $('#requests-file').addEventListener('change', async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      const text = await file.text();
-      const ids = text
-        .split(/\r?\n/)
-        .map((line) => (line.match(/(\d+)/) || [])[1])
-        .filter(Boolean);
+      const ids = idsFrom(await file.text());
       $('#requests-ids').value = ids.join('\n');
       e.target.value = '';
-      toast(`${ids.length} request ID(s) loaded from ${file.name}`, ids.length ? 'ok' : 'bad');
+      if (!ids.length) return toast(`No request IDs found in ${file.name}`, 'bad');
+      toast(`Checking ${ids.length} request(s) from ${file.name}`, 'ok');
+      requestsCheck(ids, { placeholders: true });
     });
     $('#watchlist-form').addEventListener('submit', saveWatchlist);
     $('#downloads-clear').addEventListener('click', async () => {

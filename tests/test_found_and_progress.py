@@ -107,6 +107,42 @@ async def main() -> int:
     check("but a folder that names the release does stamp it",
           store.get("albums", "555").get("uploaded_at"), str(store.get("albums", "555")))
 
+    # --- a check writes its answer where Found will read it ---------------
+    #
+    # A request row is keyed by tracker and request id; an album check writes
+    # under the Deezer album id. Nothing joined the two, so checking a release
+    # from its own page, finding it on every tracker, and returning to Found
+    # still showed it as worth uploading -- the answer had been recorded
+    # somewhere that row does not read.
+    store.put("requests", "OPS:80001", {
+        "status": "fillable", "tracker": "OPS", "deezer_id": "999",
+        "album": "Eden Sauvage", "artist": "Los Eclipses",
+        "request_url": "https://example.invalid/requests.php?action=view&id=80001",
+    }, flush=True)
+
+    class Verdict:
+        def __init__(self, found, missing):
+            self.found_on = found
+            self.missing_from = missing
+
+    scanner = runner.app["scanner"]
+    scanner._mirror_to_requests("999", Verdict(["RED"], ["OPS"]))  # noqa: SLF001
+    row = store.get("requests", "OPS:80001")
+    check("a partial find is recorded on the request",
+          row.get("found_on") == ["RED"] and row.get("missing_from") == ["OPS"], str(row.get("found_on")))
+    check("and it is still worth uploading somewhere",
+          row.get("already_on_tracker") is False, str(row.get("already_on_tracker")))
+
+    scanner._mirror_to_requests("999", Verdict(["RED", "OPS"], []))  # noqa: SLF001
+    row = store.get("requests", "OPS:80001")
+    check("found on every tracker closes it",
+          row.get("already_on_tracker") is True, str(row.get("already_on_tracker")))
+    check("with both trackers named", row.get("found_on") == ["RED", "OPS"], str(row.get("found_on")))
+
+    scanner._mirror_to_requests("no-such-album", Verdict([], ["RED"]))  # noqa: SLF001
+    check("an album nothing requests changes nothing",
+          store.get("requests", "OPS:80001").get("already_on_tracker") is True, "")
+
     # aiohttp, not urllib: a blocking request from inside the loop the server
     # runs on waits for a reply that cannot be produced until it yields.
     # unsafe=True because aiohttp's cookie jar discards cookies set by an
@@ -127,6 +163,22 @@ async def main() -> int:
     try:
         listed = {row["id"] for row in (await call("/api/found"))["found"]}
         check("an uploaded release is off the list", "222" not in listed, str(sorted(listed)))
+        check("a request found on every tracker is off it too",
+              "999" not in listed, str(sorted(listed)))
+
+        store.put("requests", "OPS:80002", {
+            "status": "fillable", "tracker": "OPS", "deezer_id": "998",
+            "album": "Still Missing", "artist": "Someone",
+            "found_on": ["RED"], "missing_from": ["OPS"], "already_on_tracker": False,
+        }, flush=True)
+        rows = (await call("/api/found"))["found"]
+        still = next((r for r in rows if r["album_id"] == "998"), None)
+        check("one still missing somewhere stays on the list", still is not None, str(sorted(listed)))
+        check("and says which tracker has it",
+              still and still["found_on"] == ["RED"], str(still and still.get("found_on")))
+        check("and which one does not",
+              still and still["missing_from"] == ["OPS"], str(still and still.get("missing_from")))
+        check("and when it was last checked", bool(still and still.get("checked_at")), "")
         check("the others are still on it", {"111", "333", "444"} <= listed, str(sorted(listed)))
 
         await call("/api/found/dismiss", {"ids": ["333"], "blacklist": False})

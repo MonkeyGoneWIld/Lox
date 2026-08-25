@@ -482,6 +482,13 @@ class MissingScanner:
                     "errors": result.errors,
                 },
             )
+            # A request that this same release would fill lives in its own
+            # collection, keyed by tracker and request id rather than by album.
+            # Nothing joined the two, so checking a release from its own page,
+            # finding it on every tracker, and coming back to Found still showed
+            # it as worth uploading -- the answer had been written somewhere the
+            # Found page does not read for that row.
+            self._mirror_to_requests(candidate.album_id, result)
             results.append(result)
             emit("result", result.as_dict())
 
@@ -491,6 +498,33 @@ class MissingScanner:
 
         self.store.flush("albums")
         return results
+
+    def _mirror_to_requests(self, album_id: str, result: Any) -> None:
+        """Write an album's tracker verdict onto any request it would fill.
+
+        Args:
+            album_id: The Deezer album that was checked.
+            result: The check result for it.
+        """
+        if not album_id:
+            return
+        for key, entry in list((self.store.load("requests") or {}).items()):
+            if str(entry.get("deezer_id") or "") != str(album_id):
+                continue
+            self.store.put(
+                "requests",
+                key,
+                {
+                    **entry,
+                    "found_on": list(result.found_on),
+                    "missing_from": list(result.missing_from),
+                    # On every tracker that was asked, and missing from none:
+                    # there is nothing left to upload.
+                    "already_on_tracker": bool(result.found_on) and not result.missing_from,
+                },
+                flush=False,
+            )
+        self.store.flush("requests")
 
     async def _check_one(self, candidate: Candidate, code: str) -> tuple[bool, int | None, int, int]:
         """Search one tracker for one album.

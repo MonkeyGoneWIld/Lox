@@ -138,15 +138,23 @@
             <span class="hint" id="requests-cost"></span>
           </div>
           <p class="hint">Checking each request costs one more call on top of the fetch.</p>
-          <textarea id="requests-ids" rows="3" placeholder="Or paste request IDs / URLs, one per line"></textarea>
-          <div class="row">
-            <label class="check filebtn">
-              <input type="file" id="requests-file" accept=".txt,.csv,.log,text/plain" hidden>
-              Upload a list&hellip;
-            </label>
-            <button class="primary" id="requests-check">Check selected</button>
-            <span class="hint" id="requests-selected-count"></span>
-          </div>
+
+          <!-- Checking is an action on a list, so it lives with the list rather
+               than above an empty box. The button that starts it sits under the
+               results; this half is only about getting requests into the list in
+               the first place. -->
+          <details class="paste-ids">
+            <summary>Check specific requests instead</summary>
+            <textarea id="requests-ids" rows="3" placeholder="Request IDs or URLs, one per line"></textarea>
+            <div class="row">
+              <button class="primary" id="requests-check-pasted">Check these</button>
+              <label class="check filebtn">
+                <input type="file" id="requests-file" accept=".txt,.csv,.log,text/plain" hidden>
+                Check a list from a file&hellip;
+              </label>
+              <span class="hint">A file starts checking as soon as you pick it.</span>
+            </div>
+          </details>
           <div class="joblog" id="requests-log" hidden></div>
         </div>
         <div id="requests-results"></div>

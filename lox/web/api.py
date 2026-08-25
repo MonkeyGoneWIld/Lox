@@ -751,6 +751,10 @@ async def api_found(request: web.Request) -> web.Response:
                 "artist": entry.get("artist") or entry.get("deezer_artist") or "",
                 "tracker": entry.get("tracker") or "",
                 "bounty": entry.get("bounty") or "",
+                # Which trackers have it and which do not, so the row says what
+                # the last check actually found rather than only that it exists.
+                "found_on": entry.get("found_on") or [],
+                "missing_from": entry.get("missing_from") or [],
                 "confidence": entry.get("confidence"),
                 "request_url": entry.get("request_url") or "",
                 "checked_at": entry.get("checked_at"),
@@ -1145,7 +1149,10 @@ async def api_requests_list(request: web.Request) -> web.Response:
         return error("tracker is required")
 
     try:
-        limit = max(1, min(500, int(request.query.get("limit", 25))))
+        # No small ceiling here: the number of pages is the user's call and the
+        # tracker budget is what actually limits it. 500 was exactly 20 pages,
+        # which silently capped anyone who asked for more.
+        limit = max(1, min(25_000, int(request.query.get("limit", 25))))
     except ValueError:
         return error("limit must be a number")
 

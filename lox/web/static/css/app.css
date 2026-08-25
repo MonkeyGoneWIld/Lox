@@ -1199,3 +1199,20 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .accounts-row input { flex: 0 1 260px; min-width: 0; }
 .chip-drop { background: none; border: 0; padding: 0 0 0 8px; color: var(--text-dim); cursor: pointer; }
 .chip-drop:hover { color: var(--bad); }
+
+/* Asking for more pages than the budget holds. Not an error -- the fetch still
+   runs and stops when they run out -- but worth seeing before you press it. */
+.cost-over { color: var(--warn); }
+
+/* One tag per tracker on a Found row. They wrap rather than stretching the
+   column, so three trackers do not squeeze the release title. */
+.found-trackers { display: flex; flex-wrap: wrap; gap: 5px; }
+
+/* Getting requests into the list, folded away until wanted. Fetching is the
+   normal path; pasting ids or uploading a file is the exception. */
+.paste-ids { margin-top: 12px; }
+.paste-ids > summary { cursor: pointer; color: var(--text-dim); font-size: 12.5px; margin-bottom: 10px; }
+.paste-ids .row { margin-bottom: 4px; }
+
+/* Checking sits with the results it acts on, not above an empty list. */
+.requests-actions { margin-bottom: 12px; }

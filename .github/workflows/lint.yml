@@ -18,6 +18,14 @@ jobs:
       - name: Run Ruff
         uses: astral-sh/ruff-action@v3
 
+      - name: Parse the browser JavaScript
+        # app.js ships as-is with no build step, so a syntax error in it is not
+        # caught by anything else here and takes the whole UI down at load.
+        run: |
+          for f in lox/web/static/scripts/*.js; do
+            node --check "$f" || exit 1
+          done
+
       - name: Check for builtins shadowed in annotations
         # Ruff and compileall both miss this: a method named `list` makes a
         # later `-> list[X]` annotation resolve to the method, which only fails
