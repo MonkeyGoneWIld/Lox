@@ -1,0 +1,212 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; }
+    a { color: #e8a33d; text-decoration: none; }
+    a:hover { color: #f2bd78; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 900px; display: flex; background: #17150f; color: #ece7dd; font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif; font-size: 13px; overflow: hidden;">
+
+  <!-- ── rail: the pipeline, in order, with what is waiting on you ── -->
+  <div style="width: 212px; flex: none; background: #100f0a; border-right: 1px solid #2e2a20; display: flex; flex-direction: column;">
+
+    <div style="padding: 18px 18px 14px; border-bottom: 1px solid #2e2a20;">
+      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 15px; font-weight: 600; letter-spacing: 0.14em; color: #ece7dd;">LOX</div>
+      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.08em; color: #7d7568; margin-top: 3px;">deezer &rarr; gazelle</div>
+    </div>
+
+    <div style="padding: 16px 0 6px;">
+      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6d6558; padding: 0 18px 8px;">FIND WORK</div>
+      <div style="display: flex; flex-direction: column;">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 7px 18px; color: #b8b0a2;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <span>Search</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 7px 18px; color: #b8b0a2;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          <span>Browse</span>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px; color: #b8b0a2;">
+          <span style="display: flex; align-items: center; gap: 10px;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v6M12 15v6M3 12h6M15 12h6"/><circle cx="12" cy="12" r="2.5"/></svg>
+            <span>Scan</span>
+          </span>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px; color: #b8b0a2;">
+          <span style="display: flex; align-items: center; gap: 10px;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 5h14v14H5z"/><path d="M9 10h6M9 14h4"/></svg>
+            <span>Requests</span>
+          </span>
+          <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568;">27</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="padding: 14px 0 6px; margin-top: 4px; border-top: 1px solid #23201a;">
+      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6d6558; padding: 0 18px 8px;">PIPELINE</div>
+
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px; color: #b8b0a2;">
+        <span style="display: flex; align-items: center; gap: 10px;">
+          <span style="width: 15px; text-align: center; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #6d6558;">1</span>
+          <span>Queue</span>
+        </span>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568;">7</span>
+      </div>
+
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px; color: #b8b0a2;">
+        <span style="display: flex; align-items: center; gap: 10px;">
+          <span style="width: 15px; text-align: center; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #6d6558;">2</span>
+          <span>Downloading</span>
+        </span>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568;">2</span>
+      </div>
+
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px 7px 15px; color: #17150f; background: #e8a33d; border-left: 3px solid #f4c778; font-weight: 600;">
+        <span style="display: flex; align-items: center; gap: 10px;">
+          <span style="width: 15px; text-align: center; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; opacity: 0.65;">3</span>
+          <span>Uploading</span>
+        </span>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px;">1</span>
+      </div>
+    </div>
+
+    <div style="flex-grow: 1;"></div>
+
+    <!-- ── budget: the number that decides what you can do next ── -->
+    <div style="padding: 14px 18px 16px; border-top: 1px solid #2e2a20; display: flex; flex-direction: column; gap: 11px;">
+      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6d6558;">TRACKER CALLS LEFT</div>
+      <div>
+        <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; margin-bottom: 5px;">
+          <span style="color: #b8b0a2;">RED</span><span style="color: #ece7dd;">114<span style="color: #6d6558;">/120</span></span>
+        </div>
+        <div style="height: 2px; background: #2e2a20;"><div style="width: 95%; height: 100%; background: #7fb069;"></div></div>
+      </div>
+      <div>
+        <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; margin-bottom: 5px;">
+          <span style="color: #b8b0a2;">OPS</span><span style="color: #ece7dd;">105<span style="color: #6d6558;">/120</span></span>
+        </div>
+        <div style="height: 2px; background: #2e2a20;"><div style="width: 87.5%; height: 100%; background: #7fb069;"></div></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 7px; margin-top: 2px;">
+        <span style="width: 6px; height: 6px; background: #7fb069;"></span>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568;">Deezer AE &middot; FLAC</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── work surface ── -->
+  <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column;">
+
+    <div style="padding: 20px 26px 0; display: flex; align-items: baseline; justify-content: space-between;">
+      <div style="display: flex; align-items: baseline; gap: 12px;">
+        <h1 style="margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em;">Uploading</h1>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #7d7568;">/data/media/deemix</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.09em; color: #17150f; background: #e8a33d; padding: 3px 7px;">DRY RUN</span>
+        <span style="font-size: 12px; color: #7d7568;">nothing is posted</span>
+      </div>
+    </div>
+
+    <!-- ── the run that needs you, first, because it is blocking ── -->
+    <div style="margin: 18px 26px 0; border: 1px solid #4a3d22; background: #1c1912;">
+      <div style="display: flex; align-items: center; gap: 11px; padding: 12px 16px; border-bottom: 1px solid #2e2a20;">
+        <span style="width: 7px; height: 7px; background: #e8a33d; flex: none;"></span>
+        <strong style="font-size: 13.5px; font-weight: 600;">Doja Cat &mdash; Scarlet (2023) [WEB FLAC]</strong>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.08em; color: #e8a33d; border: 1px solid #4a3d22; padding: 2px 6px;">NEEDS YOU</span>
+        <span style="flex-grow: 1;"></span>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #7d7568;">step 4 of 9 &middot; RED</span>
+        <button style="background: none; border: 1px solid #3a3428; color: #b8b0a2; font: inherit; font-size: 12px; padding: 5px 11px; cursor: pointer;">Cancel</button>
+      </div>
+
+      <div style="padding: 16px 16px 14px;">
+        <div style="font-size: 15px; font-weight: 600; margin-bottom: 5px;">Is this release lossy mastered?</div>
+        <div style="font-size: 12.5px; color: #9c948a; margin-bottom: 14px;">Four tracks show a shelf near 16&nbsp;kHz. Look before you answer &mdash; a wrong call here is a report on the tracker.</div>
+
+        <div style="display: flex; gap: 6px; margin-bottom: 14px;">
+          <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px;">
+            <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #7d7568;">01 Paint The Town Red.flac</div>
+            <div style="display: flex; gap: 2px; height: 92px;">
+              <div style="flex-grow: 1; background: linear-gradient(180deg, #2a1a3a 0%, #7a2a3a 22%, #c9502a 48%, #e08a2a 74%, #f0c04a 100%);"></div>
+              <div style="width: 46px; flex: none; background: linear-gradient(180deg, #241634 0%, #6a2438 30%, #b8452a 62%, #d97f28 100%);"></div>
+            </div>
+          </div>
+          <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px;">
+            <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #7d7568;">02 Demons.flac</div>
+            <div style="display: flex; gap: 2px; height: 92px;">
+              <div style="flex-grow: 1; background: linear-gradient(180deg, #241634 0%, #7a2a3a 26%, #c9502a 52%, #e08a2a 78%, #f0c04a 100%);"></div>
+              <div style="width: 46px; flex: none; background: linear-gradient(180deg, #241634 0%, #6a2438 34%, #b8452a 66%, #d97f28 100%);"></div>
+            </div>
+          </div>
+          <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px;">
+            <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #7d7568;">03 Wet Vagina.flac</div>
+            <div style="display: flex; gap: 2px; height: 92px;">
+              <div style="flex-grow: 1; background: linear-gradient(180deg, #2a1a3a 0%, #6a2438 24%, #c9502a 50%, #e08a2a 76%, #f0c04a 100%);"></div>
+              <div style="width: 46px; flex: none; background: linear-gradient(180deg, #241634 0%, #6a2438 30%, #b8452a 64%, #d97f28 100%);"></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button style="background: #e8a33d; border: 1px solid #e8a33d; color: #17150f; font: inherit; font-size: 13px; font-weight: 600; padding: 8px 18px; cursor: pointer;">No &mdash; it is fine</button>
+          <button style="background: none; border: 1px solid #3a3428; color: #ece7dd; font: inherit; font-size: 13px; padding: 8px 16px; cursor: pointer;">Yes, lossy</button>
+          <button style="background: none; border: 1px solid #3a3428; color: #b8b0a2; font: inherit; font-size: 13px; padding: 8px 16px; cursor: pointer;">Re-check</button>
+          <span style="flex-grow: 1;"></span>
+          <span style="font-size: 12px; color: #7d7568;">All 12 spectrals</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7d7568" stroke-width="1.8" stroke-linecap="round"><path d="M9 5l7 7-7 7"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── everything else, dense, no cards ── -->
+    <div style="margin: 22px 26px 0; flex-grow: 1; min-height: 0;">
+      <div style="display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 9px; border-bottom: 1px solid #2e2a20;">
+        <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6d6558;">READY TO UPLOAD &middot; 3</div>
+        <div style="display: flex; gap: 14px; font-size: 12px; color: #7d7568;">
+          <span>Upload to</span>
+          <span style="color: #ece7dd; border-bottom: 1px solid #e8a33d; padding-bottom: 2px;">RED</span>
+          <span>OPS</span>
+        </div>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 14px; padding: 13px 2px; border-bottom: 1px solid #23201a;">
+        <div style="flex-grow: 1; min-width: 0;">
+          <div style="font-size: 13.5px;">Mohamed Hamaki &mdash; Sammaouny</div>
+          <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568; margin-top: 2px;">2026 &middot; WEB FLAC &middot; 18 tracks &middot; 412 MB</div>
+        </div>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.07em; color: #7fb069; border: 1px solid #33402c; padding: 2px 6px;">FILLS A REQUEST</span>
+        <button style="background: none; border: 1px solid #3a3428; color: #ece7dd; font: inherit; font-size: 12.5px; padding: 6px 15px; cursor: pointer;">Upload</button>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 14px; padding: 13px 2px; border-bottom: 1px solid #23201a;">
+        <div style="flex-grow: 1; min-width: 0;">
+          <div style="font-size: 13.5px;">Biffy Clyro &mdash; Opposites (Deluxe)</div>
+          <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568; margin-top: 2px;">2013 &middot; WEB FLAC &middot; 20 tracks &middot; 631 MB</div>
+        </div>
+        <button style="background: none; border: 1px solid #3a3428; color: #ece7dd; font: inherit; font-size: 12.5px; padding: 6px 15px; cursor: pointer;">Upload</button>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 14px; padding: 13px 2px; border-bottom: 1px solid #23201a;">
+        <div style="flex-grow: 1; min-width: 0;">
+          <div style="font-size: 13.5px;">Taylor Swift &mdash; The Life of a Showgirl</div>
+          <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568; margin-top: 2px;">2025 &middot; WEB FLAC &middot; 12 tracks &middot; 288 MB</div>
+        </div>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.07em; color: #7d7568; border: 1px solid #3a3428; padding: 2px 6px;">ON RED ALREADY</span>
+        <button style="background: none; border: 1px solid #3a3428; color: #b8b0a2; font: inherit; font-size: 12.5px; padding: 6px 15px; cursor: pointer;">Upload</button>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

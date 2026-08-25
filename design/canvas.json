@@ -1,0 +1,46 @@
+{
+  "artboards": [
+    { "file": "Flow.dc.html", "x": 0, "y": 0, "w": 1180, "h": 700, "title": "The flow problem" },
+    { "file": "Main.dc.html", "x": 1300, "y": 0, "w": 1440, "h": 900, "title": "A — Console (leading)" },
+    { "file": "DirectionB.dc.html", "x": 0, "y": 1030, "w": 1000, "h": 620, "title": "B — Editorial" },
+    { "file": "DirectionC.dc.html", "x": 1120, "y": 1030, "w": 1000, "h": 620, "title": "C — Studio" }
+  ],
+  "annotations": [
+    {
+      "id": "brief",
+      "x": 0,
+      "y": -210,
+      "w": 520,
+      "text": "Two separate complaints, two separate fixes.\n\nUGLY / looks AI-built — the current palette is #a238ff violet on #16161d with system-ui and 10px radii. That is the house style of every AI-generated app. Three replacements below.\n\nMAKES NO SENSE — eight peer tabs for what is really four entry points and a three-stage pipeline. Fixed the same way in all three directions, because it is not a matter of taste."
+    },
+    {
+      "id": "pick-a",
+      "x": 1300,
+      "y": -210,
+      "w": 420,
+      "text": "A — CONSOLE (shown at full size)\n\nFor: it reads as a tool, not a product. Dense enough to see the whole queue at once, mono for anything you compare (budgets, track counts, paths), one amber that only ever means \"this needs you\".\n\nAgainst: unfriendly to a newcomer. Warm near-black is still dark — if the objection was dark itself, pick B."
+    },
+    {
+      "id": "pick-b",
+      "x": 0,
+      "y": 1700,
+      "w": 420,
+      "text": "B — EDITORIAL\n\nFor: paper-light, serif headings, the furthest thing from an AI app. Music libraries suit it; long release titles read better.\n\nAgainst: least dense of the three — more scrolling on a 200-row request table. Light UI at night is a real cost if you work late."
+    },
+    {
+      "id": "pick-c",
+      "x": 1120,
+      "y": 1700,
+      "w": 420,
+      "text": "C — STUDIO\n\nFor: closest to what you have, so the smallest leap. Slate-teal and citron instead of violet-on-charcoal kills the generic look without changing the shape of anything.\n\nAgainst: still recognisably a dark app with cards and rounded corners. If \"looks like every AI app\" is the main objection, this is the weakest answer to it."
+    },
+    {
+      "id": "next",
+      "x": 1760,
+      "y": -210,
+      "w": 420,
+      "text": "WHAT I NEED FROM YOU\n\n1. Which direction — A, B or C. I will take the winner to full fidelity across every screen.\n\n2. Static mockups, or working prototype? These are static. A prototype would let you click through the whole pipeline before I touch the real CSS.\n\nNothing here is in the app yet. The .dc.html sources are committed to the branch."
+    }
+  ],
+  "launch": { "view": "canvas" }
+}
