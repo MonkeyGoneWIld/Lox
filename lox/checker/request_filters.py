@@ -201,7 +201,15 @@ def build_params(
     Returns:
         Query parameters for the tracker's ``requests`` action.
     """
-    params: dict[str, Any] = {"page": page, "show_filled": "true" if show_filled else "false"}
+    # show_filled is a checkbox on both sites, and a checkbox sends nothing at
+    # all when it is unticked. Sending show_filled=false is not "no": PHP reads
+    # any non-empty string as true, so the string "false" asks for exactly what
+    # it appears to refuse. That single word is why an OPS fetch came back 73%
+    # already-filled -- the tracker was not ignoring the parameter, it was
+    # obeying it. Omitted for no, "on" for yes, which is what the form does.
+    params: dict[str, Any] = {"page": page}
+    if show_filled:
+        params["show_filled"] = "on"
     if search:
         params["search"] = search
 

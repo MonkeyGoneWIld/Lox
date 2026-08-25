@@ -30,12 +30,17 @@ class Candidate(msgspec.Struct):
     album_id: str
     title: str
     artist: str
-    year: str
-    tracks: int
-    record_type: str
-    cover: str | None
-    source: str
-    deezer_url: str
+    # Everything below is optional, because a re-check does not have it and does
+    # not need it: checking an album reads its id, title, artist and source, and
+    # fetches the rest from Deezer itself. Requiring them meant the Found page's
+    # "Re-check on trackers" -- which only ever knew those four -- was rejected
+    # with "Object missing required field `year`" and could not be used at all.
+    year: str = ""
+    tracks: int = 0
+    record_type: str = ""
+    cover: str | None = None
+    source: str = ""
+    deezer_url: str = ""
     availability: dict[str, Any] = msgspec.field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:

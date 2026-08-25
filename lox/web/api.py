@@ -684,12 +684,16 @@ async def api_album(request: web.Request) -> web.Response:
                     "artist": (t.get("artist") or {}).get("name"),
                     "artist_id": str((t.get("artist") or {}).get("id") or ""),
                     "duration": t.get("duration"),
-                    "number": t.get("track_position"),
-                    "disc": t.get("disk_number"),
+                    # An album's tracklist does not carry track_position -- that
+                    # field only exists on a track fetched on its own -- so this
+                    # was null for every row and the # column came out empty.
+                    # The list arrives in order, so its own index is the number.
+                    "number": t.get("track_position") or position,
+                    "disc": t.get("disk_number") or 1,
                     "explicit": t.get("explicit_lyrics"),
                     "featured": featured_by_track.get(str(t.get("id")), []),
                 }
-                for t in (meta.get("tracks") or {}).get("data", [])
+                for position, t in enumerate((meta.get("tracks") or {}).get("data", []), 1)
             ],
             "availability": availability,
             "availability_error": availability_error,
@@ -729,8 +733,12 @@ async def api_found(request: web.Request) -> web.Response:
         )
 
     for request_id, entry in (store.load("requests") or {}).items():
-        # A match the tracker already has is not something to upload.
-        if not entry.get("deezer_id") or entry.get("already_on_tracker"):
+        # A match the tracker already has is not something to upload, and
+        # neither is a request that was already filled -- which is how filled
+        # requests were reaching this page: the check ran the whole Deezer
+        # pipeline against them, and when the "is it on the tracker" search
+        # missed, they were filed here as worth uploading.
+        if not entry.get("deezer_id") or entry.get("already_on_tracker") or entry.get("filled"):
             continue
         if entry.get("uploaded_at") or str(entry.get("deezer_id")) in dismissed or request_id in dismissed:
             continue

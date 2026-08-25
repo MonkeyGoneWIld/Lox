@@ -1853,11 +1853,9 @@
       // Say what was actually spent and whether the tracker ran dry, so a short
       // list is not mistaken for a failed fetch.
       //
-      // `filtered` is the part that needs saying out loud: OPS returns requests
-      // that are already filled however politely it is asked not to, and on a
-      // real fetch that was three of every four rows. Without this line, asking
-      // for four pages and getting twenty-seven rows reads as a broken fetch
-      // rather than as the tracker having sent mostly closed requests.
+      // `filtered` counts rows dropped as already filled. It should be zero now
+      // that show_filled is sent the way the form sends it, so a non-zero count
+      // is worth seeing: it means a tracker returned closed requests anyway.
       const spent = `${requests.length} request(s) from ${calls} call${calls === 1 ? '' : 's'}`;
       const dropped = filtered ? ` — ${filtered} already filled, dropped` : '';
       toast(complete ? spent + dropped : `${spent}${dropped} — that is everything matching`, 'ok');
@@ -1886,7 +1884,8 @@
             state.selectedRequests,
             () => renderRequestRows(),
           )),
-          el('th', {}, 'Request'), el('th', {}, 'Year'), el('th', {}, 'Bounty'), el('th', {}, 'Result'),
+          el('th', {}, 'Request'), el('th', {}, 'Year'), el('th', {}, 'Bounty'),
+          el('th', {}, 'Age'), el('th', {}, 'Filled'), el('th', {}, 'Result'),
         )),
         el(
           'tbody',
@@ -1912,6 +1911,16 @@
               }, `${r.artist} — ${r.title}`)),
               el('td', {}, r.year || ''),
               el('td', {}, r.bounty || ''),
+              // How long it has sat open. A request from 2019 that nothing has
+              // filled is a different proposition from one raised yesterday,
+              // and the row already carried the timestamp to say so.
+              el('td', { class: 'req-age', title: r.created || '' }, r.age || ''),
+              // Filled or not, stated rather than inferred. A filled request
+              // cannot be filled again, so checking one is wasted budget.
+              el('td', {},
+                 r.filled
+                   ? el('span', { class: 'tag dim', title: r.filled_by ? `by ${r.filled_by}` : '' }, 'filled')
+                   : el('span', { class: 'tag ok' }, 'open')),
               el('td', { class: 'result' }, el('span', { class: 'tag dim' }, 'not checked')),
             ),
           ),
@@ -1934,7 +1943,8 @@
     $('#requests-check').disabled = true;
 
     if (pasted.length) {
-      state.requestRows = pasted.map((id) => ({ id, artist: '', title: `Request ${id}`, year: '', bounty: '', url: '#' }));
+      state.requestRows = pasted.map((id) => (
+        { id, artist: '', title: `Request ${id}`, year: '', bounty: '', age: '', filled: false, url: '#' }));
       state.selectedRequests = new Set(pasted);
       renderRequestRows();
     }
@@ -1968,6 +1978,19 @@
   function applyRequestResult(match) {
     const cell = $(`#requests-results tr[data-request="${match.request_id}"] .result`);
     if (!cell) return;
+    // A request that was already filled is not a failed check, it is a closed
+    // request -- so it says so, and the Filled column is corrected in place for
+    // a row that was fetched before somebody filled it.
+    if (match.status === 'filled') {
+      cell.replaceChildren(el('span', { class: 'tag warn', title: match.reason || '' }, match.reason || 'already filled'));
+      const row = cell.closest('tr');
+      const filledCell = row && row.children[5];
+      if (filledCell) {
+        filledCell.replaceChildren(
+          el('span', { class: 'tag dim', title: match.filled_by ? `by ${match.filled_by}` : '' }, 'filled'));
+      }
+      return;
+    }
     if (!match.fillable) {
       cell.replaceChildren(el('span', { class: 'tag dim', title: match.reason || '' }, match.reason || match.status));
       return;

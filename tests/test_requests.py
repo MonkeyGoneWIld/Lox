@@ -136,11 +136,16 @@ async def main() -> int:
     sent = gw.calls[0]
     check("search is sent", sent.get("search") == "prairie rose", str(sent.get("search")))
     check("tags are sent", sent.get("tags") == "country, folk", str(sent.get("tags")))
-    check("filled requests excluded by default", sent.get("show_filled") == "false", str(sent.get("show_filled")))
+    # Not "false". show_filled is a checkbox, and an unticked checkbox sends
+    # nothing; PHP reads the non-empty string "false" as true, so spelling the
+    # refusal out asked for the opposite of it.
+    check("filled requests are excluded by saying nothing",
+          "show_filled" not in sent, str(sent.get("show_filled")))
 
     gw = FakeGateway(total=25)
     await checker_for(gw).collect_requests("RED", show_filled=True, limit=25)
-    check("filled requests can be asked for", gw.calls[0].get("show_filled") == "true")
+    check("filled requests are asked for the way the form asks",
+          gw.calls[0].get("show_filled") == "on", str(gw.calls[0].get("show_filled")))
 
     # --- a tracker that ignores show_filled -------------------------------
     #
@@ -150,8 +155,8 @@ async def main() -> int:
     # that had already been closed.
     gw = IgnoresShowFilled(total=500)
     found = await checker_for(gw).collect_requests("OPS", limit=100)
-    check("a tracker ignoring show_filled is still asked",
-          gw.calls[0].get("show_filled") == "false", str(gw.calls[0].get("show_filled")))
+    check("a tracker sending filled rows anyway was not asked for them",
+          "show_filled" not in gw.calls[0], str(gw.calls[0].get("show_filled")))
     kept = found["requests"]
     check("but the filled rows it sends back are dropped",
           len(kept) == 36, f"{len(kept)} kept")
@@ -184,6 +189,80 @@ async def main() -> int:
     check("asking for filled requests keeps them",
           len(found["requests"]) == 25 and found["filtered"] == 0,
           f"{len(found['requests'])} kept, {found['filtered']} dropped")
+
+    # --- a filled request is finished, and costs nothing to learn it ------
+    #
+    # Checking one used to run the whole Deezer pipeline against it -- a search,
+    # an availability lookup, sometimes a second tracker call -- and when the
+    # "is it already up" search then missed, the release was filed under Found
+    # as worth uploading. Both halves stop at the tracker's own isFilled.
+    class OneRequest:
+        """A tracker serving a single request, filled or not."""
+
+        def __init__(self, filled: bool) -> None:
+            self.filled = filled
+            self.actions: list[str] = []
+
+        async def call_action(self, tracker, action, params):
+            self.actions.append(action)
+            row = {
+                "requestId": 8811, "categoryName": "Music", "title": "Eden Sauvage",
+                "year": 2025, "artists": [[{"name": "Los Eclipses"}]],
+                "formatList": ["FLAC"], "mediaList": ["WEB"], "bitrateList": ["Lossless"],
+                "totalBounty": 1024 ** 3, "timeAdded": "2026-08-20 09:23:07",
+                "description": "",
+            }
+            if self.filled:
+                row.update({"isFilled": True, "fillerName": "someone",
+                            "torrentId": 3730745, "timeFilled": "2026-08-20 11:14:26"})
+            return row if action == "request" else {"results": [row], "pages": 1}
+
+        def can_check(self, tracker):
+            return True
+
+        async def get_request(self, tracker, request_id):
+            return await self.call_action(tracker, "request", {"id": request_id})
+
+        def request_url(self, tracker, request_id):
+            return f"https://example.invalid/requests.php?action=view&id={request_id}"
+
+    class ExplodingDeezer:
+        """Any Deezer call at all is the bug this guards against."""
+
+        async def search_albums(self, *_a, **_k):
+            raise AssertionError("reached Deezer")
+
+        async def availability(self, *_a, **_k):
+            raise AssertionError("reached Deezer availability")
+
+    from lox.checker.deezer_requests import DeezerRequestChecker as DRC  # noqa: PLC0415
+
+    gw = OneRequest(filled=True)
+    checker = DRC(gw=ExplodingDeezer(), gateway=gw, store=None)  # type: ignore[arg-type]
+    matches = await checker.check_many("OPS", ["8811"], skip_known=False)
+    got = matches[0]
+    check("a filled request is reported as filled", got.status == "filled", got.status)
+    check("and says who filled it", "someone" in (got.reason or ""), str(got.reason))
+    check("it never reaches Deezer", gw.actions == ["request"], str(gw.actions))
+    check("it is not offered as fillable", got.fillable is False, str(got.fillable))
+    check("and counts as already on the tracker",
+          got.already_on_tracker is True, str(got.already_on_tracker))
+    check("the age it has sat open is reported", got.created == "2026-08-20 09:23:07", got.created)
+
+    # An open one still goes the whole way.
+    gw = OneRequest(filled=False)
+    checker = DRC(gw=ExplodingDeezer(), gateway=gw, store=None)  # type: ignore[arg-type]
+    matches = await checker.check_many("OPS", ["8811"], skip_known=False)
+    check("an open request is still checked against Deezer",
+          matches[0].status == "error" and "reached Deezer" in str(matches[0].reason),
+          f"{matches[0].status}: {matches[0].reason}")
+
+    # The listing carries both new columns.
+    gw = OneRequest(filled=True)
+    rows, _pages, _dropped = await DRC(gw=None, gateway=gw, store=None).search_requests(  # type: ignore[arg-type]
+        "OPS", show_filled=True)
+    check("a listed request says whether it is filled", rows[0]["filled"] is True, str(rows[0].get("filled")))
+    check("and how long it has been open", rows[0]["age"].endswith(("day", "days")), rows[0]["age"])
 
     # --- the two trackers do not speak the same language ------------------
     # Transcribed from the live search forms. Getting these wrong does not

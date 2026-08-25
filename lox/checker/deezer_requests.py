@@ -11,6 +11,7 @@ is worse than no fill.
 """
 
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 import msgspec
@@ -56,6 +57,13 @@ class RequestMatch(msgspec.Struct):
     # open after somebody uploaded it is not worth filling twice.
     already_on_tracker: bool | None = None
     tracker_group_url: str | None = None
+    # Whether the request was already filled before we looked at it, and by
+    # whom. A filled request cannot be filled again, so this ends the check.
+    filled: bool = False
+    filled_by: str = ""
+    filled_at: str = ""
+    # When the request was created, so the page can say how long it has sat.
+    created: str = ""
     formats: list[str] = msgspec.field(default_factory=list)
     media: list[str] = msgspec.field(default_factory=list)
     bitrates: list[str] = msgspec.field(default_factory=list)
@@ -70,6 +78,37 @@ class RequestMatch(msgspec.Struct):
         data = msgspec.to_builtins(self)
         data["fillable"] = self.fillable
         return data
+
+
+def age_of(stamp: Any) -> str:
+    """How long ago a tracker timestamp was, in words.
+
+    Gazelle sends "2026-08-20 09:23:07" in the site's own timezone and no
+    offset, so this is read as naive local time -- close enough for "how long
+    has this been sitting there", which is the only question it answers.
+
+    Args:
+        stamp: The tracker's timestamp string.
+
+    Returns:
+        Something like "3 days" or "5 months", or "" if it cannot be read.
+    """
+    text = str(stamp or "").strip()
+    if not text:
+        return ""
+    try:
+        when = datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return ""
+    seconds = (datetime.now() - when).total_seconds()
+    if seconds < 0:
+        return "just now"
+    for size, unit in ((31536000, "year"), (2592000, "month"), (604800, "week"),
+                       (86400, "day"), (3600, "hour"), (60, "minute")):
+        if seconds >= size:
+            count = int(seconds // size)
+            return f"{count} {unit}{'' if count == 1 else 's'}"
+    return "just now"
 
 
 def format_bounty(value: Any) -> str:
@@ -165,6 +204,12 @@ class DeezerRequestChecker:
                     "year": str(row.get("year") or ""),
                     "bounty": format_bounty(row.get("totalBounty") or row.get("bounty")),
                     "url": self.gateway.request_url(tracker, int(request_id)),
+                    # How long it has sat there, and whether anyone has filled
+                    # it. Both come free in the row the tracker already sent.
+                    "created": plain(row.get("timeAdded") or ""),
+                    "age": age_of(row.get("timeAdded")),
+                    "filled": self._is_filled(row),
+                    "filled_by": plain(row.get("fillerName") or ""),
                 }
             )
         if dropped:
@@ -373,6 +418,12 @@ class DeezerRequestChecker:
                         "deezer_id": match.deezer_id,
                         "deezer_title": match.deezer_title,
                         "deezer_artist": match.deezer_artist,
+                        # Stored so the Found page can exclude it without
+                        # re-reading the tracker, and so a re-check knows.
+                        "filled": match.filled,
+                        "filled_by": match.filled_by,
+                        "filled_at": match.filled_at,
+                        "created": match.created,
                         "deezer_url": match.deezer_url,
                         "confidence": match.confidence,
                         "already_on_tracker": match.already_on_tracker,
@@ -403,6 +454,29 @@ class DeezerRequestChecker:
         match.album = album or ""
         match.year = str(raw.get("year") or "")
         match.bounty = format_bounty(raw.get("totalBounty") or raw.get("bounty"))
+        match.created = plain(raw.get("timeAdded") or "")
+
+        # A filled request is finished. Nothing below this can change that, and
+        # everything below it costs something: a Deezer search, an availability
+        # lookup, sometimes a second tracker call to ask whether the release is
+        # already up. All of it was being spent on requests that had already
+        # been closed -- and when the "is it on the tracker" search then missed,
+        # the release was filed under Found as worth uploading. Twice over
+        # wrong, and both halves stop here.
+        if self._is_filled(raw):
+            match.filled = True
+            match.filled_by = plain(raw.get("fillerName") or "")
+            match.filled_at = plain(raw.get("timeFilled") or "")
+            match.already_on_tracker = True
+            match.status = "filled"
+            who = f" by {match.filled_by}" if match.filled_by else ""
+            when = f" on {match.filled_at.split(' ')[0]}" if match.filled_at else ""
+            match.reason = f"already filled{who}{when}"
+            debug.log(
+                "request %s:%s already filled%s -- no Deezer check",
+                tracker, request_id, who, level=20,
+            )
+            return match
         match.formats = raw.get("formatList") or ["Any"]
         match.media = raw.get("mediaList") or []
         match.bitrates = raw.get("bitrateList") or []
