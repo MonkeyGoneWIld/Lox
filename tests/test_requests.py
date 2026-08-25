@@ -264,6 +264,60 @@ async def main() -> int:
     check("a listed request says whether it is filled", rows[0]["filled"] is True, str(rows[0].get("filled")))
     check("and how long it has been open", rows[0]["age"].endswith(("day", "days")), rows[0]["age"])
 
+    # --- the same act, credited differently on each side ------------------
+    #
+    # OPS credits "Jigitz & Tabi"; Deezer credits the lead, "Jigitz". The score
+    # was one-sided -- it only looked for a collaboration on the left -- so the
+    # same two names scored 0.90 one way round and 0.15 the other. The 0.15
+    # direction is the one an "is this already on the tracker" search uses,
+    # which is how a release sitting on OPS as group 1639901 was filed under
+    # Found as worth uploading.
+    from lox.checker.matching import (  # noqa: PLC0415
+        MIN_ARTIST_SCORE,
+        MIN_TOTAL_SCORE,
+        _score_artist,
+        credits_of,
+        find_best_deezer_match,
+    )
+
+    for left, right in (("Jigitz", "Jigitz & Tabi"), ("Jigitz & Tabi", "Jigitz")):
+        score = _score_artist(left, right)
+        check(f"{left!r} matches {right!r}", score >= MIN_ARTIST_SCORE, f"{score:.2f}")
+    check("and it scores the same in both directions",
+          _score_artist("Jigitz", "Jigitz & Tabi") == _score_artist("Jigitz & Tabi", "Jigitz"), "")
+
+    for written in ("Jigitz & Tabi", "Jigitz and Tabi", "Jigitz, Tabi", "Jigitz feat. Tabi"):
+        check(f"{written!r} is read as two credits", credits_of(written) == ["jigitz", "tabi"],
+              str(credits_of(written)))
+
+    # A name that merely contains a joining word is one artist, not two. Without
+    # word boundaries this splits "Alexander" into "Alex" and "der".
+    for solo in ("Alexander", "Texas", "AC/DC", "Bandit", "Xavier"):
+        check(f"{solo!r} stays one artist", len(credits_of(solo)) == 1, str(credits_of(solo)))
+
+    # Sharing a word is not sharing an act.
+    for a, b in (("Prince", "Prince Paul"), ("Texas", "Texas Instruments"),
+                 ("Alexander", "Alex"), ("Radiohead", "Coldplay")):
+        score = _score_artist(a, b)
+        check(f"{a!r} is still not {b!r}", score < MIN_ARTIST_SCORE, f"{score:.2f}")
+
+    # A compilation credited to nobody rides on the title alone.
+    va = _score_artist("Los Eclipses", "Various Artists")
+    check("Various Artists clears the artist floor", va >= MIN_ARTIST_SCORE, f"{va:.2f}")
+    check("but only fills a request when the title is near exact",
+          va * 0.6 + 1.00 * 0.4 >= MIN_TOTAL_SCORE and va * 0.6 + 0.70 * 0.4 < MIN_TOTAL_SCORE,
+          f"exact {va * 0.6 + 0.4:.2f}, loose {va * 0.6 + 0.28:.2f}")
+
+    # End to end, with the release as Deezer returns it.
+    groups = [{"id": 1639901, "title": "the time", "artist": {"name": "Jigitz & Tabi"}, "nb_tracks": 1}]
+    best, score, _ = find_best_deezer_match(groups, "Jigitz", "the time")
+    check("the group on the tracker is found", best is not None and best["id"] == 1639901, str(best))
+    check("with a confident score", score >= MIN_TOTAL_SCORE, f"{score:.2f}")
+
+    wrong = [{"id": 1, "title": "the time", "artist": {"name": "Someone Else"}, "nb_tracks": 1}]
+    best, _score, _ = find_best_deezer_match(wrong, "Jigitz", "the time")
+    check("a different artist with the same title is not", best is None, str(best))
+
     # --- the two trackers do not speak the same language ------------------
     # Transcribed from the live search forms. Getting these wrong does not
     # error, it searches for something else -- RED's WEB is OPS's CD-adjacent

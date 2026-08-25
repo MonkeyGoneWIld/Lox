@@ -79,8 +79,47 @@ _EDITION_SUFFIX_RE = re.compile(
     r"\s*(special\s*edition|deluxe|remix|expanded|remastered|edition|version|ep|lp|single|\d{4}\s*remixes?).*$",
     re.IGNORECASE,
 )
-_FEATURING_RE = re.compile(r"feat\.|ft\.|featuring|&|,\s", re.IGNORECASE)
-_FEATURING_SPLIT_RE = re.compile(r"\s+(?:feat\.?|ft\.?|featuring|&|,)\s+", re.IGNORECASE)
+
+# Every way the two sides write "these people made this record together".
+# This replaced a pair of one-sided featuring regexes that needed whitespace on
+# both sides of their separator, and so never split "Jigitz, Tabi".
+_CREDIT_SPLIT_RE = re.compile(
+    r"\s*(?:"
+    r"&|\+|;|,"                                     # punctuation joins
+    r"|\s/\s"                                       # a spaced slash; AC/DC survives
+    r"|\b(?:featuring|feat|ft|with|vs|and|x)\b\.?"  # word joins, whole words only
+    r")\s*",
+    re.IGNORECASE,
+)
+"""Whole words only. Without the boundaries this splits inside "Alexander" and
+"Texas", turning one artist into two and matching them against anything."""
+
+VARIOUS_ARTISTS = frozenset({"variousartists", "various", "va", "variousartist", "compilation"})
+"""What a compilation is credited to when nobody is credited."""
+
+
+def credits_of(value: str | None) -> list[str]:
+    """Every artist named in one credit string, normalized, in order.
+
+    "Jigitz & Tabi" is two credits, not one artist whose name happens to
+    contain an ampersand. Comparing the whole string treats it as the latter,
+    which is why a release the tracker credits to a duo did not match the same
+    release Deezer credits to its lead.
+
+    Args:
+        value: A credit string from either side.
+
+    Returns:
+        Normalized names, first one first, without duplicates.
+    """
+    if not value:
+        return []
+    names: list[str] = []
+    for part in _CREDIT_SPLIT_RE.split(value):
+        name = normalize(part)
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def normalize(value: str | None) -> str:
@@ -395,21 +434,57 @@ MIN_TOTAL_SCORE = 0.70
 
 
 def _score_artist(artist: str, dz_artist: str) -> float:
-    """Score how well a request's artist matches a Deezer album's artist."""
+    """Score how well two artist credits describe the same act.
+
+    Symmetric, because the two sides disagree in both directions: a tracker
+    credits a duo where Deezer credits its lead, and just as often the reverse.
+    The old scoring only ever looked for a collaboration on the left, so
+    ("Jigitz & Tabi", "Jigitz") scored 0.90 and ("Jigitz", "Jigitz & Tabi")
+    scored 0.15 -- the same two names, rejected in one direction and accepted in
+    the other. That is what filed a release already on OPS under "not on
+    tracker".
+
+    Args:
+        artist: One side's credit string.
+        dz_artist: The other side's credit string.
+
+    Returns:
+        0.0 to 1.0. MIN_ARTIST_SCORE is the floor for a usable match.
+    """
     artist_norm, dz_norm = normalize(artist), normalize(dz_artist)
+    if not artist_norm or not dz_norm:
+        return 0.0
     if artist_norm == dz_norm:
         return 1.0
     if re.sub(r"^the", "", artist_norm) == re.sub(r"^the", "", dz_norm):
         return 0.98
 
-    if _FEATURING_RE.search(artist):
-        main_norm = normalize(_FEATURING_SPLIT_RE.split(artist)[0])
-        if main_norm == dz_norm:
-            return 0.90
-        if main_norm and dz_norm and (main_norm in dz_norm or dz_norm in main_norm):
-            ratio = min(len(main_norm), len(dz_norm)) / max(len(main_norm), len(dz_norm))
-            return 0.70 if ratio >= 0.85 else 0.50 if ratio >= 0.70 else 0.30
-        return min(similarity(artist, dz_artist) * 0.6, 0.35)
+    left, right = credits_of(artist), credits_of(dz_artist)
+    left_set, right_set = set(left), set(right)
+
+    # A compilation credited to nobody in particular. It cannot corroborate the
+    # artist, so it scores just over the floor and leaves the decision to the
+    # title: at 0.55 the total only clears MIN_TOTAL_SCORE when the title is
+    # very nearly exact, which is the right bar for "Various Artists — Eden
+    # Sauvage" against "Los Eclipses — Eden Sauvage".
+    if (left_set & VARIOUS_ARTISTS) or (right_set & VARIOUS_ARTISTS):
+        return 0.55
+
+    if left_set and right_set and left_set != right_set:
+        if left_set == right_set:
+            return 0.97
+        # One side names a subset of the other: the same act, credited to more
+        # or fewer of the people on it.
+        if left_set <= right_set or right_set <= left_set:
+            return 0.88
+        shared = left_set & right_set
+        if shared:
+            # Sharing the lead credit is a much stronger signal than sharing a
+            # guest, so the two cases do not score the same.
+            leads_shared = bool(left) and bool(right) and (left[0] in right_set or right[0] in left_set)
+            return 0.78 if leads_shared else 0.60
+    elif left_set and left_set == right_set:
+        return 0.97
 
     if artist_norm and dz_norm and (artist_norm in dz_norm or dz_norm in artist_norm):
         ratio = min(len(artist_norm), len(dz_norm)) / max(len(artist_norm), len(dz_norm))
