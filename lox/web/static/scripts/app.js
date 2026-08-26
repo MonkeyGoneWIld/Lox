@@ -2475,8 +2475,8 @@
         { class: 'table' },
         el('thead', {}, el('tr', {},
           el('th', {}, selectAllBox(rows.map((f) => f.id), state.selectedFound, renderFound)),
-          el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'Why'),
-          el('th', {}, 'From'), el('th', {}, 'Last checked'))),
+          el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'How it got here'),
+          el('th', {}, 'Last checked'))),
         el('tbody', {}, ...rows.map((f) =>
           el('tr', {},
             el('td', {}, el('input', {
@@ -2493,12 +2493,7 @@
             // since found it on one of them, which is how a release that is on
             // both sat here looking like it was on neither.
             el('td', { class: 'found-trackers' }, ...trackerTags(f)),
-            el('td', {}, f.kind === 'request'
-              ? el('span', { class: 'tag warn' }, `fills a ${f.tracker || ''} request`)
-              : el('span', { class: 'tag dim' }, 'scan')),
-            el('td', {}, f.kind === 'request'
-              ? el('a', { href: f.request_url, target: '_blank', rel: 'noopener' }, 'request')
-              : 'scan'),
+            el('td', { class: 'found-sources' }, ...sourceTags(f)),
             el('td', { class: 'card-sub' }, ago(f.checked_at)),
           ))),
       ),
@@ -2525,6 +2520,27 @@
             }, `${f.artist || ''} — ${f.title || ''}`)),
             el('td', { class: 'found-trackers' }, ...trackerTags(f)),
             el('td', { class: 'card-sub' }, f.held_reason || ''))))));
+  }
+
+  // How a release got into the queue. Both can be true at once -- a scan found
+  // it and a request check matched it -- which used to be two identical rows
+  // with two different one-word labels. One row, both tags, and the request
+  // tag is the link to the request.
+  function sourceTags(row) {
+    const sources = row.sources || [row.kind];
+    const tags = [];
+    if (sources.includes('scan')) tags.push(el('span', { class: 'tag dim' }, 'scan'));
+    if (sources.includes('request')) {
+      // "a OPS request" reads as badly as it looks. Tracker codes are said
+      // as letters, so the article follows the first letter's sound.
+      const code = row.tracker || '';
+      const article = /^[AEIOU]/.test(code) ? 'an' : 'a';
+      const text = code ? `fills ${article} ${code} request` : 'fills a request';
+      tags.push(row.request_url
+        ? el('a', { href: row.request_url, target: '_blank', rel: 'noopener', class: 'tag warn' }, text)
+        : el('span', { class: 'tag warn' }, text));
+    }
+    return tags.length ? tags : [el('span', { class: 'tag dim' }, 'checked')];
   }
 
   // What the last check found, per tracker. Green means there is something to

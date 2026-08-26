@@ -121,18 +121,30 @@ async def main() -> int:
     mismatched = [f.key for f in FIELDS if f.labels and len(f.labels) != len(f.choices)]
     check("every labelled choice has one label per option", not mismatched, ", ".join(mismatched))
     labelled = [f for f in FIELDS if f.kind == "choice" and f.labels]
-    check("the queue rules are labelled", len(labelled) >= 5, str(len(labelled)))
+    check("the queue rule is labelled", any(f.key == "checker.queue_when" for f in labelled), "")
     check("and no label is left as the raw value",
           all(shown != stored
               for f in labelled
               for shown, stored in zip(f.labels, f.choices, strict=True)), "")
 
-    # --- the queue rules are on the page ------------------------------
+    # --- what reaches the queue is two questions, not six -------------
+    # The first version asked for a three-way rule per tracker, an all/any to
+    # combine them, and an enum for requests: a truth table with dropdowns in
+    # front of it. Nobody wants to say "RED must already be there".
     queue_keys = {f.key for f in FIELDS if f.section == "queue"}
-    for key in ("checker.queue_red", "checker.queue_ops", "checker.queue_dic",
-                "checker.queue_match", "checker.queue_requests",
-                "checker.queue_require_somewhere_missing"):
-        check(f"{key} is editable", key in queue_keys, "")
+    check("the queue is configured by two settings",
+          queue_keys == {"checker.queue_when", "checker.queue_requests_too"}, str(sorted(queue_keys)))
+    for dead in ("checker.queue_red", "checker.queue_ops", "checker.queue_dic",
+                 "checker.queue_match", "checker.queue_requests",
+                 "checker.queue_require_somewhere_missing"):
+        check(f"{dead} is gone", dead not in keys, "")
+
+    rule = next(f for f in FIELDS if f.key == "checker.queue_when")
+    check("every rule option is a sentence about a situation",
+          all(label.startswith("Missing from") for label in rule.labels), str(rule.labels[:2]))
+    check("and none of them asks you to think in truth tables",
+          not any(w in " ".join(rule.labels).lower()
+                  for w in ("must", "any one", "combine", "doesn't matter")), "")
 
     # --- and every test named anywhere is dispatchable ---------------
     from lox.web import create_app_async  # noqa: PLC0415

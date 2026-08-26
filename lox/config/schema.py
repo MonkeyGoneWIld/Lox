@@ -149,9 +149,8 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "queue",
         "What reaches the queue",
-        "A check that matches a Deezer release to a tracker is always kept. These decide which of those matches "
-        "are worth acting on, and they are applied when the queue is drawn -- so widening them brings rows back "
-        "without spending tracker budget again.",
+        "Everything a check found is kept. This decides which of it is worth acting on, and it is applied when "
+        "the queue is drawn -- so widening it brings rows back without spending tracker budget again.",
         category="Accounts",
     ),
     Section("upload", "Uploading", "How the pipeline behaves while it works through a release.",
@@ -194,7 +193,26 @@ CATEGORIES: tuple[str, ...] = ("Accounts", "Uploading", "Files", "Maintenance")
 """Display order for the section groups."""
 
 
-TRACKER_RULE_HELP = "Leave this alone to keep the tracker out of the decision entirely."
+#: The trackers a queue rule can name. Fixed, because these are the trackers
+#: the app has clients for; the page only offers the ones you have configured.
+QUEUE_TRACKERS: tuple[str, ...] = ("RED", "OPS", "DIC")
+
+#: Every queue rule as (stored value, what it says on screen). Each label is a
+#: whole sentence about a situation, because that is what someone is choosing
+#: between -- the version this replaced made them assemble one out of a
+#: three-way dropdown per tracker and an all/any to combine them.
+#:
+#: Lives here rather than beside the predicate because the config layer imports
+#: nothing from lox, so both the settings page and lox.checker.queue_rules can
+#: read it without a cycle.
+QUEUE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("any", "Missing from at least one tracker"),
+    ("all", "Missing from every tracker"),
+    *((code, f"Missing from {code}") for code in QUEUE_TRACKERS),
+    *((f"{code}_only", f"Missing from {code}, and already on the others") for code in QUEUE_TRACKERS),
+)
+QUEUE_CHOICES = tuple(value for value, _ in QUEUE_OPTIONS)
+QUEUE_LABELS = tuple(label for _, label in QUEUE_OPTIONS)
 
 
 FIELDS: tuple[Field, ...] = (
@@ -236,33 +254,14 @@ FIELDS: tuple[Field, ...] = (
     Field("checker.min_confidence", "Minimum request match confidence", "float", "checker",
           "Artist and title must also clear their own thresholds.", minimum=0.0, maximum=1.0),
     # --- What reaches the queue ---------------------------------------
-    # Named for what the user is deciding, not for the field they are setting:
-    # "RED" over a dropdown reading "must be missing there" says the whole rule
-    # in one line.
-    Field("checker.queue_red", "RED", "choice", "queue", TRACKER_RULE_HELP,
-          choices=("any", "missing", "present"),
-          labels=("Doesn't matter", "Must be missing there", "Must already be there")),
-    Field("checker.queue_ops", "OPS", "choice", "queue", TRACKER_RULE_HELP,
-          choices=("any", "missing", "present"),
-          labels=("Doesn't matter", "Must be missing there", "Must already be there")),
-    Field("checker.queue_dic", "DIC", "choice", "queue", TRACKER_RULE_HELP,
-          choices=("any", "missing", "present"),
-          labels=("Doesn't matter", "Must be missing there", "Must already be there")),
-    Field("checker.queue_match", "Combine the tracker rules with", "choice", "queue",
-          "All: every rule above has to hold. Any: one of them is enough.",
-          choices=("all", "any"),
-          labels=("All of them must hold", "Any one of them is enough")),
-    Field("checker.queue_requests", "Releases that fill a request", "choice", "queue",
-          "A request fill is a release a request check matched. The rest come from scans.",
-          choices=("any", "only", "only_missing_there", "exclude"),
-          labels=(
-              "Treat them like any other release",
-              "Only releases that fill a request",
-              "Only request fills missing on the request's own tracker",
-              "Never queue a release just because it fills a request",
-          )),
-    Field("checker.queue_require_somewhere_missing", "Hide releases that are already on every tracker", "bool",
-          "queue", "There is nothing to upload for those. Turn it off if you set a rule to \"present\"."),
+    # One dropdown whose every option is a whole sentence about a situation,
+    # and one checkbox. The page fills the choices in from the trackers you
+    # actually have configured.
+    Field("checker.queue_when", "Queue a release when it is", "choice", "queue",
+          "Everything a check found is kept either way. This decides which of it is worth acting on.",
+          choices=QUEUE_CHOICES, labels=QUEUE_LABELS),
+    Field("checker.queue_requests_too", "Also queue anything that fills an open request", "bool", "queue",
+          "Even when it does not match the rule above. An open request is a reason to upload on its own."),
 
     Field("checker.state_dir", "Scan history directory", "path", "paths",
           "Which albums and requests have already been checked, so a rescan does not spend tracker budget "

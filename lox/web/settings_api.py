@@ -19,7 +19,13 @@ import lox.trackers
 from lox import cfg, settings
 from lox import debug as debuglog
 from lox.config.client_url import CLIENTS, build_client_url, split_client_url
-from lox.config.schema import BOOTSTRAP_KEYS, FIELDS_BY_KEY, sections_with_fields
+from lox.config.schema import (
+    BOOTSTRAP_KEYS,
+    FIELDS_BY_KEY,
+    QUEUE_CHOICES,
+    QUEUE_LABELS,
+    sections_with_fields,
+)
 from lox.config.store import SettingsError, coerce, get_value, set_value
 from lox.config.validations import validate as validate_config
 from lox.deezer.gw import DeezerGW, DeezerGWError
@@ -49,6 +55,41 @@ def fail(message: str, **detail: Any) -> web.Response:
 # ----------------------------------------------------------------------
 
 
+def _for_configured_trackers(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop queue rules that name a tracker this install does not use.
+
+    The rule list is declared for every tracker the app has a client for, so
+    the predicate and the page can never disagree about what a rule is called.
+    Offering someone a rule about DIC when they have no DIC credentials is the
+    same clutter as any other setting that does nothing, so it is filtered out
+    here, at the point of drawing, rather than baked into the vocabulary.
+
+    Args:
+        sections: Sections as declared, each with its fields.
+
+    Returns:
+        The same sections, with the queue rule narrowed to what applies.
+    """
+    live = {code.upper() for code in lox.trackers.tracker_list}
+    keep = [
+        (value, label)
+        for value, label in zip(QUEUE_CHOICES, QUEUE_LABELS, strict=True)
+        # "any" and "all" name no tracker; the rest start with a code.
+        if value in ("any", "all") or value.split("_")[0] in live
+    ]
+    out = []
+    for section in sections:
+        fields = []
+        for field in section["fields"]:
+            if field["key"] == "checker.queue_when" and live:
+                field = {**field,
+                         "choices": [value for value, _ in keep],
+                         "labels": [label for _, label in keep]}
+            fields.append(field)
+        out.append({**section, "fields": fields})
+    return out
+
+
 @routes.get("/api/settings")
 async def api_settings(request: web.Request) -> web.Response:
     """Return the settings schema and the current effective values.
@@ -60,7 +101,7 @@ async def api_settings(request: web.Request) -> web.Response:
     secrets_set = values.pop("__secrets_set__", [])
     return _json(
         {
-            "sections": sections_with_fields(),
+            "sections": _for_configured_trackers(sections_with_fields()),
             "values": values,
             "secrets_set": secrets_set,
             "overridden": sorted(settings.values),

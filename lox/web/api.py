@@ -716,8 +716,37 @@ async def api_found(request: web.Request) -> web.Response:
     tab. Kept here so the work already paid for is somewhere you can act on.
     """
     store: CheckerStore = request.app["store"]
-    rows: list[dict[str, Any]] = []
+    # Keyed by Deezer album id, because a release found by a scan and matched
+    # to a request is ONE release. It used to be two rows -- identical title,
+    # identical tracker tags, one saying "scan" and one saying "request" --
+    # which is two of everything to read, tick and act on for one upload.
+    by_album: dict[str, dict[str, Any]] = {}
     dismissed = store.load("dismissed") or {}
+
+    def merge(album_id: str, row: dict[str, Any]) -> None:
+        """Fold a row into whatever is already known about that release."""
+        existing = by_album.get(album_id)
+        if existing is None:
+            by_album[album_id] = row
+            return
+        # Tracker facts are unions: a scan that checked RED and a request check
+        # that checked OPS between them know about both.
+        for key in ("missing_from", "found_on"):
+            existing[key] = sorted({*existing.get(key, ()), *row.get(key, ())})
+        # A release that fills a request is a request row, whichever arrived
+        # first: the request is the more useful thing to say about it, and it
+        # carries the link and the bounty.
+        if row.get("kind") == "request":
+            for key in ("tracker", "bounty", "request_url", "confidence", "request_id"):
+                if row.get(key):
+                    existing[key] = row[key]
+            existing["kind"] = "request"
+        existing["sources"] = sorted({*existing.get("sources", ()), *row.get("sources", ())})
+        existing["title"] = existing.get("title") or row.get("title") or ""
+        existing["artist"] = existing.get("artist") or row.get("artist") or ""
+        # The newest check is the one the "last checked" column should quote.
+        if (row.get("checked_at") or 0) > (existing.get("checked_at") or 0):
+            existing["checked_at"] = row.get("checked_at")
 
     for album_id, entry in (store.load("albums") or {}).items():
         # Whether "missing from nothing" is worth showing is a queue rule now,
@@ -725,18 +754,20 @@ async def api_found(request: web.Request) -> web.Response:
         # that floor off unable to do anything.
         if entry.get("uploaded_at") or album_id in dismissed:
             continue
-        rows.append(
+        merge(
+            album_id,
             {
                 "kind": "scan",
                 "id": album_id,
                 "album_id": album_id,
+                "sources": ["scan"],
                 "title": entry.get("title") or "",
                 "artist": entry.get("artist") or "",
                 "missing_from": entry.get("missing_from") or [],
                 "found_on": entry.get("found_on") or [],
                 "checked_at": entry.get("checked_at"),
                 "url": f"https://www.deezer.com/album/{album_id}",
-            }
+            },
         )
 
     for request_id, entry in (store.load("requests") or {}).items():
@@ -749,11 +780,17 @@ async def api_found(request: web.Request) -> web.Response:
             continue
         if entry.get("uploaded_at") or str(entry.get("deezer_id")) in dismissed or request_id in dismissed:
             continue
-        rows.append(
+        album_id = str(entry.get("deezer_id"))
+        merge(
+            album_id,
             {
                 "kind": "request",
-                "id": request_id,
-                "album_id": str(entry.get("deezer_id")),
+                # The row is identified by the release, so acting on it acts on
+                # the release. The request id rides along for the link.
+                "id": album_id,
+                "request_id": request_id,
+                "album_id": album_id,
+                "sources": ["request"],
                 "title": entry.get("album") or entry.get("deezer_title") or "",
                 "artist": entry.get("artist") or entry.get("deezer_artist") or "",
                 "tracker": entry.get("tracker") or "",
@@ -766,10 +803,10 @@ async def api_found(request: web.Request) -> web.Response:
                 "request_url": entry.get("request_url") or "",
                 "checked_at": entry.get("checked_at"),
                 "url": entry.get("deezer_url") or "",
-            }
+            },
         )
 
-    rows.sort(key=lambda r: r.get("checked_at") or 0, reverse=True)
+    rows = sorted(by_album.values(), key=lambda r: r.get("checked_at") or 0, reverse=True)
 
     # The rules are applied here rather than when the check ran, so widening
     # them brings rows straight back instead of needing the tracker calls

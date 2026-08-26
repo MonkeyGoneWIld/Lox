@@ -1316,6 +1316,10 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 /* One tag per tracker on a Found row. They wrap rather than stretching the
    column, so three trackers do not squeeze the release title. */
 .found-trackers { display: flex; flex-wrap: wrap; gap: 5px; }
+/* Both ways a release can have got here, side by side rather than run
+   together: it used to be two rows, so the gap is the whole point. */
+.found-sources { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Reading the queue you have, as opposed to the Settings rules that decide
    what is in it. Sits under the action row and above the table, because it
