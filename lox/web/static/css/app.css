@@ -331,11 +331,6 @@ button.ghost { background: none; }
 
 /* ---------- cards ---------- */
 
-/* Above a grid of covers, when any of them can be ticked. Quiet, because it
-   is an offer and not an instruction. */
-.grid-tools { margin-bottom: 12px; }
-.grid-tools .hint { margin: 0; }
-
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
@@ -349,7 +344,10 @@ button.ghost { background: none; }
    width:100%, which only means "one grid cell" while the grid is there. */
 .artist-page { display: block; }
 
-.card { position: relative; cursor: pointer; }
+/* Shift-click is a range, not a text drag. Without user-select the browser
+   reads the shift as "extend the selection" and paints every title and artist
+   between the two cards blue. Nothing on a card is text anyone wants to copy. */
+.card { position: relative; cursor: pointer; user-select: none; -webkit-user-select: none; }
 
 /* Selection. The tick sits on the art, appears on hover, and stays put once
    ticked so a selection is visible without hovering every card. */
@@ -410,6 +408,10 @@ button.ghost { background: none; }
    press sends a single release off on its own -- a download you did not ask
    for, or worse, an upload. The batch has its own buttons in the bar. */
 body.picking .card-actions { display: none; }
+
+/* Pushes what follows to the far end. Acting on the batch is one kind of
+   thing; changing what the batch is, is another. */
+.bar-gap { flex: 1 1 auto; }
 
 .pick-bar {
   position: sticky;

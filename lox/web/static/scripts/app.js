@@ -128,6 +128,11 @@
   }
 
   function setView(view) {
+    // A batch belongs to the list it was picked from. Leaving the list --
+    // to the Queue, to Downloading, to anywhere -- leaves you holding
+    // releases you can no longer see, and a count that matches nothing on
+    // screen. Every other place that changes what is listed does the same.
+    if (state.view !== view) clearPicks();
     state.view = view;
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
@@ -321,7 +326,7 @@
           if (isAlbum && albumId && selecting()) {
             e.preventDefault();
             const id = String(albumId);
-            pickClicked(id, item, !state.picked.has(id), node, e.shiftKey);
+            pickClicked(id, item, !state.picked.has(id), e.shiftKey);
             return;
           }
           if (item.type === 'artist') openArtist(item.id);
@@ -344,7 +349,7 @@
                 // shift key and a range select is the whole point of it.
                 onclick: (e) => {
                   e.stopPropagation();
-                  pickClicked(String(albumId), item, e.target.checked, node, e.shiftKey);
+                  pickClicked(String(albumId), item, e.target.checked, e.shiftKey);
                 },
               }),
             )
@@ -417,16 +422,19 @@
   // because when the circle was left to whichever caller happened to come
   // through a checkbox, picking from the card body left an empty circle on a
   // picked card, and pressing that circle then argued with the state behind it.
-  function togglePick(albumId, item, on, node) {
+  function togglePick(albumId, item, on) {
     const id = String(albumId);
     if (on) state.picked.set(id, item);
     else state.picked.delete(id);
-    const card = node || document.querySelector(`.card[data-album="${id}"]`);
-    card?.classList.toggle('picked', on);
-    const box = card?.querySelector('.card-pick input');
-    if (box) box.checked = on;
+    // Every card showing this release, not just the first. A chart lists the
+    // same album under Albums and again under Tracks, and marking one of them
+    // left the other looking unpicked while the id sat in the set.
+    document.querySelectorAll(`.card[data-album="${id}"]`).forEach((card) => {
+      card.classList.toggle('picked', on);
+      const box = card.querySelector('.card-pick input');
+      if (box) box.checked = on;
+    });
     renderPickBar();
-    if (!bulkPicking) refreshSelectAllBar();
   }
 
   // Set while a range or a select-all is running. Without it the bar is rebuilt
@@ -437,7 +445,6 @@
     bulkPicking = true;
     try { fn(); } finally { bulkPicking = false; }
     renderPickBar();
-    refreshSelectAllBar();
   }
 
   /** Whether a batch is being built, which changes what a plain click means. */
@@ -454,14 +461,13 @@
   const pickableCards = () => [...document.querySelectorAll('.card[data-album]')];
 
   function setPick(albumId, on) {
-    togglePick(albumId, PICKABLE.get(String(albumId)), on,
-               document.querySelector(`.card[data-album="${albumId}"]`));
+    togglePick(albumId, PICKABLE.get(String(albumId)), on);
   }
 
   // Ticking with shift held picks everything between the last tick and this
   // one, the way a file list does. Without it, taking twenty of a page of
   // thirty is twenty clicks.
-  function pickClicked(albumId, item, on, node, shift) {
+  function pickClicked(albumId, item, on, shift) {
     PICKABLE.set(albumId, item);
     if (shift && lastPickedId && lastPickedId !== albumId) {
       const ids = pickableCards().map((c) => c.dataset.album);
@@ -476,35 +482,18 @@
         return;
       }
     }
-    togglePick(albumId, item, on, node);
+    togglePick(albumId, item, on);
     lastPickedId = albumId;
   }
 
   /** Tick every selectable card on screen. */
   function selectAllVisible() {
     const ids = pickableCards().map((c) => c.dataset.album);
-    const allPicked = ids.length > 0 && ids.every((id) => state.picked.has(id));
-    inBulk(() => ids.forEach((id) => setPick(id, !allPicked)));
+    // Only ever adds. It lives in a bar that exists because something is
+    // selected, so a version that could empty the batch would be a button
+    // that removes itself mid-press.
+    inBulk(() => ids.forEach((id) => setPick(id, true)));
     lastPickedId = ids.length ? ids[ids.length - 1] : null;
-  }
-
-  // Sits above a grid that has anything selectable in it. Not part of the pick
-  // bar, which only exists once something is picked -- "select all" that you
-  // can only reach by first selecting one is not much of a select all.
-  function selectAllBar() {
-    const count = pickableCards().length;
-    if (!count) return null;
-    const picked = pickableCards().filter((c) => state.picked.has(c.dataset.album)).length;
-    return el('div', { class: 'row grid-tools' },
-      el('button', { class: 'linkbtn', onclick: selectAllVisible },
-         picked === count ? `Clear all ${count}` : `Select all ${count}`));
-  }
-
-  function refreshSelectAllBar() {
-    const host = $('#grid-tools-host');
-    if (!host) return;
-    const bar = selectAllBar();
-    host.replaceChildren(...(bar ? [bar] : []));
   }
 
   function clearPicks() {
@@ -516,7 +505,6 @@
     });
     lastPickedId = null;
     renderPickBar();
-    refreshSelectAllBar();
   }
 
   // A bar that only exists while something is selected, so the page is not
@@ -528,14 +516,28 @@
     // once, here, rather than asked for by every rule that cares.
     document.body.classList.toggle('picking', count > 0);
     bar.hidden = !count;
-    if (!count) return;
+    if (!count) {
+      // Emptied, not just hidden. A hidden bar holding "96 selected" is a
+      // stale claim that a screen reader will still read out.
+      bar.replaceChildren();
+      return;
+    }
     const items = () => [...state.picked.entries()].map(([id, item]) => ({ id, item }));
+    const onScreen = pickableCards().length;
+    const allTaken = onScreen > 0 && pickableCards().every((c) => state.picked.has(c.dataset.album));
     bar.replaceChildren(
       el('strong', {}, `${count} selected`),
       el('button', { onclick: () => bulkDownload(items()) }, 'Download'),
       el('button', { onclick: () => bulkDownloadAndUpload(items()) }, 'Download & upload'),
       el('button', { onclick: () => bulkCheck(items()) }, 'Check trackers'),
-      el('button', { class: 'ghost', onclick: clearPicks }, 'Clear'),
+      // Everything above acts on the batch. Everything after the gap changes
+      // what the batch is, which is a different kind of thing, so it sits at
+      // the other end of the row.
+      el('span', { class: 'bar-gap' }),
+      onScreen && !allTaken
+        ? el('button', { class: 'ghost', onclick: selectAllVisible }, 'Select all')
+        : null,
+      el('button', { class: 'ghost', onclick: clearPicks }, 'Clear all'),
     );
   }
 
@@ -730,9 +732,8 @@
         // cell in it.
         const grid = el('div', { class: 'grid' });
         results.className = 'search-sections';
-        results.replaceChildren(el('div', { id: 'grid-tools-host' }), grid);
+        results.replaceChildren(grid);
         renderGrid(grid, data.results, 'Nothing found.');
-        refreshSelectAllBar();
         return;
       }
 
@@ -742,7 +743,6 @@
         return;
       }
       results.replaceChildren(
-        el('div', { id: 'grid-tools-host' }),
         ...sections.flatMap(([kind, rows]) => [
           // The heading is the control. It used to be a label with an "Only
           // these" link stranded at the far right of the row -- a second thing
@@ -771,14 +771,13 @@
           el('div', { class: 'grid' }, ...rows.map(card)),
         ]),
       );
-      // After the cards exist, because the bar counts what is on screen.
-      refreshSelectAllBar();
     } catch (e) {
       results.replaceChildren(empty(e.message));
     }
   }
 
   function selectSearchType(type) {
+    clearPicks();
     state.searchType = type;
     $$('#search-type button').forEach((b) => b.classList.toggle('active', b.dataset.type === type));
     runSearch();
@@ -821,19 +820,13 @@
       if (state.exploreTab === 'charts') {
         const chart = await api(`/api/explore/charts?genre=${state.exploreGenre}`);
         body.replaceChildren();
-        const tools = el('div', { id: 'grid-tools-host' });
-        body.append(tools);
         for (const [label, key] of [['Albums', 'albums'], ['Tracks', 'tracks'], ['Artists', 'artists']]) {
           if (!chart[key]?.length) continue;
           const grid = el('div', { class: 'grid' });
           grid.append(...chart[key].map(card));
           body.append(el('h2', { class: 'section-title' }, label), grid);
         }
-        if (body.children.length <= 1) {
-          body.replaceChildren(empty('Deezer has no chart for this selection.'));
-        } else {
-          refreshSelectAllBar();
-        }
+        if (!body.children.length) body.replaceChildren(empty('Deezer has no chart for this selection.'));
       } else {
         const data = await api(`/api/explore/releases?genre=${state.exploreGenre}`);
         const grid = el('div', { class: 'grid' });
@@ -841,11 +834,9 @@
         body.replaceChildren(
           ...[
             data.note ? el('p', { class: 'hint' }, data.note) : null,
-            el('div', { id: 'grid-tools-host' }),
             grid,
           ].filter(Boolean),
         );
-        refreshSelectAllBar();
       }
     } catch (e) {
       body.replaceChildren(empty(e.message));
@@ -868,6 +859,7 @@
             'data-genre': g.id,
             onclick: () => {
               state.exploreGenre = g.id;
+              clearPicks();
               loadExplore();
             },
           },
@@ -963,11 +955,6 @@
           el('div', { class: 'grid' }, ...group.albums.map(card)),
         ]),
       );
-      // An artist page is where a batch is most likely wanted -- it is a whole
-      // discography on one screen -- and it was the one grid with no way to
-      // take all of it.
-      results.insertBefore(el('div', { id: 'grid-tools-host' }), results.querySelector('.section-title'));
-      refreshSelectAllBar();
     } catch (e) {
       results.replaceChildren(...[breadcrumbs('Artist'), empty(e.message)].filter(Boolean));
     }

@@ -324,10 +324,13 @@ def main() -> int:
     # --- the search results are a list you can work with --------------
     # Taking twenty of thirty covers was twenty clicks, and there was no way to
     # take all of them at all.
-    check("there is a select-all above the covers", "function selectAllVisible" in js, "")
-    check("shown wherever something can be ticked, not only once one is",
-          "function selectAllBar" in js and "grid-tools-host" in js, "")
-    check("it flips to clearing when everything is taken", "Clear all ${count}" in js, "")
+    check("there is a select-all", "function selectAllVisible" in js, "")
+    # It used to be a strip above every grid, on screen whether or not you were
+    # selecting anything. It lives in the bar that only exists while a batch
+    # does, so the controls appear with the thing they control.
+    check("and it lives in the pick bar, not a strip of its own",
+          "grid-tools-host" not in js and "function selectAllBar" not in js, "")
+    check("with no count on the buttons", "Select all ${" not in js, "")
     check("shift-click takes the run between two ticks",
           "e.shiftKey" in js and "function pickClicked" in js, "")
     check("which needs the click event, not change -- change carries no shift key",
@@ -387,17 +390,13 @@ def main() -> int:
           "const selecting = () => state.picked.size > 0" in js, "")
     check("a card click selects while one is", "if (isAlbum && albumId && selecting())" in js, "")
     check("and shift still takes the run from the card body",
-          "pickClicked(id, item, !state.picked.has(id), node, e.shiftKey)" in js, "")
+          "pickClicked(id, item, !state.picked.has(id), e.shiftKey)" in js, "")
     check("with nothing picked it still opens the release",
           "else if (albumId) openAlbum(albumId);" in js, "")
 
     # --- the artist page is a discography, so it gets a select-all ----
-    artist = js[js.index("async function openArtist"):]
-    artist = artist[: artist.index(chr(10) + "  }" + chr(10))]
-    check("the artist page has a select-all too",
-          "grid-tools-host" in artist and "refreshSelectAllBar()" in artist, "")
-    check("above the first section rather than after the sections",
-          "insertBefore" in artist, "")
+    check("the artist page needs no select-all of its own either",
+          "grid-tools-host" not in js, "")
 
     # --- the circle is the state, not a second opinion about it -------
     # Picking from the card body left the circle empty on a picked card,
@@ -408,8 +407,8 @@ def main() -> int:
     check("one function sets the set, the outline and the circle together",
           "state.picked" in toggle and "classList.toggle('picked'" in toggle
           and "box.checked = on" in toggle, "")
-    check("and it finds the card itself when the caller has no node",
-          "document.querySelector(`.card[data-album=" in toggle, "")
+    check("and it finds the cards itself rather than being handed one",
+          "document.querySelectorAll(`.card[data-album=" in toggle, "")
     check("ids are strings on both sides of the set",
           "state.picked.has(String(albumId))" in js, "")
 
@@ -429,13 +428,41 @@ def main() -> int:
     # --- select-all wherever releases can be picked -------------------
     explore = js[js.index("async function loadExplore"):]
     explore = explore[: explore.index(chr(10) + "  }" + chr(10))]
-    check("Browse has a select-all in charts", explore.count("grid-tools-host") >= 2,
-          str(explore.count("grid-tools-host")))
-    check("and in new releases", "refreshSelectAllBar();" in explore, "")
+    check("Browse needs no select-all of its own now", "grid-tools-host" not in explore, "")
 
     # The tip was noise: shift-click is worth knowing once, not on every grid.
     check("no shift-click tip rides along with the button",
           "Shift-click to take a run" not in js, "")
+
+    # --- the bar carries the whole batch, in two halves ---------------
+    bar = js[js.index("function renderPickBar()"):]
+    bar = bar[: bar.index(chr(10) + "  }" + chr(10))]
+    for label in ("Download", "Download & upload", "Check trackers", "Select all", "Clear all"):
+        check(f"the bar has {label!r}", f"'{label}'" in bar, "")
+    check("acting on the batch and changing it sit at opposite ends",
+          "bar-gap" in bar and "flex: 1 1 auto" in rule(css, ".bar-gap"), "")
+    check("select all goes once everything on screen is taken",
+          "onScreen && !allTaken" in bar, "")
+    check("and the bar is emptied when it closes, not just hidden",
+          "bar.replaceChildren();" in bar, "")
+
+    # --- a shift-click is a range, not a text drag --------------------
+    check("cards do not take a text selection",
+          "user-select: none" in rule(css, ".card"), rule(css, ".card").strip()[:70])
+
+    # --- every card showing a release agrees about it -----------------
+    check("all copies of a release are marked, not the first one found",
+          "document.querySelectorAll(`.card[data-album=" in js, "")
+
+    # --- leaving the list drops the batch -----------------------------
+    view = js[js.index("function setView(view)"):]
+    view = view[: view.index(chr(10) + "  }" + chr(10))]
+    check("changing view drops the batch", "clearPicks();" in view, "")
+    check("only when the view actually changes", "state.view !== view" in view, "")
+    check("changing the search type drops it",
+          "clearPicks();" in js[js.index("function selectSearchType"):][:200], "")
+    check("and so does a genre filter",
+          "clearPicks();" in js[js.index("state.exploreGenre = g.id;"):][:120], "")
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
