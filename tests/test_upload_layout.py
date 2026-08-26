@@ -359,6 +359,46 @@ def main() -> int:
     check("a pasted row is filled in from what the check found",
           "function fillPastedRequestRow" in js, "")
 
+    # --- the pick control is a ring, not a form checkbox --------------
+    # The browser's own checkbox is a filled white square with a blue tick. On
+    # top of album art it reads as a piece of chrome that landed there.
+    pick = rule(css, ".card-pick input")
+    check("the pick control is drawn by us, not the browser",
+          "appearance: none" in pick, pick.strip()[:60])
+    check("and it is a circle", "border-radius: 50%" in pick, "")
+    check("with the art showing through the middle",
+          "background: transparent" in pick, "")
+    check("and its own contrast, because the art behind it can be any colour",
+          "box-shadow" in pick, "")
+
+    checked = rule(css, ".card-pick input:checked")
+    check("taken, it fills with the one signal colour",
+          "background-color: var(--accent)" in checked, checked.strip()[:70])
+    # The trap this hit: `background: var(--accent)` is a shorthand carrying a
+    # var(), which cannot be resolved at parse time. The background-image in
+    # the same rule then collapses the rest of it, and the circle renders with
+    # its tick and no fill at all.
+    check("set as a longhand, or the background-image below it wipes the fill",
+          "background: var(--accent)" not in checked, "")
+    check("and carries a tick", "background-image" in checked, "")
+
+    # --- a click joins the batch once there is one --------------------
+    check("what a click means depends on whether a batch is open",
+          "const selecting = () => state.picked.size > 0" in js, "")
+    check("a card click selects while one is", "if (isAlbum && albumId && selecting())" in js, "")
+    check("and shift still takes the run from the card body",
+          "pickClicked(id, item, !state.picked.has(id), node, e.shiftKey)" in js, "")
+    check("with nothing picked it still opens the release",
+          "else if (albumId) openAlbum(albumId);" in js, "")
+
+    # --- the artist page is a discography, so it gets a select-all ----
+    artist = js[js.index("async function openArtist"):]
+    artist = artist[: artist.index(chr(10) + "  }" + chr(10))]
+    check("the artist page has a select-all too",
+          "grid-tools-host" in artist and "refreshSelectAllBar()" in artist, "")
+    check("above the first section rather than after the sections",
+          "insertBefore" in artist, "")
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

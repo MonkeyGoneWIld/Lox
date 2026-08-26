@@ -313,7 +313,17 @@
         // "everything between these two on screen", and on screen is the only
         // place that order exists.
         'data-album': isAlbum && albumId ? String(albumId) : null,
-        onclick: () => {
+        // Once anything is ticked you are choosing a batch, so a click on a
+        // card joins the batch rather than leaving the page you are building
+        // it on. Reaching for the little circle every time was the alternative,
+        // and it is the one thing on screen small enough to miss.
+        onclick: (e) => {
+          if (isAlbum && albumId && selecting()) {
+            e.preventDefault();
+            const id = String(albumId);
+            pickClicked(id, item, !state.picked.has(id), node, e.shiftKey);
+            return;
+          }
           if (item.type === 'artist') openArtist(item.id);
           else if (albumId) openAlbum(albumId);
         },
@@ -418,6 +428,9 @@
     renderPickBar();
     refreshSelectAllBar();
   }
+
+  /** Whether a batch is being built, which changes what a plain click means. */
+  const selecting = () => state.picked.size > 0;
 
   // Every album currently rendered, by id. Cards register here as they are
   // built so a range or a select-all can reach an item without re-fetching it.
@@ -928,6 +941,11 @@
           el('div', { class: 'grid' }, ...group.albums.map(card)),
         ]),
       );
+      // An artist page is where a batch is most likely wanted -- it is a whole
+      // discography on one screen -- and it was the one grid with no way to
+      // take all of it.
+      results.insertBefore(el('div', { id: 'grid-tools-host' }), results.querySelector('.section-title'));
+      refreshSelectAllBar();
     } catch (e) {
       results.replaceChildren(...[breadcrumbs('Artist'), empty(e.message)].filter(Boolean));
     }
