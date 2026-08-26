@@ -107,6 +107,9 @@
     const el2 = $(sel);
     if (!el2) return;
     el2.textContent = n ? String(n) : '';
+    // A stage holding something gets a live marker on the pipeline line, so
+    // the rail reads before the numbers beside it do.
+    el2.closest('.nav-item')?.classList.toggle('has-work', n > 0);
   }
 
   // The one interruption worth colouring from anywhere in the app: a run that

@@ -191,8 +191,31 @@ def main() -> int:
     #
     # Eight peers said nothing. Four of these are ways to find work and any can
     # start you off; three are stages one release passes through.
-    check("the sidebar is grouped", shell.count('class="nav-group"') == 3,
-          str(shell.count('class="nav-group"')))
+    # Counted on the class rather than the exact attribute: two of the groups
+    # carry a second class, and matching the literal string missed them.
+    groups = _re.findall(r'class="nav-group[^"]*"', shell)
+    check("the sidebar is grouped", len(groups) == 3, str(groups))
+
+    # The bullets were never a decision: `list-style` on the parent does not
+    # reach a <ul>, whose own UA rule wins over the inherited value, so turning
+    # .nav from a <ul> into a <nav> put the browser's markers back on every
+    # entry. Pinned because it is invisible in the markup and only shows on
+    # screen.
+    check("no list markers can come back", "list-style: none" in rule(css, ".nav ul"),
+          rule(css, ".nav ul"))
+    check("and the lists carry no indent of their own",
+          "padding: 0" in rule(css, ".nav ul"), rule(css, ".nav ul"))
+
+    # The pipeline is drawn as one thing, not three numbered rows.
+    check("the stages sit on a line", "::before" in css and ".nav-pipeline ul" in css, "")
+    check("the marker punches through it",
+          "background: var(--bg-raised)" in rule(css, ".nav-step"), rule(css, ".nav-step"))
+    check("every entry is iconed rather than bulleted",
+          shell.count('class="nav-icon"') == 5, str(shell.count('class="nav-icon"')))
+    check("and a blocked stage lights its marker, not only its label",
+          "needs-you:not(.active) .nav-step" in css, "")
+    check("a stage holding something is marked live",
+          "has-work" in css and "has-work" in js, "")
     check("the pipeline is numbered because the order is real",
           all(f'class="nav-step">{n}<' in shell for n in (1, 2, 3)), "")
     check("its stages are named for what they are doing",

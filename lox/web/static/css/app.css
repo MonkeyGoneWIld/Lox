@@ -166,7 +166,8 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .brand-name { font-weight: 650; letter-spacing: -0.01em; }
 .brand-sub { font-size: 11px; color: var(--text-dim); }
 
-.nav { list-style: none; margin: 12px 0; padding: 0 8px; flex: 1; }
+.nav { list-style: none; margin: 12px 0; padding: 0 8px; flex: 1;
+       display: flex; flex-direction: column; }
 .nav li { margin-bottom: 2px; }
 
 .nav-item {
@@ -1330,15 +1331,28 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 
 /* ---------- sidebar: two groups, one of them in order ---------- */
 
+/* The list markers are the browser's, not a decision. `list-style` set on the
+   parent does not reach a <ul>: the UA stylesheet's own `ul { list-style-type:
+   disc }` wins over the inherited value, so turning .nav from a <ul> into a
+   <nav> put bullets back on every entry. */
+.nav ul { list-style: none; margin: 0; padding: 0; }
+
 .nav-group { margin: 14px 0 2px; }
 .nav-group + .nav-group { border-top: 1px solid var(--border-soft); padding-top: 12px; }
 .nav-group > .cap { padding: 0 18px 8px; display: block; }
+.nav-tail { margin-top: auto; }
 
 .nav-item {
   border-radius: 0;
   padding: 7px 18px;
-  gap: 10px;
+  gap: 11px;
 }
+
+/* One stroke weight, one grid, drawn rather than typed -- a glyph from
+   whatever font happens to carry it arrives at a different weight and sits off
+   the baseline. */
+.nav-icon { width: 15px; height: 15px; flex: none; opacity: 0.85; }
+.nav-item.active .nav-icon { opacity: 1; }
 
 .nav-item.active {
   background: var(--accent);
@@ -1346,18 +1360,49 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
   font-weight: 600;
 }
 
-/* The step number. The pipeline has an order and the order is real: nothing
-   reaches 3 without passing 2. */
-.nav-step {
-  font-family: var(--mono);
-  font-size: 10px;
-  width: 15px;
-  flex: none;
-  text-align: center;
-  color: var(--text-faint);
+/* The pipeline is drawn as one, because it is one: a line down the three
+   stages with a marker on it for each. The order stops being something you
+   read off three numerals and becomes something you see. */
+.nav-pipeline ul { position: relative; }
+
+.nav-pipeline ul::before {
+  content: "";
+  position: absolute;
+  left: 25px;              /* centre of a 15px marker at 18px padding */
+  top: 16px;
+  bottom: 16px;
+  width: 1px;
+  background: var(--border);
 }
 
-.nav-item.active .nav-step { color: inherit; opacity: 0.6; }
+/* The numeral stays: it is what makes "nothing reaches 3 without passing 2"
+   legible. It sits inside its marker, on the line. */
+.nav-step {
+  font-family: var(--mono);
+  font-size: 9px;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  background: var(--bg-raised);   /* punches the line through */
+  position: relative;
+  border-radius: 2px;
+}
+
+/* On the amber row the marker inverts rather than disappearing into it. */
+.nav-item.active .nav-step {
+  color: var(--accent);
+  border-color: var(--accent-ink);
+  background: var(--accent-ink);
+}
+
+/* A stage with something in it has a live marker, so the rail reads at a
+   glance even before the counts are. */
+.nav-item.has-work:not(.active) .nav-step { color: var(--text); border-color: var(--text-faint); }
 
 /* A count sitting where a badge used to. Not a pill, not a colour, until
    there is something to say. */
@@ -1374,6 +1419,10 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
    stopped and is waiting on an answer. */
 .nav-item.needs-you:not(.active) { color: var(--accent); }
 .nav-item.needs-you:not(.active) .nav-count { color: var(--accent); }
+.nav-item.needs-you:not(.active) .nav-step {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 
 .nav-label { flex: 1; text-align: left; }
 
