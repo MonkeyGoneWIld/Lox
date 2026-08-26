@@ -225,6 +225,29 @@
             <button id="found-restore" hidden>Clear blacklist</button>
             <span class="hint" id="found-count"></span>
           </div>
+          <!-- Filtering the list you already have, which is a different
+               question from what the settings decide reaches it at all. This
+               one is throwaway: it narrows what is on screen and forgets it
+               when you leave. -->
+          <div class="row queue-filter">
+            <input type="search" id="found-search" placeholder="Artist or title">
+            <select id="found-tracker">
+              <option value="">Any tracker</option>
+            </select>
+            <select id="found-source">
+              <option value="">Scans and requests</option>
+              <option value="scan">Scans only</option>
+              <option value="request">Request fills only</option>
+            </select>
+            <button id="found-filter-clear" hidden>Clear filter</button>
+            <span class="hint" id="found-filtered"></span>
+          </div>
+          <!-- What the queue rules in Settings kept out. Shown as a count with
+               a way to look, never as a silently shorter list. -->
+          <div class="row held-note" id="found-held-row" hidden>
+            <span class="hint" id="found-held"></span>
+            <button class="linkbtn" id="found-held-toggle">Show them</button>
+          </div>
           <!-- A re-check spends a tracker call per release and used to show
                nothing but a Stop button while it did. -->
           <div class="joblog" id="found-log" hidden></div>

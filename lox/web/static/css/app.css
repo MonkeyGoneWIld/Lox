@@ -1317,6 +1317,28 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
    column, so three trackers do not squeeze the release title. */
 .found-trackers { display: flex; flex-wrap: wrap; gap: 5px; }
 
+/* Reading the queue you have, as opposed to the Settings rules that decide
+   what is in it. Sits under the action row and above the table, because it
+   changes what the buttons above it will act on. */
+.queue-filter { margin-top: 10px; }
+.queue-filter input[type="search"] { width: 220px; }
+.queue-filter select { width: auto; min-width: 150px; }
+
+/* What the rules kept out. Deliberately quiet -- it is a footnote to the
+   queue, not a second queue -- but never invisible, because a rule that
+   silently shortens a list is indistinguishable from an empty scan. */
+.held-note { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.held-block { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border); }
+.held-block .table { opacity: 0.72; }
+.held-block .table:hover { opacity: 1; }
+.section-head-plain {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text-dim);
+}
+
 /* Getting requests into the list, folded away until wanted. Fetching is the
    normal path; pasting ids or uploading a file is the exception. */
 .paste-ids { margin-top: 12px; }

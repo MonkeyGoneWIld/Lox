@@ -55,6 +55,11 @@ class Field(NamedTuple):
     section: str
     help: str = ""
     choices: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
+    """What each choice is called on screen, in the same order as ``choices``.
+    Stored values want to be short and stable ("only_missing_there"); the thing
+    a person reads off a dropdown does not. Empty means the value is already
+    the label, which is true of a list of image hosts and false of a rule."""
     minimum: float | None = None
     maximum: float | None = None
     placeholder: str = ""
@@ -73,6 +78,7 @@ class Field(NamedTuple):
             "section": self.section,
             "help": self.help,
             "choices": list(self.choices),
+            "labels": list(self.labels),
             "min": self.minimum,
             "max": self.maximum,
             "placeholder": self.placeholder,
@@ -140,6 +146,14 @@ SECTIONS: tuple[Section, ...] = (
         "The defaults are conservative guesses, not measured limits.",
         category="Accounts",
     ),
+    Section(
+        "queue",
+        "What reaches the queue",
+        "A check that matches a Deezer release to a tracker is always kept. These decide which of those matches "
+        "are worth acting on, and they are applied when the queue is drawn -- so widening them brings rows back "
+        "without spending tracker budget again.",
+        category="Accounts",
+    ),
     Section("upload", "Uploading", "How the pipeline behaves while it works through a release.",
             category="Uploading"),
     Section("requests", "Requests and duplicates", "What the pipeline checks against the tracker while uploading.",
@@ -180,6 +194,9 @@ CATEGORIES: tuple[str, ...] = ("Accounts", "Uploading", "Files", "Maintenance")
 """Display order for the section groups."""
 
 
+TRACKER_RULE_HELP = "Leave this alone to keep the tracker out of the decision entirely."
+
+
 FIELDS: tuple[Field, ...] = (
     # --- Deezer -------------------------------------------------------
     Field("metadata.deezer.arl", "ARL cookie", "secret", "deezer", "Required for downloads, channels and FLAC checks."),
@@ -218,6 +235,35 @@ FIELDS: tuple[Field, ...] = (
           placeholder="2026-12-31"),
     Field("checker.min_confidence", "Minimum request match confidence", "float", "checker",
           "Artist and title must also clear their own thresholds.", minimum=0.0, maximum=1.0),
+    # --- What reaches the queue ---------------------------------------
+    # Named for what the user is deciding, not for the field they are setting:
+    # "RED" over a dropdown reading "must be missing there" says the whole rule
+    # in one line.
+    Field("checker.queue_red", "RED", "choice", "queue", TRACKER_RULE_HELP,
+          choices=("any", "missing", "present"),
+          labels=("Doesn't matter", "Must be missing there", "Must already be there")),
+    Field("checker.queue_ops", "OPS", "choice", "queue", TRACKER_RULE_HELP,
+          choices=("any", "missing", "present"),
+          labels=("Doesn't matter", "Must be missing there", "Must already be there")),
+    Field("checker.queue_dic", "DIC", "choice", "queue", TRACKER_RULE_HELP,
+          choices=("any", "missing", "present"),
+          labels=("Doesn't matter", "Must be missing there", "Must already be there")),
+    Field("checker.queue_match", "Combine the tracker rules with", "choice", "queue",
+          "All: every rule above has to hold. Any: one of them is enough.",
+          choices=("all", "any"),
+          labels=("All of them must hold", "Any one of them is enough")),
+    Field("checker.queue_requests", "Releases that fill a request", "choice", "queue",
+          "A request fill is a release a request check matched. The rest come from scans.",
+          choices=("any", "only", "only_missing_there", "exclude"),
+          labels=(
+              "Treat them like any other release",
+              "Only releases that fill a request",
+              "Only request fills missing on the request's own tracker",
+              "Never queue a release just because it fills a request",
+          )),
+    Field("checker.queue_require_somewhere_missing", "Hide releases that are already on every tracker", "bool",
+          "queue", "There is nothing to upload for those. Turn it off if you set a rule to \"present\"."),
+
     Field("checker.state_dir", "Scan history directory", "path", "paths",
           "Which albums and requests have already been checked, so a rescan does not spend tracker budget "
           "asking again."),

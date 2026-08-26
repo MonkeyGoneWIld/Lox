@@ -16,6 +16,7 @@ What they cover:
   * a dry run offers to clear up after itself, one folder at a time or all
   * no card paints the colour of a form field, which reads as a sunken well
   * a section heading is the control that filters to it, not a button beside it
+  * the queue's filter narrows what the buttons act on, and says what it hid
 """
 
 import os
@@ -271,6 +272,30 @@ def main() -> int:
     check("and it says what clicking will do", "Show only ${" in js, "")
     check("the arrow only appears under the pointer",
           ".section-head:hover .section-go" in css, "")
+
+    # --- the queue filters what you can see, and says when it does ----
+    # Two different things sit on this page and must not be confused: the
+    # Settings rules decide what belongs in the queue and persist; this narrows
+    # what is drawn and forgets itself. The dangerous overlap is the buttons --
+    # "Download selected" acting on a row scrolled out of existence by a filter
+    # would be indefensible, so the selection is scoped to the filtered rows.
+    for control in ("found-search", "found-tracker", "found-source", "found-filter-clear"):
+        check(f"the queue has a {control}", f'id="{control}"' in shell, "")
+    check("the selection follows the filter, not the whole queue",
+          "filteredFound().filter((f) => state.selectedFound.has(f.id))" in js, "")
+    check("and the count is of what is on screen",
+          "of ${rows.length} selected" in js, "")
+    check("select-all ticks the rows you can see",
+          "selectAllBox(rows.map((f) => f.id)" in js, "")
+
+    # A rule that hides rows without saying so is indistinguishable from a
+    # scan that found nothing, which is how this page loses someone's trust.
+    check("held-back rows are counted on the page", 'id="found-held"' in shell, "")
+    check("with a way to look at them", 'id="found-held-toggle"' in shell, "")
+    check("each carrying the reason it was held", "held_reason" in js, "")
+    check("and the rule itself said in words", "state.foundRule" in js, "")
+    check("the filter is not persisted, because it is not a setting",
+          "foundFilter: { text: '', tracker: '', source: '' }" in js.replace('"', "'"), "")
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
