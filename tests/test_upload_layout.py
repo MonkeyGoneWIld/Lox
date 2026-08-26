@@ -14,6 +14,8 @@ What they cover:
   * what is already in the group is shown, not folded away
   * a hint never pushes its own input out of line with its neighbours'
   * a dry run offers to clear up after itself, one folder at a time or all
+  * no card paints the colour of a form field, which reads as a sunken well
+  * a section heading is the control that filters to it, not a button beside it
 """
 
 import os
@@ -232,6 +234,43 @@ def main() -> int:
           """$$('.flow-head[data-state="waiting"]').length""" in js, "")
     check("the tab name survives the number and the count beside it",
           "navLabel(view)" in js and ".nav-label" in js, "")
+
+    # --- one surface per card ----------------------------------------
+    # --bg-input is the colour of a form field. Painted on a card it reads as
+    # a well sunk into the panel, which is how the spectrals ended up in a
+    # darker box than everything around them: the step was a well, and the
+    # image painted a third colour inside it. A card either inherits the panel
+    # it sits on or draws a border -- it never paints the field colour.
+    for name in (".step", ".match", ".card-art", ".album-art", ".request-cover", ".dl-art"):
+        body = rule(css, name)
+        check(f"{name} does not paint the field colour",
+              "var(--bg-input)" not in body, body.strip()[:70])
+    check("the step is a bordered card, not a sunken one",
+          "border: 1px solid var(--border)" in rule(css, ".step"), "")
+    check("and the spectral image adds no surface of its own",
+          "background:" not in rule(css, ".spectral-pair img"), "")
+    check("a group inside the card is drawn with its border alone",
+          "background: transparent" in rule(css, ".meta-group"), "")
+    check("the sticky settings bar matches the panel it sits on",
+          "var(--bg-raised)" in rule(css, ".settings-bar"), "")
+
+    # --- the heading is the filter ------------------------------------
+    # There was an "Only these" button beside each heading. The heading
+    # already names the thing and carries its count; it is the control.
+    Q = chr(39)
+    flat = js.replace(chr(34), Q)
+    check("no button repeats what the heading already says",
+          "Only these" not in js, "")
+    head = flat[flat.index("section-head") - 40:][:420] if "section-head" in flat else ""
+    check("the heading filters to its own kind",
+          all(w in head for w in ("role: " + Q + "button" + Q, "selectSearchType(kind)")), "")
+    check("reachable from the keyboard",
+          "tabindex: " + Q + "0" + Q in flat and "e.key === " + Q + "Enter" + Q in flat, "")
+    check("with the count set apart from the name",
+          all(Q + n + Q in flat for n in ("section-title", "section-count")), "")
+    check("and it says what clicking will do", "Show only ${" in js, "")
+    check("the arrow only appears under the pointer",
+          ".section-head:hover .section-go" in css, "")
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")

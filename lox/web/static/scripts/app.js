@@ -605,12 +605,29 @@
       }
       results.replaceChildren(
         ...sections.flatMap(([kind, rows]) => [
+          // The heading is the control. It used to be a label with an "Only
+          // these" link stranded at the far right of the row -- a second thing
+          // to find, a foot away from the thing it acts on, saying in two words
+          // what the heading already names. Press "Albums (30)" and you get the
+          // albums on their own.
           el(
-            'div',
-            { class: 'section-head' },
-            el('h3', { class: 'section-title' }, `${SECTION_LABEL[kind] || kind} (${rows.length})`),
-            // Straight to that kind on its own, which is what the filter is for.
-            el('button', { class: 'link', onclick: () => selectSearchType(kind) }, 'Only these'),
+            'h3',
+            {
+              class: 'section-head',
+              role: 'button',
+              tabindex: '0',
+              title: `Show only ${(SECTION_LABEL[kind] || kind).toLowerCase()}`,
+              onclick: () => selectSearchType(kind),
+              onkeydown: (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  selectSearchType(kind);
+                }
+              },
+            },
+            el('span', { class: 'section-title' }, SECTION_LABEL[kind] || kind),
+            el('span', { class: 'section-count' }, String(rows.length)),
+            el('span', { class: 'section-go', 'aria-hidden': 'true' }),
           ),
           el('div', { class: 'grid' }, ...rows.map(card)),
         ]),
@@ -1144,7 +1161,7 @@
 
     await download(album.id);
     setView('downloads');
-    toast(`Downloading first. When it finishes, upload it from the Uploads tab — ${trackers.join(' and ')} are preselected.`);
+    toast(`Downloading first. When it finishes, upload it from Uploading — ${trackers.join(' and ')} are preselected.`);
   }
 
   // ---------------------------------------------------------------- watchlists
@@ -1310,7 +1327,7 @@
   function renderDownloads(jobs) {
     const list = $('#downloads-list');
     if (!jobs.length) {
-      list.replaceChildren(empty('Nothing downloaded yet. Queue something from Search or Explore.'));
+      list.replaceChildren(empty('Nothing downloading. Add something from Search or Browse.'));
       return;
     }
     list.replaceChildren(
@@ -1725,7 +1742,7 @@
             'label',
             { class: 'check strict-check', title: 'Exclude requests that leave this open to anything' },
             el('input', { type: 'checkbox', id: strictId }),
-            'Only these',
+            'Must be stated',
           )
         : null,
     );
