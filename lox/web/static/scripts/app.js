@@ -1864,32 +1864,55 @@
     );
   }
 
-  // The options come from the tracker, not from us. `strictId` adds that
-  // group's own "Only specified", which the tracker keeps per group and off by
-  // default -- a request that accepts any media names no media at all, so
-  // turning it on hides every one of those rather than narrowing the list.
-  function filterChoices(id, label, options, strictId) {
-    const box = el(
-      'div',
-      { class: 'checkgroup', id },
+  // One row of the search form: a label on the left, controls on the right.
+  // The trackers lay their own form out this way and it is the right shape --
+  // fifteen release types read as a paragraph of options, not as a column you
+  // have to scroll.
+  function formRow(label, ...controls) {
+    return el('div', { class: 'reqrow' },
+      el('div', { class: 'reqlabel' }, label),
+      el('div', { class: 'reqfield' }, ...controls.filter(Boolean)));
+  }
+
+  // A group of ticks with its own All, and optionally the tracker's own
+  // "Only specified".
+  //
+  // All is not a filter of its own -- it is a shortcut that ticks the rest,
+  // which is what it does on both sites. It also has to follow along: tick
+  // every option by hand and All shows itself ticked, because a box that says
+  // "all" while all of them are on and it is not is just wrong.
+  function checkGroup(id, options, strictId) {
+    const boxes = el('div', { class: 'reqchecks', id },
       ...options.map((name) =>
-        el('label', { class: 'check' }, el('input', { type: 'checkbox', value: name, onchange: requestsCost }), name),
-      ),
-    );
-    return el(
-      'div',
-      { class: 'setting' },
-      el('label', { for: id }, label),
-      box,
-      strictId
-        ? el(
-            'label',
-            { class: 'check strict-check', title: 'Exclude requests that leave this open to anything' },
-            el('input', { type: 'checkbox', id: strictId }),
-            'Must be stated',
-          )
-        : null,
-    );
+        el('label', { class: 'check' },
+          el('input', { type: 'checkbox', value: name, onchange: () => { syncAll(id); requestsCost(); } }),
+          name)));
+
+    const all = el('input', {
+      type: 'checkbox',
+      id: `${id}-all`,
+      onchange: (e) => {
+        $$(`#${id} input`).forEach((box) => { box.checked = e.target.checked; });
+        requestsCost();
+      },
+    });
+
+    return el('div', { class: 'reqgroup' },
+      el('div', { class: 'reqgroup-head' },
+        el('label', { class: 'check' }, all, 'All'),
+        strictId
+          ? el('label', { class: 'check', title: 'Exclude requests that leave this open to anything' },
+              el('input', { type: 'checkbox', id: strictId }), 'Only specified')
+          : null),
+      boxes);
+  }
+
+  /** Keep a group's All in step with the ticks under it. */
+  function syncAll(id) {
+    const all = $(`#${id}-all`);
+    if (!all) return;
+    const boxes = [...$$(`#${id} input`)];
+    all.checked = boxes.length > 0 && boxes.every((b) => b.checked);
   }
 
   const chosen = (id) => [...$$(`#${id} input:checked`)].map((i) => i.value);
@@ -1912,107 +1935,69 @@
     }
     state.requestFilters = spec;
 
-    const fields = [
-      el(
-        'div',
-        { class: 'setting' },
-        el('label', { for: 'requests-search' }, 'Search'),
+    const rows = [
+      formRow('Search terms',
         el('input', { type: 'search', id: 'requests-search', placeholder: 'Artist, album or both' }),
         // RED keeps this beside its own search box, and it only widens what the
         // search string is matched against -- with the box empty it does
-        // nothing at all, which is impossible to guess from a lone toggle
-        // sitting under "Options".
+        // nothing at all.
         spec.descriptions
-          ? el(
-              'label',
-              { class: 'check strict-check', title: 'Only affects what the search text above matches' },
+          ? el('label', { class: 'check', title: 'Only affects what the search text above matches' },
               el('input', { type: 'checkbox', id: 'requests-descriptions' }),
-              'Also search descriptions and comments',
-            )
-          : null,
-        el('p', { class: 'hint setting-help' },
-           'Matched against artist and title. Blank lists everything open.'),
-      ),
-      filterField(
-        'requests-tags',
-        'Tags',
+              'Include desc/comments')
+          : null),
+
+      formRow('Tags',
         el('input', { type: 'search', id: 'requests-tags', placeholder: 'hip.hop, jazz' }),
-        "Comma separated, in the tracker's own spelling — dots, not spaces.",
-      ),
-      filterField(
-        'requests-tags-mode',
-        'Tag match',
-        el(
-          'select',
-          { id: 'requests-tags-mode' },
-          el('option', { value: 'any' }, 'Any of these tags'),
-          el('option', { value: 'all' }, 'All of these tags'),
-        ),
-      ),
+        // Two radios, the way the form has it. A dropdown made a choice between
+        // two things look like a list of many.
+        el('label', { class: 'check' },
+          el('input', { type: 'radio', name: 'requests-tags-mode', value: 'any', checked: true }), 'Any'),
+        el('label', { class: 'check' },
+          el('input', { type: 'radio', name: 'requests-tags-mode', value: 'all' }), 'All'),
+        el('span', { class: 'hint reqhint' }, "the tracker's own spelling — dots, not spaces")),
+
+      formRow('Include filled',
+        el('input', { type: 'checkbox', id: 'requests-show-filled' })),
     ];
 
-    if (spec.formats.length) {
-      fields.push(filterChoices('requests-format', 'Format', spec.formats, 'requests-strict-format'));
+    if (spec.include_old) {
+      rows.push(formRow('Include old', el('input', { type: 'checkbox', id: 'requests-include-old' })));
     }
-    if (spec.media.length) {
-      fields.push(filterChoices('requests-media', 'Media', spec.media, 'requests-strict-media'));
-    }
-    if (spec.encodings.length) {
-      fields.push(filterChoices('requests-encoding', 'Encoding', spec.encodings, 'requests-strict-encoding'));
+    if (spec.categories.length) {
+      // Was pinned to Music and never offered. Every search lox made carried
+      // filter_cat for music alone, so the audiobook and application requests
+      // the site returns could not appear here however the page was set.
+      rows.push(formRow('Categories', checkGroup('requests-category', spec.categories, '')));
     }
     if (spec.release_types.length) {
-      fields.push(filterChoices('requests-release-type', 'Release type', spec.release_types, ''));
+      rows.push(formRow('Release types', checkGroup('requests-release-type', spec.release_types, '')));
+    }
+    if (spec.formats.length) {
+      rows.push(formRow('Formats', checkGroup('requests-format', spec.formats, 'requests-strict-format')));
+    }
+    if (spec.encodings.length) {
+      rows.push(formRow('Bitrates', checkGroup('requests-encoding', spec.encodings, 'requests-strict-encoding')));
+    }
+    if (spec.media.length) {
+      rows.push(formRow('Media', checkGroup('requests-media', spec.media, 'requests-strict-media')));
     }
     if (spec.bounty) {
-      fields.push(
-        filterField(
-          'requests-bounty-min',
-          'Bounty (GiB)',
-          el(
-            'div',
-            { class: 'row' },
-            el('input', { type: 'text', id: 'requests-bounty-min', placeholder: 'min' }),
-            el('input', { type: 'text', id: 'requests-bounty-max', placeholder: 'max' }),
-          ),
-          'In GiB. Add M or T for MiB or TiB.',
-        ),
-      );
+      rows.push(formRow('Bounty (GiB)',
+        el('input', { type: 'text', id: 'requests-bounty-min', placeholder: 'min' }),
+        el('input', { type: 'text', id: 'requests-bounty-max', placeholder: 'max' }),
+        el('span', { class: 'hint reqhint' }, 'add M or T for MiB or TiB')));
     }
 
-    fields.push(
+    rows.push(formRow('Pages to fetch',
       // Pages, not a row count. One page is one call against the budget, so
-      // pages are the unit the cost is actually measured in -- picking "200"
-      // and being told it costs 8 calls was arithmetic the page could do.
-      // Typed, not picked from a list. The list stopped at 20 for no reason
-      // anyone could act on -- a tracker with 872 pages of open requests does
-      // not care that the dropdown ran out, and the only way to fetch more was
-      // to fetch 20 again. The cost line underneath is what keeps this honest.
-      filterField(
-        'requests-limit',
-        'Pages to fetch',
-        el('input', {
-          id: 'requests-limit',
-          type: 'number',
-          min: '1',
-          step: '1',
-          value: '4',
-          oninput: requestsCost,
-        }),
-        `${state.requestsTracker} serves ${spec.page_size} per page, and each page is one call.`,
-      ),
-    );
+      // pages are the unit the cost is actually measured in.
+      el('input', { id: 'requests-limit', type: 'number', min: '1', step: '1', value: '4',
+                    oninput: requestsCost }),
+      el('span', { class: 'hint reqhint' },
+         `${state.requestsTracker} serves ${spec.page_size} per page — one call each`)));
 
-    const toggles = [
-      el('label', { class: 'check' }, el('input', { type: 'checkbox', id: 'requests-show-filled' }), 'Include filled'),
-    ];
-    if (spec.include_old) {
-      toggles.push(
-        el('label', { class: 'check' }, el('input', { type: 'checkbox', id: 'requests-include-old' }), 'Include old'),
-      );
-    }
-
-    host.replaceChildren(...fields, el('div', { class: 'setting filter-toggles' }, el('label', {}, 'Options'),
-      el('div', { class: 'row' }, ...toggles)));
+    host.replaceChildren(el('div', { class: 'reqform' }, ...rows));
     if (!spec.mapped && spec.note) {
       host.append(el('p', { class: 'hint setting-help filter-note' }, spec.note));
     }
@@ -2056,7 +2041,7 @@
         tracker: state.requestsTracker,
         search: $('#requests-search').value,
         tags: $('#requests-tags').value,
-        tags_all: $('#requests-tags-mode').value === 'all' ? '1' : '0',
+        tags_all: $('input[name="requests-tags-mode"]:checked')?.value === 'all' ? '1' : '0',
         show_filled: ticked('requests-show-filled') ? '1' : '0',
         strict_format: ticked('requests-strict-format') ? '1' : '0',
         strict_media: ticked('requests-strict-media') ? '1' : '0',
@@ -2073,6 +2058,7 @@
         ['media', 'requests-media'],
         ['encoding', 'requests-encoding'],
         ['release_type', 'requests-release-type'],
+        ['category', 'requests-category'],
       ]) {
         for (const value of chosen(id)) params.append(key, value);
       }

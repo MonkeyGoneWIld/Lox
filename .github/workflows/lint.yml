@@ -119,6 +119,11 @@ jobs:
       - name: Dry run shows everything and writes nothing
         run: uv run python tests/test_dry_run.py
 
+      - name: A request search matches the tracker's own form
+        # Compared against URLs captured off the live RED and OPS search forms.
+        # The two sites number the same seven categories differently.
+        run: uv run python tests/test_request_parity.py
+
       - name: What reaches the queue
         # The rules are applied when the queue is read, so narrowing hides rows
         # and widening brings the same rows back with no tracker call.

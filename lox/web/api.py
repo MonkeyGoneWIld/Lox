@@ -1247,6 +1247,7 @@ async def api_requests_list(request: web.Request) -> web.Response:
             strict_encodings=flag("strict_encoding"),
             bounty_min=request.query.get("bounty_min", ""),
             bounty_max=request.query.get("bounty_max", ""),
+            categories=labels("category"),
         )
     except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
         return error(str(e), status=502)

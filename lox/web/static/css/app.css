@@ -940,12 +940,7 @@ select {
 
 /* Same field layout as the settings page, reused wherever a form needs to say
    what it accepts rather than expecting you to remember. */
-.filters {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
-  margin: 12px 0 14px;
-}
+.filters { margin: 12px 0 14px; }
 
 /* The card fills its panel, and everything in it fills the card.
    It used to be capped at 1100px and then each thing inside it capped again --
@@ -1002,26 +997,28 @@ select {
 
 /* Tick lists inside a filter field: scrollable so a 16-entry encoding list does
    not push everything else off the panel. */
-.checkgroup {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  max-height: 132px;
-  overflow-y: auto;
-  padding: 7px 9px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
+/* The request search, laid out the way the trackers lay theirs out: a label
+   on the left, its controls flowing across the rest of the row. It was four
+   columns of scrolling boxes, which turned fifteen release types into a
+   132px-tall list you had to scroll to find "Unknown" -- and made two forms
+   that are meant to mirror the sites look nothing like them. */
+.reqform { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 16px; }
 
-.checkgroup .check { font-size: 12.5px; }
+.reqrow { display: grid; grid-template-columns: 128px 1fr; gap: 14px; align-items: start; }
+.reqlabel { font-size: 13px; font-weight: 600; padding-top: 3px; }
+.reqfield { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-width: 0; }
+.reqfield input[type="search"], .reqfield input[type="text"] { width: 260px; }
+.reqfield input[type="number"] { width: 90px; }
+.reqhint { margin: 0; font-size: 11.5px; }
 
-/* Each group's own "Only specified", sitting under the list it applies to
-   rather than as one switch for all three -- which is what the tracker does,
-   and what stops it silently hiding every request that left the choice open. */
-.strict-check { font-size: 11.5px; color: var(--text-dim); margin-top: 5px; }
-.filter-toggles { grid-column: 1 / -1; }
-.filter-note { grid-column: 1 / -1; color: var(--warn); }
+.reqgroup { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+/* All and "Only specified" sit above the ticks they govern, as on the site. */
+.reqgroup-head { display: flex; align-items: center; gap: 16px; }
+.reqgroup-head .check { font-weight: 600; }
+.reqchecks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.reqchecks .check { font-size: 12.5px; }
+
+.filter-note { color: var(--warn); }
 
 .setting { display: flex; flex-direction: column; gap: 5px; }
 .setting > label { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }

@@ -464,6 +464,28 @@ def main() -> int:
     check("and so does a genre filter",
           "clearPicks();" in js[js.index("state.exploreGenre = g.id;"):][:120], "")
 
+    # --- the request form is the tracker's form -----------------------
+    # It was four columns of scrolling boxes, which turned fifteen release
+    # types into a 132px list you had to scroll to reach "Unknown".
+    check("the search form is rows, not scrolling columns",
+          "function formRow" in js and "max-height: 132px" not in css, "")
+    check("with a label beside its controls",
+          "grid-template-columns: 128px 1fr" in rule(css, ".reqrow"), "")
+    check("every group of ticks has its own All",
+          "function checkGroup" in js and "'All'" in js, "")
+    check("and the All follows the ticks under it, rather than only leading them",
+          "function syncAll" in js, "")
+    check("categories are offered at all", "requests-category" in js, "")
+    check("and sent with the search", "['category', 'requests-category']" in js, "")
+    flat_js = js.replace(chr(34), "'")
+    check("tag match is two radios, as on the form",
+          "type: " + "'" + "radio" in flat_js
+          and "name: " + "'" + "requests-tags-mode" in flat_js, "")
+    check("read back from whichever is picked",
+          "requests-tags-mode" + "'" + "]:checked" in flat_js, "")
+    check("and the button says what it does", "Search requests" in shell, "")
+    check("with the old wording gone", "Fetch open requests" not in shell, "")
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

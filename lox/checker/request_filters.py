@@ -29,6 +29,13 @@ PAGE_SIZE = 25
 size parameter, so this is what one tracker call buys."""
 
 
+#: The seven categories, in the order both forms list them. Same labels, same
+#: order, different numbering: RED starts at 1 and OPS at 0.
+CATEGORIES: tuple[str, ...] = (
+    "Music", "Applications", "E-Books", "Audiobooks", "E-Learning Videos", "Comedy", "Comics",
+)
+
+
 class TrackerFilters(NamedTuple):
     """One tracker's request-search vocabulary."""
 
@@ -42,8 +49,14 @@ class TrackerFilters(NamedTuple):
     formats_strict_param: str
     media_strict_param: str
     encodings_strict_param: str
-    # RED indexes categories as filter_cat[1]=1; OPS lists them as filter_cat[]=0.
-    music_category: dict[str, Any]
+    #: Category label to the id this tracker files it under. Both sites list the
+    #: same seven in the same order and number them differently: RED starts at
+    #: 1, OPS at 0.
+    categories: dict[str, int]
+    #: How the tracker spells a category selection. RED indexes them --
+    #: filter_cat[1]=1 -- and OPS collects them -- filter_cat[]=0. Sending one
+    #: site's spelling to the other filters nothing and returns everything.
+    category_style: str
     supports_bounty: bool = False
     supports_include_old: bool = False
     supports_descriptions: bool = False
@@ -66,7 +79,8 @@ RED = TrackerFilters(
     media_strict_param="media_strict",
     # Singular on RED, plural on OPS. Nothing warns you when it is wrong.
     encodings_strict_param="bitrate_strict",
-    music_category={"filter_cat[1]": 1},
+    categories=dict(zip(CATEGORIES, range(1, len(CATEGORIES) + 1), strict=True)),
+    category_style="indexed",
     supports_include_old=True,
     supports_descriptions=True,
 )
@@ -87,7 +101,8 @@ OPS = TrackerFilters(
     formats_strict_param="formats_strict",
     media_strict_param="media_strict",
     encodings_strict_param="bitrates_strict",
-    music_category={"filter_cat[]": 0},
+    categories=dict(zip(CATEGORIES, range(len(CATEGORIES)), strict=True)),
+    category_style="listed",
     supports_bounty=True,
 )
 
@@ -122,6 +137,7 @@ def schema(tracker: str) -> dict[str, Any]:
                 f"{tracker}'s filter IDs have not been verified against its own search page, so only the "
                 f"filters that need no IDs are offered. The rest would risk searching for the wrong thing."
             ),
+            "categories": [],
             "formats": [],
             "media": [],
             "encodings": [],
@@ -135,6 +151,7 @@ def schema(tracker: str) -> dict[str, Any]:
         "tracker": tracker,
         "mapped": True,
         "note": "",
+        "categories": list(spec.categories),
         "formats": list(spec.formats),
         "media": list(spec.media),
         "encodings": list(spec.encodings),
@@ -165,7 +182,7 @@ def build_params(
     strict_encodings: bool = False,
     bounty_min: str = "",
     bounty_max: str = "",
-    music_only: bool = True,
+    categories: list[str] | None = None,
 ) -> dict[str, Any]:
     """Turn a set of choices into one tracker's query parameters.
 
@@ -196,7 +213,10 @@ def build_params(
         strict_encodings: Exclude requests that name no encoding at all.
         bounty_min: Minimum bounty, in GiB, with an optional M or T suffix. OPS only.
         bounty_max: Maximum bounty. OPS only.
-        music_only: Restrict to the music category.
+        categories: Category labels, e.g. ``["Music"]``. Empty means every
+            category, which is what the form does when none are ticked -- it
+            was pinned to Music alone before, so a search here could never
+            return the audiobook and application requests the site returns.
 
     Returns:
         Query parameters for the tracker's ``requests`` action.
@@ -215,15 +235,19 @@ def build_params(
 
     spec = for_tracker(tracker)
 
+    # The tag mode goes out whether or not there are tags, because that is what
+    # the form does: it is a radio pair, and a radio pair always submits. With
+    # the box empty the tracker ignores it, so this costs nothing and keeps
+    # every search lox makes identical to the same search made on the site.
     if tags:
         params["tags"] = tags
-        if spec is not None:
-            params[spec.tag_mode_param] = spec.tag_mode_all if tags_all else spec.tag_mode_any
-        else:
-            # Unmapped: send both spellings. Gazelle ignores what it does not
-            # know, and the wrong one here narrows nothing rather than lying.
-            params["tags_type"] = 1 if tags_all else 0
-            params["tag_mode"] = "all" if tags_all else "any"
+    if spec is not None:
+        params[spec.tag_mode_param] = spec.tag_mode_all if tags_all else spec.tag_mode_any
+    else:
+        # Unmapped: send both spellings. Gazelle ignores what it does not
+        # know, and the wrong one here narrows nothing rather than lying.
+        params["tags_type"] = 1 if tags_all else 0
+        params["tag_mode"] = "all" if tags_all else "any"
 
     if spec is None:
         return params
@@ -254,7 +278,14 @@ def build_params(
         if bounty_max:
             params["bounty_max"] = bounty_max
 
-    if music_only:
-        params.update(spec.music_category)
+    # None ticked means every category, which is the form's own behaviour: it
+    # sends no filter_cat at all and the tracker returns everything.
+    wanted = [spec.categories[label] for label in (categories or []) if label in spec.categories]
+    if wanted:
+        if spec.category_style == "indexed":
+            for index in wanted:
+                params[f"filter_cat[{index}]"] = 1
+        else:
+            params["filter_cat[]"] = wanted
 
     return params

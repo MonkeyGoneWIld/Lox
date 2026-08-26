@@ -358,8 +358,18 @@ async def main() -> int:
           and "bitrate_strict" not in strict_red,
           str(sorted(k for k in strict_red if "strict" in k)))
 
-    check("RED indexes the music category", red.get("filter_cat[1]") == 1, str(red.get("filter_cat[1]")))
-    check("OPS lists it", ops.get("filter_cat[]") == 0, str(ops.get("filter_cat[]")))
+    # Categories are a filter now rather than a fixed music-only clamp, and the
+    # two sites file the same seven differently: RED indexes them by id, OPS
+    # collects them into one list.
+    red_cat = build_params("RED", categories=["Music", "E-Books"])
+    ops_cat = build_params("OPS", categories=["Music", "E-Books"])
+    check("RED indexes each category it was given",
+          red_cat.get("filter_cat[1]") == 1 and red_cat.get("filter_cat[3]") == 1,
+          str(sorted(k for k in red_cat if k.startswith("filter_cat"))))
+    check("OPS lists them together", ops_cat.get("filter_cat[]") == [0, 2], str(ops_cat.get("filter_cat[]")))
+    check("and neither filters a category when none was asked for",
+          not any(k.startswith("filter_cat") for k in build_params("RED"))
+          and not any(k.startswith("filter_cat") for k in build_params("OPS")), "")
 
     # Filters one tracker has and the other does not.
     red_extra = build_params("RED", include_old=True, search_descriptions=True, bounty_min="5")
