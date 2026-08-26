@@ -94,6 +94,26 @@ class _TrackerState:
         self.last_call: float | None = None
         self.lock = asyncio.Lock()
 
+    def reconfigure(self, budget: int, window: int, failure_threshold: int, cooldown: int) -> None:
+        """Adopt new limits without forgetting the calls already made.
+
+        The call history, the breaker and the failure count all survive: a
+        tracker that has spent 200 calls this window has still spent them, and
+        raising the ceiling mid-window must not hand out a fresh allowance.
+
+        Args:
+            budget: Calls allowed per window.
+            window: Window length in seconds.
+            failure_threshold: Failures in a row before the breaker opens.
+            cooldown: Seconds the breaker stays open.
+        """
+        self.budget = budget
+        self.window = window
+        self.failure_threshold = failure_threshold
+        self.cooldown = cooldown
+        # A shorter window can retire calls immediately.
+        self.prune()
+
     def prune(self) -> None:
         """Drop call timestamps that have fallen out of the window."""
         cutoff = time.time() - self.window
@@ -167,6 +187,34 @@ class TrackerGateway:
             )
             for code in ("RED", "OPS", "DIC")
         }
+
+    def reconfigure(self) -> None:
+        """Re-read the config after a settings change.
+
+        Everything below was copied out of the config once, at startup, which
+        meant the settings page could report a saved value that nothing in the
+        running process was using: a raised budget was ignored until restart,
+        and -- worse -- a rotated API key kept sending the old one, because
+        each tracker client copies its key and cookie when it is built.
+
+        Budget history is kept (see :meth:`_TrackerState.reconfigure`). The
+        clients are dropped rather than patched: they hold no session, each
+        call opens its own, so rebuilding one costs nothing and is the only
+        way to be sure nothing stale is left on it. A breaker that is already
+        open stays open for the cooldown it was given; the new one applies to
+        the next failure.
+        """
+        checker = cfg.checker
+        self.delay = checker.tracker_call_delay
+        self.switch_delay = checker.tracker_switch_delay
+        for state in self._states.values():
+            state.reconfigure(
+                checker.tracker_budget,
+                checker.tracker_budget_window,
+                checker.failure_threshold,
+                checker.cooldown_seconds,
+            )
+        self._apis.clear()
 
     @staticmethod
     def configured_trackers() -> list[str]:
