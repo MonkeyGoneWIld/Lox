@@ -411,6 +411,26 @@ class Checker(BaseStruct):
     # Minimum confidence for a Deezer release to be offered as a request fill.
     min_confidence: Annotated[float, msgspec.Meta(ge=0.0, le=1.0)] = 0.70
 
+    # What reaches the queue. Every check that matches a Deezer release to a
+    # tracker is kept either way -- these decide which of them is worth acting
+    # on, and they are applied when the queue is read rather than when the
+    # check runs, so widening them brings rows back without spending budget
+    # again.
+    #
+    # Per tracker: "any" leaves it out of the decision, "missing" requires the
+    # release to be absent there, "present" requires it to already be up.
+    queue_red: Literal["any", "missing", "present"] = "any"
+    queue_ops: Literal["any", "missing", "present"] = "any"
+    queue_dic: Literal["any", "missing", "present"] = "any"
+    # Whether every stated tracker rule has to hold, or just one of them.
+    queue_match: Literal["all", "any"] = "all"
+    # What to do about releases that came in from a request check.
+    queue_requests: Literal["any", "only", "only_missing_there", "exclude"] = "any"
+    # A release that is already on every tracker has nothing to upload, so it
+    # never reaches the queue whatever the rules say. Turn this off to see
+    # those rows too -- useful when the rules are set to "present".
+    queue_require_somewhere_missing: bool = True
+
     # Where scan state is kept. Defaults to <download_directory>/.lox-checker.
     state_dir: str | None = None
 

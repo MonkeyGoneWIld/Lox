@@ -1,0 +1,92 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: #17150f; font-family: "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; }
+    a { color: #e8a33d; } a:hover { color: #f2bd78; }
+    .lbl { font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #7d7568; }
+    .plate { display: flex; align-items: center; justify-content: center; border: 1px solid #2e2a20; border-radius: 3px; }
+    .chip { font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace; font-size: 11.5px; color: #ece7dd; background: #100f0a; border: 1px solid #2e2a20; border-radius: 3px; padding: 5px 9px; }
+  </style>
+</helmet>
+
+<div style="width: 880px; height: 760px; box-sizing: border-box; padding: 40px 44px; background: #17150f; color: #ece7dd; display: flex; flex-direction: column; gap: 28px">
+
+  <div style="display: flex; align-items: center; gap: 24px">
+    <svg viewBox="0 0 32 32" width="88" height="88" fill="#e8a33d" aria-hidden="true">
+      <rect x="3.25" y="12.5" width="4.5" height="15"/><rect x="10.25" y="4.5" width="4.5" height="23"/><rect x="17.25" y="16.5" width="4.5" height="11"/><rect x="24.25" y="8.5" width="4.5" height="19"/>
+    </svg>
+    <div style="display: flex; flex-direction: column; gap: 7px">
+      <div style="font-size: 40px; font-weight: 600; letter-spacing: -0.02em; line-height: 1">Lox</div>
+      <div style="font-size: 14.5px; color: #9c948a; max-width: 440px; line-height: 1.5; text-wrap: pretty">Four bands off a baseline &mdash; the spectrogram, which is the screen this app is really about and the one you read on every upload.</div>
+    </div>
+  </div>
+
+  <div style="height: 1px; background: #2e2a20"></div>
+
+  <div style="display: flex; flex-direction: column; gap: 13px">
+    <div class="lbl">At the size that decides it</div>
+    <div style="display: flex; gap: 13px">
+      <div class="plate" style="width: 148px; height: 96px; background: #17150f; flex-direction: column; gap: 10px">
+        <svg viewBox="0 0 32 32" width="16" height="16" fill="#e8a33d"><rect x="3.25" y="12.5" width="4.5" height="15"/><rect x="10.25" y="4.5" width="4.5" height="23"/><rect x="17.25" y="16.5" width="4.5" height="11"/><rect x="24.25" y="8.5" width="4.5" height="19"/></svg>
+        <span class="lbl">16 &middot; dark</span>
+      </div>
+      <div class="plate" style="width: 148px; height: 96px; background: #f6f2ea; flex-direction: column; gap: 10px">
+        <svg viewBox="0 0 32 32" width="16" height="16" fill="#a8681c"><rect x="3.25" y="12.5" width="4.5" height="15"/><rect x="10.25" y="4.5" width="4.5" height="23"/><rect x="17.25" y="16.5" width="4.5" height="11"/><rect x="24.25" y="8.5" width="4.5" height="19"/></svg>
+        <span class="lbl" style="color: #8b8172">16 &middot; light</span>
+      </div>
+      <div class="plate" style="width: 148px; height: 96px; background: #17150f; flex-direction: column; gap: 10px">
+        <svg viewBox="0 0 32 32" width="24" height="24" fill="#e8a33d"><rect x="3.25" y="12.5" width="4.5" height="15"/><rect x="10.25" y="4.5" width="4.5" height="23"/><rect x="17.25" y="16.5" width="4.5" height="11"/><rect x="24.25" y="8.5" width="4.5" height="19"/></svg>
+        <span class="lbl">24</span>
+      </div>
+      <div class="plate" style="width: 148px; height: 96px; background: #17150f; flex-direction: column; gap: 10px">
+        <svg viewBox="0 0 32 32" width="32" height="32" fill="#e8a33d"><rect x="3.25" y="12.5" width="4.5" height="15"/><rect x="10.25" y="4.5" width="4.5" height="23"/><rect x="17.25" y="16.5" width="4.5" height="11"/><rect x="24.25" y="8.5" width="4.5" height="19"/></svg>
+        <span class="lbl">32</span>
+      </div>
+      <div class="plate" style="width: 148px; height: 96px; background: #17150f; flex-direction: column; gap: 10px">
+        <svg viewBox="0 0 32 32" width="48" height="48" fill="#e8a33d"><rect x="3.25" y="12.5" width="4.5" height="15"/><rect x="10.25" y="4.5" width="4.5" height="23"/><rect x="17.25" y="16.5" width="4.5" height="11"/><rect x="24.25" y="8.5" width="4.5" height="19"/></svg>
+        <span class="lbl">48</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 30px">
+    <div style="display: flex; flex-direction: column; gap: 13px">
+      <div class="lbl">No tile behind it</div>
+      <div class="plate" style="width: 236px; height: 150px; background-color: #2a2720; background-image: linear-gradient(45deg, #201d17 25%, transparent 25%), linear-gradient(-45deg, #201d17 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #201d17 75%), linear-gradient(-45deg, transparent 75%, #201d17 75%); background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0">
+        <svg viewBox="0 0 32 32" width="88" height="88" fill="#e8a33d"><rect x="3.25" y="12.5" width="4.5" height="15"/><rect x="10.25" y="4.5" width="4.5" height="23"/><rect x="17.25" y="16.5" width="4.5" height="11"/><rect x="24.25" y="8.5" width="4.5" height="19"/></svg>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 13px; flex-grow: 1; min-width: 0">
+      <div class="lbl">What it replaces</div>
+      <div style="border: 1px solid #2e2a20; border-radius: 3px; background: #1c1a14; padding: 17px 19px; display: flex; flex-direction: column; gap: 11px; font-size: 13.5px; color: #9c948a; line-height: 1.55; text-wrap: pretty">
+        <div>A cartoon fish from Flaticon that shipped with smoked&#8209;salmon, sat on an opaque pale&#8209;blue square, and carried a CC&#8209;BY credit in the footer for a logo that was never ours.</div>
+        <div style="color: #7d7568">The credit went with it. This one is drawn from geometry kept in the repo, so it rebuilds at any size and belongs to the project.</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 11px; margin-top: auto">
+    <div class="lbl">Shipped</div>
+    <div style="display: flex; flex-wrap: wrap; gap: 7px">
+      <span class="chip">icon.svg</span>
+      <span class="chip">favicon.ico &middot; 7 sizes</span>
+      <span class="chip">favicon 16 &rarr; 196</span>
+      <span class="chip">apple&#8209;touch &times; 8</span>
+      <span class="chip">mstile &times; 5</span>
+      <span class="chip">logo.png 512</span>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

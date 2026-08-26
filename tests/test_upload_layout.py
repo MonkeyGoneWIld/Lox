@@ -14,6 +14,9 @@ What they cover:
   * what is already in the group is shown, not folded away
   * a hint never pushes its own input out of line with its neighbours'
   * a dry run offers to clear up after itself, one folder at a time or all
+  * no card paints the colour of a form field, which reads as a sunken well
+  * a section heading is the control that filters to it, not a button beside it
+  * the queue's filter narrows what the buttons act on, and says what it hid
 """
 
 import os
@@ -191,8 +194,31 @@ def main() -> int:
     #
     # Eight peers said nothing. Four of these are ways to find work and any can
     # start you off; three are stages one release passes through.
-    check("the sidebar is grouped", shell.count('class="nav-group"') == 3,
-          str(shell.count('class="nav-group"')))
+    # Counted on the class rather than the exact attribute: two of the groups
+    # carry a second class, and matching the literal string missed them.
+    groups = _re.findall(r'class="nav-group[^"]*"', shell)
+    check("the sidebar is grouped", len(groups) == 3, str(groups))
+
+    # The bullets were never a decision: `list-style` on the parent does not
+    # reach a <ul>, whose own UA rule wins over the inherited value, so turning
+    # .nav from a <ul> into a <nav> put the browser's markers back on every
+    # entry. Pinned because it is invisible in the markup and only shows on
+    # screen.
+    check("no list markers can come back", "list-style: none" in rule(css, ".nav ul"),
+          rule(css, ".nav ul"))
+    check("and the lists carry no indent of their own",
+          "padding: 0" in rule(css, ".nav ul"), rule(css, ".nav ul"))
+
+    # The pipeline is drawn as one thing, not three numbered rows.
+    check("the stages sit on a line", "::before" in css and ".nav-pipeline ul" in css, "")
+    check("the marker punches through it",
+          "background: var(--bg-raised)" in rule(css, ".nav-step"), rule(css, ".nav-step"))
+    check("every entry is iconed rather than bulleted",
+          shell.count('class="nav-icon"') == 5, str(shell.count('class="nav-icon"')))
+    check("and a blocked stage lights its marker, not only its label",
+          "needs-you:not(.active) .nav-step" in css, "")
+    check("a stage holding something is marked live",
+          "has-work" in css and "has-work" in js, "")
     check("the pipeline is numbered because the order is real",
           all(f'class="nav-step">{n}<' in shell for n in (1, 2, 3)), "")
     check("its stages are named for what they are doing",
@@ -234,6 +260,66 @@ def main() -> int:
     # build step takes the whole UI down -- so these stay lazy.
     check("the eye icons are not evaluated before ICON exists",
           "const eyeIcon = () => ICON(" in js and "const ICON_EYE =" not in js, "")
+    # --- one surface per card ----------------------------------------
+    # --bg-input is the colour of a form field. Painted on a card it reads as
+    # a well sunk into the panel, which is how the spectrals ended up in a
+    # darker box than everything around them: the step was a well, and the
+    # image painted a third colour inside it. A card either inherits the panel
+    # it sits on or draws a border -- it never paints the field colour.
+    for name in (".step", ".match", ".card-art", ".album-art", ".request-cover", ".dl-art"):
+        body = rule(css, name)
+        check(f"{name} does not paint the field colour",
+              "var(--bg-input)" not in body, body.strip()[:70])
+    check("the step is a bordered card, not a sunken one",
+          "border: 1px solid var(--border)" in rule(css, ".step"), "")
+    check("and the spectral image adds no surface of its own",
+          "background:" not in rule(css, ".spectral-pair img"), "")
+    check("a group inside the card is drawn with its border alone",
+          "background: transparent" in rule(css, ".meta-group"), "")
+    check("the sticky settings bar matches the panel it sits on",
+          "var(--bg-raised)" in rule(css, ".settings-bar"), "")
+
+    # --- the heading is the filter ------------------------------------
+    # There was an "Only these" button beside each heading. The heading
+    # already names the thing and carries its count; it is the control.
+    Q = chr(39)
+    flat = js.replace(chr(34), Q)
+    check("no button repeats what the heading already says",
+          "Only these" not in js, "")
+    head = flat[flat.index("section-head") - 40:][:420] if "section-head" in flat else ""
+    check("the heading filters to its own kind",
+          all(w in head for w in ("role: " + Q + "button" + Q, "selectSearchType(kind)")), "")
+    check("reachable from the keyboard",
+          "tabindex: " + Q + "0" + Q in flat and "e.key === " + Q + "Enter" + Q in flat, "")
+    check("with the count set apart from the name",
+          all(Q + n + Q in flat for n in ("section-title", "section-count")), "")
+    check("and it says what clicking will do", "Show only ${" in js, "")
+    check("the arrow only appears under the pointer",
+          ".section-head:hover .section-go" in css, "")
+
+    # --- the queue filters what you can see, and says when it does ----
+    # Two different things sit on this page and must not be confused: the
+    # Settings rules decide what belongs in the queue and persist; this narrows
+    # what is drawn and forgets itself. The dangerous overlap is the buttons --
+    # "Download selected" acting on a row scrolled out of existence by a filter
+    # would be indefensible, so the selection is scoped to the filtered rows.
+    for control in ("found-search", "found-tracker", "found-source", "found-filter-clear"):
+        check(f"the queue has a {control}", f'id="{control}"' in shell, "")
+    check("the selection follows the filter, not the whole queue",
+          "filteredFound().filter((f) => state.selectedFound.has(f.id))" in js, "")
+    check("and the count is of what is on screen",
+          "of ${rows.length} selected" in js, "")
+    check("select-all ticks the rows you can see",
+          "selectAllBox(rows.map((f) => f.id)" in js, "")
+
+    # A rule that hides rows without saying so is indistinguishable from a
+    # scan that found nothing, which is how this page loses someone's trust.
+    check("held-back rows are counted on the page", 'id="found-held"' in shell, "")
+    check("with a way to look at them", 'id="found-held-toggle"' in shell, "")
+    check("each carrying the reason it was held", "held_reason" in js, "")
+    check("and the rule itself said in words", "state.foundRule" in js, "")
+    check("the filter is not persisted, because it is not a setting",
+          "foundFilter: { text: '', tracker: '', source: '' }" in js.replace('"', "'"), "")
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")

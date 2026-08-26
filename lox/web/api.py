@@ -20,6 +20,7 @@ import msgspec
 from aiohttp import web
 
 from lox import cfg, debug, settings
+from lox.checker import queue_rules
 from lox.checker.deezer_requests import DeezerRequestChecker
 from lox.checker.gateway import TrackerGateway
 from lox.checker.missing import Candidate, MissingScanner
@@ -701,6 +702,11 @@ async def api_album(request: web.Request) -> web.Response:
     )
 
 
+#: How many held-back rows to send with the queue. The count is always exact;
+#: this bounds the sample the page can show beside it.
+HELD_SAMPLE = 200
+
+
 @routes.get("/api/found")
 async def api_found(request: web.Request) -> web.Response:
     """Everything a check has matched to a Deezer release. No tracker calls.
@@ -714,8 +720,9 @@ async def api_found(request: web.Request) -> web.Response:
     dismissed = store.load("dismissed") or {}
 
     for album_id, entry in (store.load("albums") or {}).items():
-        if not entry.get("missing_from"):
-            continue
+        # Whether "missing from nothing" is worth showing is a queue rule now,
+        # not a fact of this loop. Deciding it here made the setting that turns
+        # that floor off unable to do anything.
         if entry.get("uploaded_at") or album_id in dismissed:
             continue
         rows.append(
@@ -763,7 +770,28 @@ async def api_found(request: web.Request) -> web.Response:
         )
 
     rows.sort(key=lambda r: r.get("checked_at") or 0, reverse=True)
-    return json_response({"found": rows, "blacklisted": sum(1 for d in dismissed.values() if d.get("blacklist"))})
+
+    # The rules are applied here rather than when the check ran, so widening
+    # them brings rows straight back instead of needing the tracker calls
+    # again. Held rows are counted and returned rather than dropped, because a
+    # queue that quietly got shorter is indistinguishable from a scan that
+    # found nothing.
+    rules = queue_rules.rules_from(cfg.checker)
+    shown, held = queue_rules.partition(rows, rules)
+    # Every album a scan ever looked at is a held row once the floor is on, so
+    # the count is the honest number and the list is a sample of it. Sending
+    # ten thousand rows to explain why they are not on screen would be its own
+    # kind of rude.
+    return json_response(
+        {
+            "found": shown,
+            "held": held[:HELD_SAMPLE],
+            "held_count": len(held),
+            "held_shown": min(len(held), HELD_SAMPLE),
+            "rule": rules.describe(),
+            "blacklisted": sum(1 for d in dismissed.values() if d.get("blacklist")),
+        }
+    )
 
 
 def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: list[str]) -> None:

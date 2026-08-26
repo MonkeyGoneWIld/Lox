@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Lox">
+  <title>Lox</title>
+  <style>
+    path { fill: #e8a33d; }
+    @media (prefers-color-scheme: light) { path { fill: #a8681c; } }
+  </style>
+  <g>
+    <path d="M3.25 12.50 L7.75 12.50 L7.75 27.50 L3.25 27.50 Z"/>
+    <path d="M10.25 4.50 L14.75 4.50 L14.75 27.50 L10.25 27.50 Z"/>
+    <path d="M17.25 16.50 L21.75 16.50 L21.75 27.50 L17.25 27.50 Z"/>
+    <path d="M24.25 8.50 L28.75 8.50 L28.75 27.50 L24.25 27.50 Z"/>
+  </g>
+</svg>

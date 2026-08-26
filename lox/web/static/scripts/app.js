@@ -32,6 +32,13 @@
     paneStack: [],
     found: [],
     selectedFound: new Set(),
+    // Rows the Settings queue rules kept out, and the rule in words.
+    foundHeld: [],
+    foundRule: '',
+    showHeld: false,
+    // Narrowing what is on screen. Not persisted: it is a way of reading the
+    // list, not a setting.
+    foundFilter: { text: '', tracker: '', source: '' },
     // Releases ticked for a batch action, by album id.
     picked: new Map(),
     uploadTrackers: new Set(),
@@ -107,6 +114,9 @@
     const el2 = $(sel);
     if (!el2) return;
     el2.textContent = n ? String(n) : '';
+    // A stage holding something gets a live marker on the pipeline line, so
+    // the rail reads before the numbers beside it do.
+    el2.closest('.nav-item')?.classList.toggle('has-work', n > 0);
   }
 
   // The one interruption worth colouring from anywhere in the app: a run that
@@ -597,17 +607,34 @@
 
       const sections = Object.entries(data.sections || {}).filter(([, rows]) => rows.length);
       if (!sections.length) {
-        results.replaceChildren(empty('Nothing found.'));
+        results.replaceChildren(empty('No matches. Try fewer words, or just the artist.'));
         return;
       }
       results.replaceChildren(
         ...sections.flatMap(([kind, rows]) => [
+          // The heading is the control. It used to be a label with an "Only
+          // these" link stranded at the far right of the row -- a second thing
+          // to find, a foot away from the thing it acts on, saying in two words
+          // what the heading already names. Press "Albums (30)" and you get the
+          // albums on their own.
           el(
-            'div',
-            { class: 'section-head' },
-            el('h3', { class: 'section-title' }, `${SECTION_LABEL[kind] || kind} (${rows.length})`),
-            // Straight to that kind on its own, which is what the filter is for.
-            el('button', { class: 'link', onclick: () => selectSearchType(kind) }, 'Only these'),
+            'h3',
+            {
+              class: 'section-head',
+              role: 'button',
+              tabindex: '0',
+              title: `Show only ${(SECTION_LABEL[kind] || kind).toLowerCase()}`,
+              onclick: () => selectSearchType(kind),
+              onkeydown: (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  selectSearchType(kind);
+                }
+              },
+            },
+            el('span', { class: 'section-title' }, SECTION_LABEL[kind] || kind),
+            el('span', { class: 'section-count' }, String(rows.length)),
+            el('span', { class: 'section-go', 'aria-hidden': 'true' }),
           ),
           el('div', { class: 'grid' }, ...rows.map(card)),
         ]),
@@ -666,7 +693,7 @@
           grid.append(...chart[key].map(card));
           body.append(el('h2', { class: 'section-title' }, label), grid);
         }
-        if (!body.children.length) body.replaceChildren(empty('No chart data.'));
+        if (!body.children.length) body.replaceChildren(empty('Deezer has no chart for this selection.'));
       } else {
         const data = await api(`/api/explore/releases?genre=${state.exploreGenre}`);
         const grid = el('div', { class: 'grid' });
@@ -737,7 +764,7 @@
           grid,
         );
       }
-      if (!channel.sections.length) body.append(empty('This channel returned no modules.'));
+      if (!channel.sections.length) body.append(empty('Deezer sent nothing back for this channel.'));
     } catch (e) {
       body.replaceChildren(empty(e.message));
     }
@@ -1141,7 +1168,7 @@
 
     await download(album.id);
     setView('downloads');
-    toast(`Downloading first. When it finishes, upload it from the Uploads tab — ${trackers.join(' and ')} are preselected.`);
+    toast(`Downloading first. When it finishes, upload it from Uploading — ${trackers.join(' and ')} are preselected.`);
   }
 
   // ---------------------------------------------------------------- watchlists
@@ -1307,7 +1334,7 @@
   function renderDownloads(jobs) {
     const list = $('#downloads-list');
     if (!jobs.length) {
-      list.replaceChildren(empty('Nothing downloaded yet. Queue something from Search or Explore.'));
+      list.replaceChildren(empty('Nothing downloading. Add something from Search or Browse.'));
       return;
     }
     list.replaceChildren(
@@ -1722,7 +1749,7 @@
             'label',
             { class: 'check strict-check', title: 'Exclude requests that leave this open to anything' },
             el('input', { type: 'checkbox', id: strictId }),
-            'Only these',
+            'Must be stated',
           )
         : null,
     );
@@ -1736,7 +1763,7 @@
   async function loadRequestFilters() {
     const host = $('#requests-filters');
     if (!state.requestsTracker) {
-      host.replaceChildren(empty('No tracker configured.'));
+      host.replaceChildren(empty('No tracker set up yet. Add one in Settings to see requests.'));
       return;
     }
     let spec;
@@ -1934,7 +1961,7 @@
   function renderRequestRows() {
     const container = $('#requests-results');
     if (!state.requestRows.length) {
-      container.replaceChildren(empty('No open requests found.'));
+      container.replaceChildren(empty('Nothing matched. Widen the filters, or fetch more pages.'));
       return;
     }
     container.replaceChildren(
@@ -2256,7 +2283,7 @@
                   c.edited ? el('span', { class: 'dim' },
                                `edited ${c.edited_by ? `by ${c.edited_by} ` : ''}${when(c.edited)}`) : null),
                 el('div', { class: 'bb', html: c.html }))))
-          : empty('No comments.')),
+          : empty('No comments on this request.')),
     );
   }
 
@@ -2338,35 +2365,119 @@
     const body = $('#found-body');
     body.replaceChildren(spinner('Loading'));
     try {
-      const { found, blacklisted } = await api('/api/found');
+      const { found, blacklisted, held, held_count: heldCount, rule } = await api('/api/found');
       state.found = found;
+      state.foundHeld = held || [];
+      state.foundRule = rule || '';
       state.selectedFound = new Set(found.map((f) => f.id));
       $('#found-restore').hidden = !blacklisted;
       $('#found-restore').textContent = `Clear blacklist (${blacklisted})`;
+
+      // What the Settings rules kept out. A count and a way to look, so a
+      // narrowed rule never reads as "the scan found nothing".
+      const heldRow = $('#found-held-row');
+      heldRow.hidden = !heldCount;
+      if (heldCount) {
+        $('#found-held').textContent =
+          `${heldCount} held back by your queue rules — letting through ${state.foundRule}.`;
+        $('#found-held-toggle').textContent = state.showHeld ? 'Hide them' : 'Show them';
+      }
+
+      fillTrackerFilter();
       renderFound();
     } catch (e) {
       body.replaceChildren(empty(e.message));
     }
   }
 
+  // The tracker options come from the rows themselves rather than a fixed
+  // list, so a filter is never offered for a tracker this install does not use.
+  function fillTrackerFilter() {
+    const select = $('#found-tracker');
+    const codes = new Set();
+    [...state.found, ...state.foundHeld].forEach((f) => {
+      (f.missing_from || []).forEach((t) => codes.add(t));
+      (f.found_on || []).forEach((t) => codes.add(t));
+    });
+    const wanted = [...codes].sort();
+    if (select.dataset.codes === wanted.join(',')) return;
+    select.dataset.codes = wanted.join(',');
+    const keep = select.value;
+    select.replaceChildren(
+      el('option', { value: '' }, 'Any tracker'),
+      ...wanted.map((t) => el('option', { value: `missing:${t}` }, `Missing on ${t}`)),
+      ...wanted.map((t) => el('option', { value: `present:${t}` }, `Already on ${t}`)),
+      ...(wanted.length > 1 ? [el('option', { value: 'missing:*' }, 'Missing on every tracker checked')] : []),
+    );
+    select.value = keep;
+  }
+
+  // The filter narrows what is on screen. It is deliberately not the same
+  // thing as the queue rules in Settings: those decide what belongs in the
+  // queue at all and persist, this forgets itself when you leave the tab.
+  function filteredFound() {
+    const { text, tracker, source } = state.foundFilter;
+    const needle = text.trim().toLowerCase();
+    return state.found.filter((f) => {
+      if (source && f.kind !== source) return false;
+      if (needle) {
+        const hay = `${f.artist || ''} ${f.title || ''}`.toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      if (tracker) {
+        const [want, code] = tracker.split(':');
+        const missing = f.missing_from || [];
+        const present = f.found_on || [];
+        if (code === '*') return missing.length > 0 && present.length === 0;
+        return want === 'missing' ? missing.includes(code) : present.includes(code);
+      }
+      return true;
+    });
+  }
+
   function renderFound() {
     const body = $('#found-body');
     railCount('#found-count-rail', state.found.length);
+    const filtering = Boolean(
+      state.foundFilter.text || state.foundFilter.tracker || state.foundFilter.source,
+    );
+    $('#found-filter-clear').hidden = !filtering;
     if (!state.found.length) {
-      body.replaceChildren(empty('Nothing yet. Run a scan or check some requests.'));
+      body.replaceChildren(
+        state.foundHeld.length
+          ? empty(`Nothing matches your queue rules. ${state.foundHeld.length} released were held back — `
+              + 'widen the rules in Settings, or show them above.')
+          : empty('Nothing yet. Run a scan or check some requests.'),
+      );
       $('#found-count').textContent = '';
+      $('#found-filtered').textContent = '';
+      if (state.showHeld) body.append(heldTable());
       return;
     }
-    $('#found-count').textContent = `${state.selectedFound.size} of ${state.found.length} selected`;
+    const rows = filteredFound();
+    $('#found-filtered').textContent = filtering
+      ? `${rows.length} of ${state.found.length} shown`
+      : '';
+    if (!rows.length) {
+      body.replaceChildren(empty('Nothing in the queue matches that filter.'));
+      $('#found-count').textContent = '';
+      if (state.showHeld) body.append(heldTable());
+      return;
+    }
+    // Counted against what is on screen, because the buttons act on what is
+    // on screen: selecting all while filtered then downloading a hidden row
+    // would be a nasty surprise.
+    const shownSelected = rows.filter((f) => state.selectedFound.has(f.id)).length;
+    $('#found-count').textContent = `${shownSelected} of ${rows.length} selected`;
     body.replaceChildren(
       el(
         'table',
         { class: 'table' },
         el('thead', {}, el('tr', {},
-          el('th', {}, selectAllBox(state.found.map((f) => f.id), state.selectedFound, renderFound)),
+          el('th', {}, selectAllBox(rows.map((f) => f.id), state.selectedFound, renderFound)),
           el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'Why'),
           el('th', {}, 'From'), el('th', {}, 'Last checked'))),
-        el('tbody', {}, ...state.found.map((f) =>
+        el('tbody', {}, ...rows.map((f) =>
           el('tr', {},
             el('td', {}, el('input', {
               type: 'checkbox',
@@ -2392,6 +2503,28 @@
           ))),
       ),
     );
+    if (state.showHeld) body.append(heldTable());
+  }
+
+  // The rows the Settings rules kept out, each saying which rule kept it and
+  // what was actually true on the tracker -- "RED must be missing there, but
+  // it has not been checked there" is a different problem from "it is already
+  // there", and only one of them is fixed by re-checking.
+  function heldTable() {
+    if (!state.foundHeld.length) return empty('Nothing is being held back.');
+    return el('div', { class: 'held-block' },
+      el('h3', { class: 'section-head-plain' }, `Held back by your queue rules (${state.foundHeld.length})`),
+      el('table', { class: 'table' },
+        el('thead', {}, el('tr', {},
+          el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'Why it is not in the queue'))),
+        el('tbody', {}, ...state.foundHeld.map((f) =>
+          el('tr', { class: 'held-row' },
+            el('td', {}, el('a', {
+              href: '#',
+              onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
+            }, `${f.artist || ''} — ${f.title || ''}`)),
+            el('td', { class: 'found-trackers' }, ...trackerTags(f)),
+            el('td', { class: 'card-sub' }, f.held_reason || ''))))));
   }
 
   // What the last check found, per tracker. Green means there is something to
@@ -2408,7 +2541,9 @@
     ];
   }
 
-  const foundSelection = () => state.found.filter((f) => state.selectedFound.has(f.id));
+  // Filtered rows only: a row you cannot see is a row you did not choose, and
+  // "Download selected" acting on one would be indefensible.
+  const foundSelection = () => filteredFound().filter((f) => state.selectedFound.has(f.id));
 
   // Off the list, one of two ways.
   //
@@ -2498,7 +2633,7 @@ They will not be listed again, even if a later scan finds them.`)) {
         return;
       }
       if (!folders.length) {
-        list.replaceChildren(empty('No release folders yet.'));
+        list.replaceChildren(empty('Nothing here yet. Finished downloads turn up ready to upload.'));
         return;
       }
       list.replaceChildren(
@@ -3667,7 +3802,10 @@ They will not be listed again, even if a later scan finds them.`)) {
       input = el(
         'select',
         { onchange: onInput },
-        ...field.choices.map((c) => el('option', { value: c, selected: c === value }, c)),
+        // The label is what you read, the value is what gets stored. Without
+        // this a rule reads "only_missing_there" on screen.
+        ...field.choices.map((c, i) =>
+          el('option', { value: c, selected: c === value }, (field.labels || [])[i] || c)),
       );
     } else if (isSecret) {
       const placeholder = configured ? '•••••••• (saved — type to replace)' : 'Not set';
@@ -4320,6 +4458,33 @@ They will not be listed again, even if a later scan finds them.`)) {
     $('#found-dismiss').addEventListener('click', () => dismissFound(false));
     $('#found-blacklist').addEventListener('click', () => dismissFound(true));
     $('#found-restore').addEventListener('click', restoreFound);
+
+    // Filtering is local: it never refetches, so it stays instant on a long
+    // queue and costs no tracker budget.
+    $('#found-search').addEventListener('input', (e) => {
+      state.foundFilter.text = e.target.value;
+      renderFound();
+    });
+    $('#found-tracker').addEventListener('change', (e) => {
+      state.foundFilter.tracker = e.target.value;
+      renderFound();
+    });
+    $('#found-source').addEventListener('change', (e) => {
+      state.foundFilter.source = e.target.value;
+      renderFound();
+    });
+    $('#found-filter-clear').addEventListener('click', () => {
+      state.foundFilter = { text: '', tracker: '', source: '' };
+      $('#found-search').value = '';
+      $('#found-tracker').value = '';
+      $('#found-source').value = '';
+      renderFound();
+    });
+    $('#found-held-toggle').addEventListener('click', () => {
+      state.showHeld = !state.showHeld;
+      $('#found-held-toggle').textContent = state.showHeld ? 'Hide them' : 'Show them';
+      renderFound();
+    });
     $('#folders-refresh').addEventListener('click', loadFolders);
     $('#upload-dry-run').addEventListener('change', (e) =>
       setUploadFlag('upload.dry_run', e.target, 'Dry run'));

@@ -90,6 +90,10 @@ async def api_settings_save(request: web.Request) -> web.Response:
 
     failed = settings.apply_to(cfg)
     lox.trackers.refresh_tracker_list()
+    # The gateway copies budgets, delays and tracker credentials when it is
+    # built, and it is built once at startup. Without this a saved change was
+    # visible on the page and nowhere else.
+    request.app["gateway"].reconfigure()
     debuglog.configure()
     # Directories can be created or corrected here, so re-run the checks that
     # were reported at startup rather than leaving a fixed problem on screen.

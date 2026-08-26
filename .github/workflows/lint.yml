@@ -114,6 +114,21 @@ jobs:
       - name: Dry run shows everything and writes nothing
         run: uv run python tests/test_dry_run.py
 
+      - name: What reaches the queue
+        # The rules are applied when the queue is read, so narrowing hides rows
+        # and widening brings the same rows back with no tracker call.
+        run: uv run python tests/test_queue_rules.py
+
+      - name: A saved setting reaches the running process
+        # The page could report a value nothing was using: the gateway copies
+        # budgets and tracker credentials once, at startup.
+        run: uv run python tests/test_settings_live.py
+
+      - name: The icon is the app's own, and carries no tile
+        # Reads the built assets rather than rebuilding them, so it fails if
+        # the mark changes and design/icon/build.py was not run.
+        run: uv run python tests/test_icon.py
+
       - name: Metadata is one form, and the questions show their work
         run: uv run python tests/test_metadata_form.py
 

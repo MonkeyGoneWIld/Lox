@@ -114,6 +114,24 @@ async def main() -> int:
           not any(s.test for s in SECTIONS if s.id in ("images", "metadata")),
           str([s.id for s in SECTIONS if s.test and s.id in ("images", "metadata")]))
 
+    # --- a dropdown reads as English ---------------------------------
+    # Stored values want to be short and stable; "only_missing_there" is not a
+    # thing to put in front of someone. Labels are parallel to choices, so the
+    # one way to get this wrong is to let them fall out of step.
+    mismatched = [f.key for f in FIELDS if f.labels and len(f.labels) != len(f.choices)]
+    check("every labelled choice has one label per option", not mismatched, ", ".join(mismatched))
+    labelled = [f for f in FIELDS if f.kind == "choice" and f.labels]
+    check("the queue rules are labelled", len(labelled) >= 5, str(len(labelled)))
+    check("and no label is left as the raw value",
+          all(l != c for f in labelled for l, c in zip(f.labels, f.choices)), "")
+
+    # --- the queue rules are on the page ------------------------------
+    queue_keys = {f.key for f in FIELDS if f.section == "queue"}
+    for key in ("checker.queue_red", "checker.queue_ops", "checker.queue_dic",
+                "checker.queue_match", "checker.queue_requests",
+                "checker.queue_require_somewhere_missing"):
+        check(f"{key} is editable", key in queue_keys, "")
+
     # --- and every test named anywhere is dispatchable ---------------
     from lox.web import create_app_async  # noqa: PLC0415
 
