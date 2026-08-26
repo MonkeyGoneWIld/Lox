@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: #17150f; font-family: "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; }
+    a { color: #e8a33d; } a:hover { color: #f2bd78; }
+    .lbl { font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #7d7568; }
+    .tab { display: flex; align-items: center; gap: 8px; padding: 0 14px; height: 34px; border-radius: 7px 7px 0 0; font-size: 12.5px; white-space: nowrap; }
+    .fav { width: 16px; height: 16px; flex: none; }
+  </style>
+</helmet>
+
+<div style="width: 880px; height: 470px; box-sizing: border-box; padding: 36px 40px; background: #17150f; color: #ece7dd; display: flex; flex-direction: column; gap: 26px">
+
+  <div style="display: flex; flex-direction: column; gap: 5px">
+    <div style="font-size: 20px; font-weight: 600; letter-spacing: -0.01em">In the tab strip</div>
+    <div style="font-size: 13.5px; color: #9c948a">Sixteen pixels, next to other people's tabs, on whatever colour the browser is.</div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 11px">
+    <div class="lbl">Dark browser</div>
+    <div style="background: #202124; border-radius: 8px 8px 0 0; padding: 9px 10px 0; display: flex; gap: 3px; align-items: flex-end">
+      <div class="tab" style="background: #35363a; color: #bdc1c6">
+        <span class="fav" style="background: #5f6368; border-radius: 3px"></span><span>Deezer</span>
+      </div>
+      <div class="tab" style="background: #35363a; color: #bdc1c6">
+        <span class="fav" style="background: #5f6368; border-radius: 3px"></span><span>redacted.ch</span>
+      </div>
+      <div class="tab" style="background: #17150f; color: #ece7dd; font-weight: 500">
+        <svg class="fav" viewBox="0 0 32 32" fill="#e8a33d"><path d="M4.72 12.47 L16.00 2.61 L27.28 12.47 L16.00 8.06 Z"/><path d="M6.13 18.59 L16.00 13.88 L25.87 18.59 L25.87 22.63 L16.00 17.93 L6.13 22.63 Z"/><path d="M6.13 25.35 L16.00 20.65 L25.87 25.35 L25.87 29.39 L16.00 24.70 L6.13 29.39 Z"/></svg>
+        <span>lox</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 11px">
+    <div class="lbl">Light browser</div>
+    <div style="background: #dee1e6; border-radius: 8px 8px 0 0; padding: 9px 10px 0; display: flex; gap: 3px; align-items: flex-end">
+      <div class="tab" style="background: #f1f3f4; color: #5f6368">
+        <span class="fav" style="background: #bdc1c6; border-radius: 3px"></span><span>Deezer</span>
+      </div>
+      <div class="tab" style="background: #f1f3f4; color: #5f6368">
+        <span class="fav" style="background: #bdc1c6; border-radius: 3px"></span><span>redacted.ch</span>
+      </div>
+      <div class="tab" style="background: #ffffff; color: #202124; font-weight: 500">
+        <svg class="fav" viewBox="0 0 32 32" fill="#a8681c"><path d="M4.72 12.47 L16.00 2.61 L27.28 12.47 L16.00 8.06 Z"/><path d="M6.13 18.59 L16.00 13.88 L25.87 18.59 L25.87 22.63 L16.00 17.93 L6.13 22.63 Z"/><path d="M6.13 25.35 L16.00 20.65 L25.87 25.35 L25.87 29.39 L16.00 24.70 L6.13 29.39 Z"/></svg>
+        <span>lox</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 14px; margin-top: auto">
+    <div style="flex: 1; border: 1px solid #2e2a20; border-radius: 3px; background: #1c1a14; padding: 14px 16px; display: flex; align-items: center; gap: 14px">
+      <span style="width: 34px; height: 34px; flex: none; background: #aecbe8; border-radius: 5px"></span>
+      <div style="display: flex; flex-direction: column; gap: 3px; min-width: 0">
+        <div class="lbl" style="color: #d4674f">Before</div>
+        <div style="font-size: 12.5px; color: #9c948a; line-height: 1.45">An opaque tile that ignored the browser around it.</div>
+      </div>
+    </div>
+    <div style="flex: 1; border: 1px solid #4a3d22; border-radius: 3px; background: #1c1a14; padding: 14px 16px; display: flex; align-items: center; gap: 14px">
+      <svg style="width: 34px; height: 34px; flex: none" viewBox="0 0 32 32" fill="#e8a33d"><path d="M4.72 12.47 L16.00 2.61 L27.28 12.47 L16.00 8.06 Z"/><path d="M6.13 18.59 L16.00 13.88 L25.87 18.59 L25.87 22.63 L16.00 17.93 L6.13 22.63 Z"/><path d="M6.13 25.35 L16.00 20.65 L25.87 25.35 L25.87 29.39 L16.00 24.70 L6.13 29.39 Z"/></svg>
+      <div style="display: flex; flex-direction: column; gap: 3px; min-width: 0">
+        <div class="lbl" style="color: #7fb069">After</div>
+        <div style="font-size: 12.5px; color: #9c948a; line-height: 1.45">Clear ground, and it darkens itself on a light strip.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

@@ -108,6 +108,11 @@ jobs:
       - name: Dry run shows everything and writes nothing
         run: uv run python tests/test_dry_run.py
 
+      - name: The icon is the app's own, and carries no tile
+        # Reads the built assets rather than rebuilding them, so it fails if
+        # the mark changes and design/icon/build.py was not run.
+        run: uv run python tests/test_icon.py
+
       - name: Metadata is one form, and the questions show their work
         run: uv run python tests/test_metadata_form.py
 

@@ -130,14 +130,23 @@ def add_routes(app: web.Application) -> None:
 def _asset_version() -> str:
     """A short fingerprint of the front-end assets.
 
-    Changes whenever the script or the stylesheet changes, and only then, so a
-    new build is fetched fresh while an unchanged one still caches.
+    Changes whenever the script, the stylesheet or the icon changes, and only
+    then, so a new build is fetched fresh while an unchanged one still caches.
     """
     digest = hashlib.sha1()
     static = join(dirname(__file__), "static")
     # fonts.css names the vendored faces; a change to it has to bust the cache
     # like any other, or a swapped font is served against a stale stylesheet.
-    for relative in ("scripts/app.js", "css/app.css", "css/fonts.css"):
+    # The icon is in here for a blunter reason: browsers cache a favicon harder
+    # than anything else on the page, and a new mark that nobody sees is not a
+    # new mark.
+    for relative in (
+        "scripts/app.js",
+        "css/app.css",
+        "css/fonts.css",
+        "images/icon.svg",
+        "images/favicon.ico",
+    ):
         path = join(static, relative)
         try:
             with open(path, "rb") as handle:
