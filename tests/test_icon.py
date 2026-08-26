@@ -65,7 +65,10 @@ def main() -> int:
         # has meant the same thing across Pillow versions.
         alpha = image.getchannel("A").histogram()
         share = sum(alpha[9:]) / (image.width * image.height)
-        check(f"{name} actually has a mark on it", 0.05 < share < 0.75, f"{share:.0%} inked")
+        # The upper bound is the point of this: a disc inscribed in a square is
+        # pi/4, about 79%, and a solid tile is 100%. Anything approaching the
+        # latter means the ground came back.
+        check(f"{name} is a mark and not a filled tile", 0.05 < share < 0.90, f"{share:.0%} inked")
 
     # A tab reaches for 16 or 32; the rest are for everything else.
     ico = Image.open(os.path.join(IMAGES, "favicon.ico"))
@@ -83,8 +86,10 @@ def main() -> int:
     svg = read(os.path.join(IMAGES, "icon.svg"))
     check("an svg icon is built", svg.startswith("<svg"), svg[:40])
     check("and it paints no background", "<rect" not in svg and "background" not in svg, "")
-    check("it follows the reader's theme", "prefers-color-scheme" in svg, "")
-    check("with both of the app's accents", "#e8a33d" in svg and "#a8681c" in svg, "")
+    check("it is self-contained, with nothing to fetch",
+          "http" not in svg.replace("http://www.w3.org/2000/svg", ""), "")
+    check("and draws the disc the mark is built on", "<circle" in svg, "")
+    check("in the icon's own palette", "#fb3b8f" in svg.lower(), "")
 
     # --- the page asks for it, and asks for a fresh copy ------------------
     app_html = read(os.path.join(TEMPLATES, "app.html"))
@@ -111,7 +116,9 @@ def main() -> int:
           "#FFFFFF" not in layout, "")
 
     # --- the mark is reproducible ----------------------------------------
-    for name in ("marks.py", "build.py"):
+    # Drawn from geometry in the repo rather than an image dropped in, so it
+    # rebuilds at any size and carries nobody else's licence.
+    for name in ("artwork.py", "build.py"):
         check(f"design/icon/{name} is in the repo",
               os.path.exists(os.path.join(REPO, "design", "icon", name)), "")
 

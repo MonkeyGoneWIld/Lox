@@ -2,7 +2,7 @@
 
     python design/icon/build.py
 
-Run it after changing the mark. Two grounds are used deliberately: anything a
+Run it after changing the artwork. Two grounds are used deliberately: anything a
 browser puts in a tab strip is transparent, so it sits on whatever colour the
 browser is; the iOS and Windows tiles get the app's own --bg, because neither
 platform honours transparency there and both would otherwise composite the
@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from marks import AMBER, render, svg  # noqa: E402
+from artwork import render, svg  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT = os.path.join(ROOT, "lox", "web", "static", "images")
@@ -56,7 +56,7 @@ def padded(px: int, ratio: float = 0.80):
 
     plate = Image.new("RGBA", (px, px), INK)
     inner = max(1, round(px * ratio))
-    plate.alpha_composite(render(inner, AMBER), ((px - inner) // 2, (px - inner) // 2))
+    plate.alpha_composite(render(inner), ((px - inner) // 2, (px - inner) // 2))
     return plate
 
 
@@ -71,7 +71,7 @@ def main() -> int:
     written.append("icon.svg")
 
     for name, px in TRANSPARENT.items():
-        render(px, AMBER).save(os.path.join(OUT, name))
+        render(px).save(os.path.join(OUT, name))
         written.append(name)
 
     for name, px in ON_INK.items():
@@ -80,12 +80,12 @@ def main() -> int:
 
     # The wide tile is the only asset that is not a square.
     wide = Image.new("RGBA", (310, 150), INK)
-    wide.alpha_composite(render(112, AMBER), (99, 19))
+    wide.alpha_composite(render(112), (99, 19))
     wide.save(os.path.join(OUT, "mstile-310x150.png"))
     written.append("mstile-310x150.png")
 
     # One .ico holding every size a browser might reach for, all transparent.
-    largest = render(256, AMBER)
+    largest = render(256)
     largest.save(
         os.path.join(OUT, "favicon.ico"),
         format="ICO",
