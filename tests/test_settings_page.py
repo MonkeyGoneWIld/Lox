@@ -146,6 +146,32 @@ async def main() -> int:
           not any(w in " ".join(rule.labels).lower()
                   for w in ("must", "any one", "combine", "doesn't matter")), "")
 
+    # --- Qobuz: 401 is not a bad app ID ------------------------------
+    # Measured against the live API. 400 means the app ID is wrong; 401 means
+    # the app ID got through and the request is not authenticated, which Qobuz
+    # answers to every catalogue endpoint when no user token is attached. This
+    # test read 401 as "bad app ID" and never sent the token at all, so a
+    # correct app ID and a saved token reported as a rejected app ID.
+    from lox.web.settings_api import _qobuz_verdict  # noqa: PLC0415
+
+    for status, has_token, want_ok, must_say in (
+        (200, True, True, "both work"),
+        (200, False, True, "App ID works"),
+        (400, False, False, "rejected the app ID"),
+        (400, True, False, "rejected the app ID"),
+        (401, True, False, "rejected the auth token"),
+        (401, False, False, "without a user auth token"),
+        (403, True, False, "rejected the auth token"),
+        (503, True, False, "HTTP 503"),
+    ):
+        passed, message = _qobuz_verdict(status, has_token)
+        label = f"{status} with{'' if has_token else 'out'} a token"
+        check(f"{label} -> {'pass' if want_ok else 'fail'}", passed is want_ok, message)
+        check(f"  and says so: {must_say!r}", must_say.lower() in message.lower(), message)
+
+    check("a 401 never blames the app ID",
+          "app id" not in _qobuz_verdict(401, True)[1].lower().split("--")[1], _qobuz_verdict(401, True)[1])
+
     # --- and every test named anywhere is dispatchable ---------------
     from lox.web import create_app_async  # noqa: PLC0415
 

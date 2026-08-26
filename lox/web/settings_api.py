@@ -853,52 +853,78 @@ async def _test_apple_music(request: web.Request) -> web.Response:
     return ok("Token works.")
 
 
+def _qobuz_verdict(status: int, has_token: bool) -> tuple[bool, str]:
+    """What a Qobuz status code means for the two credentials.
+
+    Measured against the live API rather than read off the docs, because the
+    two codes do not mean what they look like:
+
+    * **400** -- the app ID is wrong, or absent. Comes back whether or not a
+      token is attached, and the body says so in as many words.
+    * **401** -- the app ID got through and the request is not authenticated.
+      Qobuz answers this to every catalogue endpoint when no user token is
+      attached, whatever the app ID is. So 401 says nothing about the app ID,
+      and reading it as "bad app ID" is what made a correct app ID and a saved
+      token report as a rejected app ID.
+
+    Args:
+        status: The HTTP status Qobuz answered with.
+        has_token: Whether a user auth token was sent with the request.
+
+    Returns:
+        ``(passed, message)``.
+    """
+    if status == 200:
+        return True, "App ID and auth token both work." if has_token else "App ID works."
+    if status == 400:
+        return False, "Qobuz rejected the app ID."
+    if status in (401, 403):
+        if has_token:
+            return False, (
+                "The app ID is fine -- Qobuz rejected the auth token. It expires; "
+                "sign in to Qobuz again and copy a fresh one."
+            )
+        return False, (
+            "The app ID is fine, but Qobuz will not answer without a user auth token. "
+            "Set one beside this field."
+        )
+    return False, f"Qobuz answered HTTP {status}."
+
+
 async def _test_qobuz(request: web.Request) -> web.Response:
-    """Check the Qobuz app ID, and the auth token if one is set.
+    """Check the Qobuz app ID and the user auth token, together.
 
-    Searching rather than fetching one album. This asked for album
-    0060254764852 by id, and when Qobuz eventually stopped carrying that
-    album it began answering 404 -- so a perfectly good app ID reported as
-    "Qobuz returned HTTP 404." A test that depends on one record still
-    existing tests the record, not the credential. A search does not.
+    Two corrections live here, both found by asking the live API.
 
-    The two credentials are checked separately, because they fail for
-    different reasons and only one of them is usually the problem: a bad app
-    ID is rejected at the door with a 400, while a bad user token is only
-    noticed by an endpoint that needs one.
+    It used to fetch album 0060254764852 by id. Qobuz stopped carrying that
+    album, so a perfectly good app ID reported "Qobuz returned HTTP 404" -- a
+    test that depends on one record still existing tests the record.
+
+    Then it searched, but sent the app ID alone and read 401 as "bad app ID",
+    so a correct app ID and a saved token reported as a rejected app ID -- and
+    the token, the thing actually worth testing, was never sent at all. See
+    :func:`_qobuz_verdict` for what the codes mean.
     """
     app_id = cfg.metadata.qobuz.app_id
     if not app_id:
         return fail("No Qobuz app ID set.")
 
-    base = "https://www.qobuz.com/api.json/0.2"
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-        async with session.get(
-            f"{base}/catalog/search", params={"query": "daft punk", "limit": "1", "app_id": app_id}
-        ) as resp:
-            if resp.status in (400, 401):
-                return fail("Qobuz rejected the app ID.", status=resp.status)
-            if resp.status != 200:
-                return fail(f"Qobuz returned HTTP {resp.status} for a search.", status=resp.status)
+    token = cfg.metadata.qobuz.user_auth_token
+    # In the header, never the query string: a URL ends up in logs and history.
+    headers = {"X-User-Auth-Token": token} if token else {}
 
-        token = cfg.metadata.qobuz.user_auth_token
-        if not token:
-            return ok("App ID works. No auth token set, which is fine.")
-
-        async with session.get(
-            f"{base}/favorite/getUserFavorites",
-            params={"type": "albums", "limit": "1", "app_id": app_id},
-            headers={"X-User-Auth-Token": token},
-        ) as resp:
-            if resp.status in (401, 403):
-                return fail("App ID works, but Qobuz rejected the auth token.", status=resp.status)
-            if resp.status != 200:
-                return ok(
-                    f"App ID works. The token could not be confirmed -- Qobuz answered {resp.status} "
-                    "to the account lookup.",
-                    status=resp.status,
-                )
-    return ok("App ID works, and the auth token was accepted.")
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session, session.get(
+        "https://www.qobuz.com/api.json/0.2/catalog/search",
+        # The app ID goes in the query string, which is where every Qobuz
+        # example puts it. The X-App-Id header works identically -- measured --
+        # but nobody debugging this will be looking for it there.
+        params={"query": "daft punk", "limit": "1", "app_id": str(app_id)},
+        headers=headers,
+    ) as resp:
+        passed, message = _qobuz_verdict(resp.status, bool(token))
+        if passed:
+            return ok(message)
+        return fail(message, status=resp.status)
 
 
 async def _test_tidal(request: web.Request) -> web.Response:
