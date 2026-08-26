@@ -8,14 +8,31 @@ from lox import cfg
 from lox.errors import ImageUploadFailed
 from lox.images.base import BaseImageUploader
 
-HEADERS: dict[str, str] = {"X-API-Key": cfg.image.oeimg_key or ""}
+API_URL = "https://onlyimage.org/api/1/upload"
+"""OnlyImage, the host an oeimg key belongs to.
+
+This used to post to imgoe.download, which is a different Chevereto instance
+that answers on its own keys -- so a key issued by OnlyImage was rejected by a
+site it was never registered with, and the upload failed with nothing on screen
+explaining why. The settings test pointed at a third domain, oeimg.com, which
+does not resolve at all."""
+
+
+def headers() -> dict[str, str]:
+    """Auth header, read when the request is made.
+
+    Built at import time this was a snapshot: a key entered on the settings
+    page updates cfg in place, but never the dict, so the new key did not reach
+    an upload until the process restarted.
+    """
+    return {"X-API-Key": cfg.image.oeimg_key or ""}
 
 
 class ImageUploader(BaseImageUploader):
-    """Image uploader for imgoe.download (oeimg)."""
+    """Image uploader for OnlyImage."""
 
     async def upload_file(self, filename: str) -> tuple[str, None]:
-        """Upload image file to oeimg.
+        """Upload image file to OnlyImage.
 
         Args:
             filename: Path to the image file.
@@ -32,11 +49,10 @@ class ImageUploader(BaseImageUploader):
         data = aiohttp.FormData()
         data.add_field("source", file_data, filename=Path(filename).name)
 
-        url = "https://imgoe.download/api/1/upload"
         try:
             async with (
                 aiohttp.ClientSession() as session,
-                session.post(url, headers=HEADERS, data=data) as resp,
+                session.post(API_URL, headers=headers(), data=data) as resp,
             ):
                 resp.raise_for_status()
                 r = await resp.json(loads=msgspec.json.decode)

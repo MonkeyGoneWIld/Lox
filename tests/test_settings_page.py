@@ -83,6 +83,7 @@ async def main() -> int:
         ("upload.multi_tracker_upload", "trackers are ticked per upload instead"),
         ("upload.description.copy_uploaded_url_to_clipboard",
          "it copies to the server's clipboard, which is not the machine you are on"),
+        ("image.ptpimg_key", "ptpimg.me answers HTTP 500 to everything, including its own upload endpoint"),
     ):
         check(f"{dead} is gone -- {why}", dead not in keys, "")
 
@@ -99,7 +100,7 @@ async def main() -> int:
 
     # --- one credential, one test ------------------------------------
     per_field = {f.key: f.test for f in FIELDS if f.test}
-    for key in ("image.ptpimg_key", "image.ptscreens_key", "image.oeimg_key", "image.imgbb_key"):
+    for key in ("image.ptscreens_key", "image.oeimg_key", "image.imgbb_key"):
         check(f"{key} has its own test", per_field.get(key, "").startswith("image:"), per_field.get(key, ""))
     for key, target in (
         ("metadata.discogs_token", "discogs"),
@@ -135,10 +136,10 @@ async def main() -> int:
 
         # An unconfigured credential reports that, rather than raising.
         async with session.post(
-            f"http://127.0.0.1:{PORT}/api/settings/test/image:ptpimg", json={"values": {}}
+            f"http://127.0.0.1:{PORT}/api/settings/test/image:oeimg", json={"values": {}}
         ) as resp:
             body = await resp.json()
-        check("an unset key fails cleanly", body.get("ok") is False and "no ptpimg key" in body["message"].lower(),
+        check("an unset key fails cleanly", body.get("ok") is False and "no oeimg key" in body["message"].lower(),
               str(body)[:110])
 
         async with session.post(

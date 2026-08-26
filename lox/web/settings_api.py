@@ -431,20 +431,32 @@ async def _test_dic(request: web.Request) -> web.Response:
 
 
 async def _test_discogs(request: web.Request) -> web.Response:
-    """Fetch a known Discogs release to prove the token works."""
+    """Ask Discogs who the token belongs to.
+
+    Against /oauth/identity, which requires authentication. It used to fetch a
+    release instead -- and a release is public, so Discogs answered 200 with the
+    full record for a token of ten zeroes. The test passed for any string at
+    all, including none of the right ones.
+    """
     token = cfg.metadata.discogs_token
     if not token:
         return fail("No Discogs token set. Request track-count verification will be weaker without it.")
     async with aiohttp.ClientSession(timeout=TIMEOUT) as session, session.get(
-        "https://api.discogs.com/releases/249504",
+        "https://api.discogs.com/oauth/identity",
         headers={"Authorization": f"Discogs token={token}", "User-Agent": "lox/1.0"},
     ) as resp:
-        if resp.status == 401:
+        body = await resp.text()
+        if resp.status in (401, 403):
             return fail("Discogs rejected the token.")
         if resp.status != 200:
             return fail(f"Discogs returned HTTP {resp.status}.")
-        data = msgspec.json.decode(await resp.read())
-    return ok(f"Token works. Test lookup returned {len(data.get('tracklist') or [])} tracks.")
+        try:
+            who = msgspec.json.decode(body.encode("utf-8", "replace"))
+        except (msgspec.DecodeError, ValueError):
+            return fail("Discogs answered with something this test could not read.")
+    username = (who or {}).get("username") or "?"
+    return ok(f"Authenticated with Discogs as {username}.", username=username,
+              id=(who or {}).get("id"))
 
 
 def _connect(name: str, url: str) -> dict[str, Any]:
@@ -593,11 +605,13 @@ async def _test_paths(request: web.Request) -> web.Response:
 # The hosts that need a key, and where that key lives. catbox and imgbox take
 # anonymous uploads, so they have nothing to test.
 _IMAGE_KEYS = {
-    "ptpimg": "ptpimg_key",
     "ptscreens": "ptscreens_key",
     "oeimg": "oeimg_key",
     "imgbb": "imgbb_key",
 }
+"""The hosts that take a key. ptpimg is gone: ptpimg.me answers HTTP 500 to
+everything, including its own upload endpoint, and a test that only failed on
+401 or 403 read that as the key being accepted."""
 
 
 def _image_roles(host: str) -> list[str]:
@@ -613,13 +627,73 @@ def _image_roles(host: str) -> list[str]:
     ]
 
 
+def _image_verdict(host: str, status: int, body: str, used_for: str) -> web.Response:
+    """Read an image host's answer to a key with no file attached.
+
+    None of these hosts uses 401 for a bad key. They answer HTTP 400 with a JSON
+    body naming the reason, so a check that only failed on 401 or 403 read every
+    refusal as a pass -- which is why a made-up key tested green.
+
+    What separates them is the error code. 100 is "invalid API key" on all of
+    them. Any other code -- 130, "empty upload source" -- means the key got
+    through and only the file was missing, which is exactly what a test that
+    uploads nothing should produce.
+
+    Args:
+        host: Host name, for the message.
+        status: HTTP status.
+        body: Response body.
+        used_for: What this host is currently selected for.
+
+    Returns:
+        A passing or failing test result.
+    """
+    code: int | None = None
+    detail = ""
+    try:
+        parsed = msgspec.json.decode(body.encode("utf-8", "replace"))
+        error = parsed.get("error") or {} if isinstance(parsed, dict) else {}
+        if isinstance(error, dict):
+            code = error.get("code") if isinstance(error.get("code"), int) else None
+            detail = str(error.get("message") or "")
+    except (msgspec.DecodeError, ValueError, AttributeError):
+        pass
+
+    lowered = detail.lower()
+    if code == 100 or "invalid api" in lowered or "invalid key" in lowered:
+        return fail(f"{host} rejected the key: {detail or 'invalid API key'}. {used_for}")
+    if status in (401, 403):
+        return fail(f"{host} rejected the key with HTTP {status}. {used_for}")
+    if status >= 500:
+        return fail(f"{host} is not answering properly -- HTTP {status}. {used_for}")
+    if code is not None:
+        # An error that names a reason other than the key: it got through.
+        return ok(f"{host} accepted the key.", used_for=used_for.strip(), answered=detail or f"code {code}")
+    if status == 200:
+        return ok(f"{host} accepted the key.", used_for=used_for.strip(), answered="HTTP 200")
+    # A refusal whose reason could not be read. Not a pass: the whole failure
+    # this replaced was reading an answer it did not understand as approval.
+    return fail(
+        f"{host} answered HTTP {status} and this test could not tell whether the key was the problem. "
+        f"{used_for}",
+        answered=(body or "")[:160],
+    )
+
+
 async def _test_image_host(host: str) -> web.Response:
     """Check one image host's key against the host itself.
 
     A real request, not a presence check: a key that is set but wrong fails at
     the moment a release is being uploaded, which is the worst time to find out.
-    Nothing is uploaded -- these are read-only endpoints -- because a settings
-    test should not quietly put a file on a public host.
+
+    Sent exactly the way the uploader sends it -- same URL, same header -- and
+    against the same module-level constant, so the test cannot drift onto a
+    different endpoint from the one that does the work. It did: the check for
+    oeimg pointed at oeimg.com, which does not resolve, while uploads went to a
+    third domain again.
+
+    Nothing is uploaded. No file is attached, which is a request these hosts
+    answer with "empty upload source" once the key has been accepted.
     """
     attribute = _IMAGE_KEYS.get(host)
     if attribute is None:
@@ -633,29 +707,22 @@ async def _test_image_host(host: str) -> web.Response:
 
     try:
         async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-            if host == "ptpimg":
-                # ptpimg has no whoami; the upload endpoint answers 400 for a
-                # good key with no file and 403 for a bad one.
-                async with session.post("https://ptpimg.me/upload.php", data={"api_key": key}) as resp:
-                    if resp.status in (401, 403):
-                        return fail(f"ptpimg rejected the key. {used_for}")
-                    return ok(f"ptpimg accepted the key. {used_for}")
             if host == "imgbb":
-                async with session.get("https://api.imgbb.com/1/upload", params={"key": key}) as resp:
-                    body = (await resp.text())[:200]
-                    if resp.status in (400, 415):
-                        # "no image" rather than "invalid key" means the key passed.
-                        if "key" in body.lower() and "invalid" in body.lower():
-                            return fail(f"imgbb rejected the key. {used_for}")
-                        return ok(f"imgbb accepted the key. {used_for}")
-                    if resp.status in (401, 403):
-                        return fail(f"imgbb rejected the key. {used_for}")
-                    return ok(f"imgbb answered HTTP {resp.status}. {used_for}")
-            base = "https://ptscreens.com" if host == "ptscreens" else "https://oeimg.com"
-            async with session.get(f"{base}/api/1/upload", params={"key": key}) as resp:
-                if resp.status in (401, 403):
-                    return fail(f"{host} rejected the key. {used_for}")
-                return ok(f"{host} accepted the key. {used_for}")
+                # imgbb takes the key as a query parameter, not a header.
+                from lox.images import imgbb  # noqa: PLC0415
+
+                url = getattr(imgbb, "API_URL", "https://api.imgbb.com/1/upload")
+                async with session.get(url, params={"key": key}) as resp:
+                    return _image_verdict(host, resp.status, await resp.text(), used_for)
+
+            module = "oeimg" if host == "oeimg" else "ptscreens"
+            from importlib import import_module  # noqa: PLC0415
+
+            uploader = import_module(f"lox.images.{module}")
+            # POST, because a GET to a Chevereto API answers with an HTML error
+            # page rather than JSON -- unreadable, and read as a pass.
+            async with session.post(uploader.API_URL, headers=uploader.headers()) as resp:
+                return _image_verdict(host, resp.status, await resp.text(), used_for)
     except TimeoutError:
         return fail(f"{host} did not answer in time.")
     except aiohttp.ClientError as e:
