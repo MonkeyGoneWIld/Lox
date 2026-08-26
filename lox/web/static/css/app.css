@@ -310,7 +310,11 @@ button.ghost { background: none; }
 
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); cursor: pointer; }
 
-.searchbar { display: flex; gap: 10px; align-items: center; }
+/* The bar and the results it produced are two things, and they need the gap
+   that says so. Filtering to one type drops the section headings, and their
+   margin was the only thing holding the grid off the search bar -- so a
+   filtered search had its first row of covers welded to the input. */
+.searchbar { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; }
 .searchbar input { flex: 1; }
 
 .segmented { display: inline-flex; background: var(--bg-input); border-radius: var(--radius); padding: 3px; gap: 2px; }
@@ -326,6 +330,11 @@ button.ghost { background: none; }
 .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* ---------- cards ---------- */
+
+/* Above a grid of covers, when any of them can be ticked. Quiet, because it
+   is an offer and not an instruction. */
+.grid-tools { margin-bottom: 12px; }
+.grid-tools .hint { margin: 0; }
 
 .grid {
   display: grid;
@@ -566,7 +575,7 @@ button.ghost { background: none; }
   display: inline-flex;
   align-items: baseline;
   gap: 9px;
-  margin: 4px 0 12px;
+  margin: 0 0 12px;
   padding: 3px 8px 3px 0;
   font-size: 15px;
   font-weight: 650;

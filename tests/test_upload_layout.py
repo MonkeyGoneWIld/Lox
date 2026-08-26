@@ -321,6 +321,44 @@ def main() -> int:
     check("the filter is not persisted, because it is not a setting",
           "foundFilter: { text: '', tracker: '', source: '' }" in js.replace('"', "'"), "")
 
+    # --- the search results are a list you can work with --------------
+    # Taking twenty of thirty covers was twenty clicks, and there was no way to
+    # take all of them at all.
+    check("there is a select-all above the covers", "function selectAllVisible" in js, "")
+    check("shown wherever something can be ticked, not only once one is",
+          "function selectAllBar" in js and "grid-tools-host" in js, "")
+    check("it flips to clearing when everything is taken", "Clear all ${count}" in js, "")
+    check("shift-click takes the run between two ticks",
+          "e.shiftKey" in js and "function pickClicked" in js, "")
+    check("which needs the click event, not change -- change carries no shift key",
+          "onchange: (e) => togglePick" not in js, "")
+    check("the range is ordered by what is on screen",
+          "const pickableCards" in js and "data-album" in js, "")
+    check("and a bulk pick redraws the bar once, not once per card",
+          "let bulkPicking" in js and "function inBulk" in js, "")
+
+    # A filtered search dropped the section headings, and their margin was the
+    # only thing holding the covers off the search bar.
+    check("the search bar keeps its distance from the results",
+          "margin-bottom: 18px" in rule(css, ".searchbar"), rule(css, ".searchbar").strip()[:70])
+
+    # "Check trackers" moved you to another tab, pasted some URLs, and left the
+    # button you had already pressed waiting under a different name.
+    bulk = js[js.index("async function bulkCheck"):]
+    end_marker = chr(10) + "  }" + chr(10)
+    bulk = bulk[: bulk.index(end_marker)]
+    check("pressing Check trackers checks the trackers", "await missingScan()" in bulk, "")
+    check("on what you picked, not on whatever was left in the box",
+          "box.value = urls.join" in bulk, "")
+
+    # --- a pasted request says which tracker it is on -----------------
+    check("a request URL is read for its tracker", "function trackerFromUrl" in js, "")
+    check("all three of them", all(t in js for t in ("redacted", "orpheus", "dicmusic")), "")
+    check("and the check is grouped by tracker, not by the toggle",
+          "groups.set(code" in js and "request_ids: ids" in js, "")
+    check("a pasted row is filled in from what the check found",
+          "function fillPastedRequestRow" in js, "")
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

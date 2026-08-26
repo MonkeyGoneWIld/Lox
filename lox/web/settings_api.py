@@ -854,22 +854,51 @@ async def _test_apple_music(request: web.Request) -> web.Response:
 
 
 async def _test_qobuz(request: web.Request) -> web.Response:
-    """Check the Qobuz app ID, and the auth token if one is set."""
+    """Check the Qobuz app ID, and the auth token if one is set.
+
+    Searching rather than fetching one album. This asked for album
+    0060254764852 by id, and when Qobuz eventually stopped carrying that
+    album it began answering 404 -- so a perfectly good app ID reported as
+    "Qobuz returned HTTP 404." A test that depends on one record still
+    existing tests the record, not the credential. A search does not.
+
+    The two credentials are checked separately, because they fail for
+    different reasons and only one of them is usually the problem: a bad app
+    ID is rejected at the door with a 400, while a bad user token is only
+    noticed by an endpoint that needs one.
+    """
     app_id = cfg.metadata.qobuz.app_id
     if not app_id:
         return fail("No Qobuz app ID set.")
-    params = {"album_id": "0060254764852", "app_id": app_id}
-    headers = {}
-    if cfg.metadata.qobuz.user_auth_token:
-        headers["X-User-Auth-Token"] = cfg.metadata.qobuz.user_auth_token
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session, session.get(
-        "https://www.qobuz.com/api.json/0.2/album/get", params=params, headers=headers
-    ) as resp:
-        if resp.status in (400, 401):
-            return fail("Qobuz rejected the app ID or the auth token.")
-        if resp.status != 200:
-            return fail(f"Qobuz returned HTTP {resp.status}.")
-    return ok("App ID works." + (" Auth token accepted." if headers else " No auth token set, which is fine."))
+
+    base = "https://www.qobuz.com/api.json/0.2"
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        async with session.get(
+            f"{base}/catalog/search", params={"query": "daft punk", "limit": "1", "app_id": app_id}
+        ) as resp:
+            if resp.status in (400, 401):
+                return fail("Qobuz rejected the app ID.", status=resp.status)
+            if resp.status != 200:
+                return fail(f"Qobuz returned HTTP {resp.status} for a search.", status=resp.status)
+
+        token = cfg.metadata.qobuz.user_auth_token
+        if not token:
+            return ok("App ID works. No auth token set, which is fine.")
+
+        async with session.get(
+            f"{base}/favorite/getUserFavorites",
+            params={"type": "albums", "limit": "1", "app_id": app_id},
+            headers={"X-User-Auth-Token": token},
+        ) as resp:
+            if resp.status in (401, 403):
+                return fail("App ID works, but Qobuz rejected the auth token.", status=resp.status)
+            if resp.status != 200:
+                return ok(
+                    f"App ID works. The token could not be confirmed -- Qobuz answered {resp.status} "
+                    "to the account lookup.",
+                    status=resp.status,
+                )
+    return ok("App ID works, and the auth token was accepted.")
 
 
 async def _test_tidal(request: web.Request) -> web.Response:

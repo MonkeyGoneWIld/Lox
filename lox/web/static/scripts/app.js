@@ -304,10 +304,15 @@
   function card(item) {
     const isAlbum = item.type === 'album' || item.album_id;
     const albumId = item.type === 'album' ? item.id : item.album_id;
+    if (isAlbum && albumId) PICKABLE.set(String(albumId), item);
     const node = el(
       'div',
       {
         class: `card ${item.type}`,
+        // The id in the DOM is what makes a shift-range possible: the range is
+        // "everything between these two on screen", and on screen is the only
+        // place that order exists.
+        'data-album': isAlbum && albumId ? String(albumId) : null,
         onclick: () => {
           if (item.type === 'artist') openArtist(item.id);
           else if (albumId) openAlbum(albumId);
@@ -325,7 +330,12 @@
               el('input', {
                 type: 'checkbox',
                 checked: state.picked.has(albumId),
-                onchange: (e) => togglePick(albumId, item, e.target.checked, node),
+                // click rather than change, because change does not carry the
+                // shift key and a range select is the whole point of it.
+                onclick: (e) => {
+                  e.stopPropagation();
+                  pickClicked(String(albumId), item, e.target.checked, node, e.shiftKey);
+                },
               }),
             )
           : null,
@@ -395,6 +405,85 @@
     else state.picked.delete(albumId);
     node?.classList.toggle('picked', on);
     renderPickBar();
+    if (!bulkPicking) refreshSelectAllBar();
+  }
+
+  // Set while a range or a select-all is running. Without it the bar is rebuilt
+  // once per card, which throws away the button the click is still inside.
+  let bulkPicking = false;
+
+  function inBulk(fn) {
+    bulkPicking = true;
+    try { fn(); } finally { bulkPicking = false; }
+    renderPickBar();
+    refreshSelectAllBar();
+  }
+
+  // Every album currently rendered, by id. Cards register here as they are
+  // built so a range or a select-all can reach an item without re-fetching it.
+  const PICKABLE = new Map();
+
+  //: The card whose box was ticked last, which is where a shift-range starts.
+  let lastPickedId = null;
+
+  /** The selectable cards on screen, in the order they are laid out. */
+  const pickableCards = () => [...document.querySelectorAll('.card[data-album]')];
+
+  function setPick(albumId, on) {
+    const node = document.querySelector(`.card[data-album="${albumId}"]`);
+    const box = node?.querySelector('.card-pick input');
+    if (box) box.checked = on;
+    togglePick(albumId, PICKABLE.get(albumId), on, node);
+  }
+
+  // Ticking with shift held picks everything between the last tick and this
+  // one, the way a file list does. Without it, taking twenty of a page of
+  // thirty is twenty clicks.
+  function pickClicked(albumId, item, on, node, shift) {
+    PICKABLE.set(albumId, item);
+    if (shift && lastPickedId && lastPickedId !== albumId) {
+      const ids = pickableCards().map((c) => c.dataset.album);
+      const from = ids.indexOf(lastPickedId);
+      const to = ids.indexOf(albumId);
+      if (from !== -1 && to !== -1) {
+        const [lo, hi] = from < to ? [from, to] : [to, from];
+        // The whole range takes the state of the box you just clicked, so
+        // shift-unticking clears a range as well.
+        inBulk(() => ids.slice(lo, hi + 1).forEach((id) => setPick(id, on)));
+        lastPickedId = albumId;
+        return;
+      }
+    }
+    togglePick(albumId, item, on, node);
+    lastPickedId = albumId;
+  }
+
+  /** Tick every selectable card on screen. */
+  function selectAllVisible() {
+    const ids = pickableCards().map((c) => c.dataset.album);
+    const allPicked = ids.length > 0 && ids.every((id) => state.picked.has(id));
+    inBulk(() => ids.forEach((id) => setPick(id, !allPicked)));
+    lastPickedId = ids.length ? ids[ids.length - 1] : null;
+  }
+
+  // Sits above a grid that has anything selectable in it. Not part of the pick
+  // bar, which only exists once something is picked -- "select all" that you
+  // can only reach by first selecting one is not much of a select all.
+  function selectAllBar() {
+    const count = pickableCards().length;
+    if (!count) return null;
+    const picked = pickableCards().filter((c) => state.picked.has(c.dataset.album)).length;
+    return el('div', { class: 'row grid-tools' },
+      el('button', { class: 'linkbtn', onclick: selectAllVisible },
+         picked === count ? `Clear all ${count}` : `Select all ${count}`),
+      el('span', { class: 'hint' }, 'Shift-click to take a run of them.'));
+  }
+
+  function refreshSelectAllBar() {
+    const host = $('#grid-tools-host');
+    if (!host) return;
+    const bar = selectAllBar();
+    host.replaceChildren(...(bar ? [bar] : []));
   }
 
   function clearPicks() {
@@ -404,7 +493,9 @@
       const box = c.querySelector('.card-pick input');
       if (box) box.checked = false;
     });
+    lastPickedId = null;
     renderPickBar();
+    refreshSelectAllBar();
   }
 
   // A bar that only exists while something is selected, so the page is not
@@ -476,14 +567,23 @@
   async function bulkCheck(entries) {
     const trackers = checkTrackers();
     if (!trackers.length) return toast('No tracker configured', 'bad');
-    setView('missing');
-    const box = $('#missing-sources');
     const urls = entries
       .map(({ item }) => item.url || (item.id ? `https://www.deezer.com/album/${item.id}` : ''))
       .filter(Boolean);
-    box.value = [box.value.trim(), ...urls].filter(Boolean).join('\n');
+    if (!urls.length) return toast('Nothing to check', 'bad');
+
+    setView('missing');
+    const box = $('#missing-sources');
+    // Only what was just picked. Appending to whatever was left in the box
+    // meant pressing Check on four albums could spend budget on forty from a
+    // scan you set up an hour ago.
+    box.value = urls.join('\n');
     clearPicks();
-    toast(`${urls.length} added. Press Check to spend budget on them.`);
+    // And then actually check them. This used to stop here, having moved you
+    // to another tab and pasted some URLs, with the button you had already
+    // pressed -- "Check trackers" -- waiting to be pressed again under a
+    // different name.
+    await missingScan();
   }
 
   function renderGrid(container, items, emptyMessage) {
@@ -601,7 +701,14 @@
     try {
       const data = await api(`/api/search?q=${encodeURIComponent(query)}&type=${state.searchType}`);
       if (single) {
-        renderGrid(results, data.results, 'Nothing found.');
+        // A wrapper rather than making the pane itself the grid: the select-all
+        // bar has to sit above the covers, and a child of a CSS grid becomes a
+        // cell in it.
+        const grid = el('div', { class: 'grid' });
+        results.className = 'search-sections';
+        results.replaceChildren(el('div', { id: 'grid-tools-host' }), grid);
+        renderGrid(grid, data.results, 'Nothing found.');
+        refreshSelectAllBar();
         return;
       }
 
@@ -611,6 +718,7 @@
         return;
       }
       results.replaceChildren(
+        el('div', { id: 'grid-tools-host' }),
         ...sections.flatMap(([kind, rows]) => [
           // The heading is the control. It used to be a label with an "Only
           // these" link stranded at the far right of the row -- a second thing
@@ -639,6 +747,8 @@
           el('div', { class: 'grid' }, ...rows.map(card)),
         ]),
       );
+      // After the cards exist, because the bar counts what is on screen.
+      refreshSelectAllBar();
     } catch (e) {
       results.replaceChildren(empty(e.message));
     }
@@ -2040,8 +2150,12 @@
   // sat above an empty list and was pressable with nothing to press it on. The
   // caller says what to check now, and each caller only exists where there is
   // something to check.
-  async function requestsCheck(ids, { placeholders = false } = {}) {
-    if (!ids.length) return toast('Nothing to check', 'bad');
+  async function requestsCheck(entries, { placeholders = false } = {}) {
+    // Callers used to hand over bare ids; they hand over {id, tracker} now,
+    // and a bare id still works so a caller that has only an id is not forced
+    // to invent a tracker for it.
+    const items = entries.map((e) => (typeof e === 'object' ? e : { id: String(e), tracker: null }));
+    if (!items.length) return toast('Nothing to check', 'bad');
 
     const log = $('#requests-log');
     log.hidden = false;
@@ -2049,50 +2163,150 @@
     $$('.requests-check-btn').forEach((b) => { b.disabled = true; });
 
     // Pasted or uploaded ids have no rows yet, so stand some up to fill in.
+    // They carry their tracker so a mixed paste says which is which before a
+    // single call is spent.
     if (placeholders) {
-      state.requestRows = ids.map((id) => (
-        { id, artist: '', title: `Request ${id}`, year: '', bounty: '', age: '', filled: false, url: '#' }));
-      state.selectedRequests = new Set(ids);
+      state.requestRows = items.map(({ id, tracker }) => ({
+        id,
+        tracker: tracker || state.requestsTracker,
+        artist: '',
+        title: `Request ${id}`,
+        year: '',
+        bounty: '',
+        age: '',
+        filled: false,
+        url: '#',
+      }));
+      state.selectedRequests = new Set(items.map((i) => i.id));
       renderRequestRows();
     }
 
     const done = () => $$('.requests-check-btn').forEach((b) => { b.disabled = false; });
 
+    // One call per tracker, in order. A paste can name both, and the tracker
+    // is part of what identifies a request rather than a mode the page is in.
+    const groups = new Map();
+    items.forEach(({ id, tracker }) => {
+      const code = tracker || state.requestsTracker;
+      if (!groups.has(code)) groups.set(code, []);
+      groups.get(code).push(id);
+    });
+
+    let checked = 0;
+    let stoppedEarly = null;
     try {
-      const { job_id } = await api('/api/requests/check', {
-        method: 'POST',
-        body: { tracker: state.requestsTracker, request_ids: ids },
-      });
-      log.after(jobCancel(job_id, 'Stop checking'));
-      followJob(job_id, {
-        onUpdate: (job) => {
-          jobProgress(log, job);
-          job.results.forEach(applyRequestResult);
-        },
-        onDone: (job) => {
-          done();
-          refreshStatus();
-          const stopped = job.events.find((e) => e.event === 'budget_exhausted');
-          jobFinished(log, stopped
-            ? `Stopped early to protect the budget after ${stopped.checked} request(s).`
-            : `Done. ${job.result_count} request(s) checked.`);
-        },
-      });
+      for (const [tracker, ids] of groups) {
+        const { job_id: jobId } = await api('/api/requests/check', {
+          method: 'POST',
+          body: { tracker, request_ids: ids },
+        });
+        const cancel = jobCancel(jobId, 'Stop checking');
+        log.after(cancel);
+        // eslint-disable-next-line no-await-in-loop -- deliberately serial:
+        // two trackers at once would race the budget guard on both.
+        const job = await new Promise((resolve) => {
+          followJob(jobId, {
+            onUpdate: (j) => {
+              jobProgress(log, j, groups.size > 1 ? `${tracker}: ` : '');
+              j.results.forEach(applyRequestResult);
+            },
+            onDone: resolve,
+          });
+        });
+        cancel.remove();
+        checked += job.result_count || 0;
+        stoppedEarly = stoppedEarly || job.events.find((e) => e.event === 'budget_exhausted');
+        if (stoppedEarly) break;
+      }
+      done();
+      refreshStatus();
+      jobFinished(log, stoppedEarly
+        ? `Stopped early to protect the budget after ${stoppedEarly.checked} request(s).`
+        : `Done. ${checked} request(s) checked.`);
     } catch (e) {
       done();
       toast(e.message, 'bad');
     }
   }
 
-  // Ids out of a pasted blob or an uploaded file.
-  const idsFrom = (text) => String(text || '')
+  // Which tracker a pasted request URL belongs to. The id alone is not enough
+  // to identify a request: request 80755 exists on both trackers and is a
+  // different release on each. Pasting an orpheus.network link while the
+  // toggle said RED checked RED's 80755 and reported back about that one.
+  const TRACKER_HOSTS = [
+    [/(^|\.)redacted\.(sh|ch)\b/i, 'RED'],
+    [/(^|\.)orpheus\.network\b/i, 'OPS'],
+    [/(^|\.)dicmusic\.com\b/i, 'DIC'],
+  ];
+
+  function trackerFromUrl(line) {
+    const host = (line.match(/https?:\/\/([^/\s]+)/i) || [])[1];
+    if (!host) return null;
+    const hit = TRACKER_HOSTS.find(([re]) => re.test(host));
+    return hit ? hit[1] : null;
+  }
+
+  // Requests out of a pasted blob or an uploaded file, each carrying the
+  // tracker its URL named. A bare id has no tracker and falls back to the
+  // one selected above.
+  //
+  // The id is read from the id= parameter when there is one, because a URL can
+  // carry other numbers -- redacted.ch, a port, a numeric in a path -- and
+  // taking the first run of digits picked those up.
+  function idsFrom(text) {
+    return String(text || '')
     .split(/\r?\n/)
-    .map((line) => (line.match(/(\d+)/) || [])[1])
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return null;
+      const id = (trimmed.match(/[?&]id=(\d+)/i) || trimmed.match(/(\d+)\s*$/) || trimmed.match(/(\d+)/) || [])[1];
+      return id ? { id, tracker: trackerFromUrl(trimmed) } : null;
+    })
     .filter(Boolean);
+  }
+
+  // Backfill a row from what the check learned. Only ever fills blanks: a row
+  // that came from a fetch already knows its own details, and the check's copy
+  // is no better. Cells are patched in place rather than re-rendering, because
+  // a re-render would wipe the result cells of every other row in the batch.
+  function fillPastedRequestRow(match) {
+    const id = String(match.request_id);
+    const row = state.requestRows.find((r) => String(r.id) === id);
+    const tr = $(`#requests-results tr[data-request="${id}"]`);
+    if (!row || !tr) return;
+
+    const learned = {
+      artist: match.artist || '',
+      title: match.album || '',
+      year: match.year || '',
+      bounty: match.bounty || '',
+      url: match.request_url || '',
+      tracker: match.tracker || row.tracker || '',
+    };
+    let touched = false;
+    Object.entries(learned).forEach(([key, value]) => {
+      const blank = !row[key] || (key === 'url' && row.url === '#') || (key === 'title' && row.title === `Request ${id}`);
+      if (value && blank) { row[key] = value; touched = true; }
+    });
+    if (!touched) return;
+
+    const link = tr.children[1].querySelector('a');
+    if (link) {
+      link.textContent = row.artist || row.title ? `${row.artist} — ${row.title}` : `Request ${id}`;
+      if (row.url && row.url !== '#') link.href = row.url;
+    }
+    tr.children[2].textContent = row.year || '';
+    tr.children[3].textContent = row.bounty || '';
+  }
 
   function applyRequestResult(match) {
     const cell = $(`#requests-results tr[data-request="${match.request_id}"] .result`);
     if (!cell) return;
+    // A pasted request arrives as a placeholder that knows nothing but its own
+    // id, and the check is what learns the rest. Without this the row stayed
+    // "— Request 80755" with an empty year and bounty even after the tracker
+    // had answered with all of it.
+    fillPastedRequestRow(match);
     // A request that was already filled is not a failed check, it is a closed
     // request -- so it says so, and the Filled column is corrected in place for
     // a row that was fetched before somebody filled it.

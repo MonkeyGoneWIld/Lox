@@ -429,6 +429,30 @@ async def main() -> int:
           row["id"] == "0" and row["title"] == "Album 0" and "id=0" in row["url"], str(row))
     check("bounty is human readable", row["bounty"] == "1.00 GB", row["bounty"])
 
+    # --- an open request is not a filled one -------------------------
+    # Gazelle fills unset columns with a zero rather than omitting them: an
+    # open request carries torrentId 0, fillerId 0 and timeFilled
+    # "0000-00-00 00:00:00". Every one of those is a non-empty string in JSON,
+    # so a plain truth test read them as values -- which is how an open request
+    # came back "already filled on 0000-00-00", was dropped from the results,
+    # and never reached the queue.
+    is_filled = DeezerRequestChecker._is_filled
+    for row, want, why in (
+        ({"torrentId": 0, "fillerId": 0, "timeFilled": "0000-00-00 00:00:00"}, False,
+         "an open request, as the tracker sends it"),
+        ({"torrentId": "0", "fillerId": "0", "timeFilled": "0000-00-00"}, False,
+         "the same, as strings"),
+        ({"torrentId": "0000"}, False, "any number of zeroes is still no id"),
+        ({}, False, "a row that says nothing about it"),
+        ({"fillerName": "someone", "torrentId": 0}, False,
+         "a name left over with no torrent behind it"),
+        ({"torrentId": 98123}, True, "a real torrent id"),
+        ({"timeFilled": "2026-08-20 14:00:00"}, True, "a real fill date"),
+        ({"isFilled": True}, True, "the flag on its own"),
+        ({"isFilled": "1"}, True, "the flag as the string the API sends"),
+    ):
+        check(f"{why} -> {'filled' if want else 'open'}", is_filled(row) is want, str(row)[:60])
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

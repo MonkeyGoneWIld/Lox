@@ -32,6 +32,11 @@ jobs:
         # bar moves, and that no long operation is left printing a bare line.
         run: node tests/test_job_progress.js
 
+      - name: A pasted request URL picks its own tracker
+        # A request id is only unique within a tracker, so checking 80755 on
+        # the wrong one answers a different question and says nothing about it.
+        run: node tests/test_request_paste.js
+
       - name: Check for builtins shadowed in annotations
         # Ruff and compileall both miss this: a method named `list` makes a
         # later `-> list[X]` annotation resolve to the method, which only fails

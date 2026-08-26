@@ -30,6 +30,33 @@ ACCEPTED_FORMATS = frozenset({"MP3", "FLAC", "Any"})
 ACCEPTED_MEDIA = frozenset({"WEB", "Any"})
 
 
+def _unset(value: object) -> bool:
+    """Whether a Gazelle field is one of its several spellings of "nothing".
+
+    The tracker fills unset columns with a zero rather than leaving them out:
+    an unfilled request carries ``torrentId`` 0, ``fillerId`` 0 and
+    ``timeFilled`` "0000-00-00 00:00:00". Every one of those is a non-empty
+    string in JSON, so a plain truth test reads them as values -- which is how
+    open requests came back reported as "already filled on 0000-00-00", were
+    dropped from the results, and never reached the queue.
+
+    Anything whose digits are all zero means never. A real id or a real date
+    has a digit that is not a zero somewhere in it.
+
+    Args:
+        value: A field from a request row.
+
+    Returns:
+        True when the field carries no value.
+    """
+    if value is None:
+        return True
+    text = str(value).strip()
+    if not text:
+        return True
+    return not any(char.isdigit() and char != "0" for char in text)
+
+
 class RequestMatch(msgspec.Struct):
     """The outcome of checking one request."""
 
@@ -234,7 +261,7 @@ class DeezerRequestChecker:
         """
         if row.get("isFilled") in (True, 1, "1", "true"):
             return True
-        return bool(row.get("torrentId") or row.get("fillerId") or row.get("timeFilled"))
+        return any(not _unset(row.get(key)) for key in ("torrentId", "fillerId", "timeFilled"))
 
     @staticmethod
     def _id_of(row: dict) -> str | None:
