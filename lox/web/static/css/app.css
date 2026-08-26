@@ -405,6 +405,12 @@ button.ghost { background: none; }
 .card-pick input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .card.picked .card-art { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* While a batch is open, the per-card download and upload buttons are gone.
+   They sit under the pointer on exactly the cards being ticked, and one stray
+   press sends a single release off on its own -- a download you did not ask
+   for, or worse, an upload. The batch has its own buttons in the bar. */
+body.picking .card-actions { display: none; }
+
 .pick-bar {
   position: sticky;
   top: 58px;

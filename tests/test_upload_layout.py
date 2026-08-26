@@ -399,6 +399,44 @@ def main() -> int:
     check("above the first section rather than after the sections",
           "insertBefore" in artist, "")
 
+    # --- the circle is the state, not a second opinion about it -------
+    # Picking from the card body left the circle empty on a picked card,
+    # because only the checkbox path set it. Pressing that circle then argued
+    # with the state behind it.
+    toggle = js[js.index("function togglePick("):]
+    toggle = toggle[: toggle.index(chr(10) + "  }" + chr(10))]
+    check("one function sets the set, the outline and the circle together",
+          "state.picked" in toggle and "classList.toggle('picked'" in toggle
+          and "box.checked = on" in toggle, "")
+    check("and it finds the card itself when the caller has no node",
+          "document.querySelector(`.card[data-album=" in toggle, "")
+    check("ids are strings on both sides of the set",
+          "state.picked.has(String(albumId))" in js, "")
+
+    # --- what a batch changes about the whole page --------------------
+    check("the page says when a batch is open",
+          "classList.toggle('picking', count > 0)" in js, "")
+    check("and the per-card download and upload buttons go while it is",
+          "display: none" in rule(css, "body.picking .card-actions"), "")
+    check("guarded in the handler too, not only in the stylesheet",
+          js.count("if (selecting()) return;") >= 2, str(js.count("if (selecting()) return;")))
+
+    # --- a batch belongs to the list it came from ---------------------
+    tabs = js[js.index("$$('#explore-tabs button')"):]
+    tabs = tabs[: tabs.index("loadExplore();")]
+    check("changing a Browse tab drops the batch", "clearPicks();" in tabs, "")
+
+    # --- select-all wherever releases can be picked -------------------
+    explore = js[js.index("async function loadExplore"):]
+    explore = explore[: explore.index(chr(10) + "  }" + chr(10))]
+    check("Browse has a select-all in charts", explore.count("grid-tools-host") >= 2,
+          str(explore.count("grid-tools-host")))
+    check("and in new releases", "refreshSelectAllBar();" in explore, "")
+
+    # The tip was noise: shift-click is worth knowing once, not on every grid.
+    check("no shift-click tip rides along with the button",
+          "Shift-click to take a run" not in js, "")
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

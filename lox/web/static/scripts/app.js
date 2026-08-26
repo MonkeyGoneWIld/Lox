@@ -339,7 +339,7 @@
               { class: 'card-pick', onclick: (e) => e.stopPropagation(), title: 'Select' },
               el('input', {
                 type: 'checkbox',
-                checked: state.picked.has(albumId),
+                checked: state.picked.has(String(albumId)),
                 // click rather than change, because change does not carry the
                 // shift key and a range select is the whole point of it.
                 onclick: (e) => {
@@ -360,6 +360,7 @@
                   title: 'Download',
                   onclick: (e) => {
                     e.stopPropagation();
+                    if (selecting()) return;
                     download(albumId);
                   },
                 },
@@ -372,6 +373,7 @@
                   title: 'Download and upload',
                   onclick: (e) => {
                     e.stopPropagation();
+                    if (selecting()) return;
                     downloadAndUpload(albumId, item);
                   },
                 },
@@ -404,16 +406,25 @@
           )
         : null,
     );
-    if (state.picked.has(albumId)) node.classList.add('picked');
+    if (state.picked.has(String(albumId))) node.classList.add('picked');
     return node;
   }
 
   // ------------------------------------------------------------ selection
 
+  // The one place a release becomes picked or unpicked. Everything visible
+  // about that -- the set, the outline, the circle -- is set here together,
+  // because when the circle was left to whichever caller happened to come
+  // through a checkbox, picking from the card body left an empty circle on a
+  // picked card, and pressing that circle then argued with the state behind it.
   function togglePick(albumId, item, on, node) {
-    if (on) state.picked.set(albumId, item);
-    else state.picked.delete(albumId);
-    node?.classList.toggle('picked', on);
+    const id = String(albumId);
+    if (on) state.picked.set(id, item);
+    else state.picked.delete(id);
+    const card = node || document.querySelector(`.card[data-album="${id}"]`);
+    card?.classList.toggle('picked', on);
+    const box = card?.querySelector('.card-pick input');
+    if (box) box.checked = on;
     renderPickBar();
     if (!bulkPicking) refreshSelectAllBar();
   }
@@ -443,10 +454,8 @@
   const pickableCards = () => [...document.querySelectorAll('.card[data-album]')];
 
   function setPick(albumId, on) {
-    const node = document.querySelector(`.card[data-album="${albumId}"]`);
-    const box = node?.querySelector('.card-pick input');
-    if (box) box.checked = on;
-    togglePick(albumId, PICKABLE.get(albumId), on, node);
+    togglePick(albumId, PICKABLE.get(String(albumId)), on,
+               document.querySelector(`.card[data-album="${albumId}"]`));
   }
 
   // Ticking with shift held picks everything between the last tick and this
@@ -488,8 +497,7 @@
     const picked = pickableCards().filter((c) => state.picked.has(c.dataset.album)).length;
     return el('div', { class: 'row grid-tools' },
       el('button', { class: 'linkbtn', onclick: selectAllVisible },
-         picked === count ? `Clear all ${count}` : `Select all ${count}`),
-      el('span', { class: 'hint' }, 'Shift-click to take a run of them.'));
+         picked === count ? `Clear all ${count}` : `Select all ${count}`));
   }
 
   function refreshSelectAllBar() {
@@ -516,6 +524,9 @@
   function renderPickBar() {
     const bar = $('#pick-bar');
     const count = state.picked.size;
+    // The whole page behaves differently while a batch is open, so it is said
+    // once, here, rather than asked for by every rule that cares.
+    document.body.classList.toggle('picking', count > 0);
     bar.hidden = !count;
     if (!count) return;
     const items = () => [...state.picked.entries()].map(([id, item]) => ({ id, item }));
@@ -810,20 +821,31 @@
       if (state.exploreTab === 'charts') {
         const chart = await api(`/api/explore/charts?genre=${state.exploreGenre}`);
         body.replaceChildren();
+        const tools = el('div', { id: 'grid-tools-host' });
+        body.append(tools);
         for (const [label, key] of [['Albums', 'albums'], ['Tracks', 'tracks'], ['Artists', 'artists']]) {
           if (!chart[key]?.length) continue;
           const grid = el('div', { class: 'grid' });
           grid.append(...chart[key].map(card));
           body.append(el('h2', { class: 'section-title' }, label), grid);
         }
-        if (!body.children.length) body.replaceChildren(empty('Deezer has no chart for this selection.'));
+        if (body.children.length <= 1) {
+          body.replaceChildren(empty('Deezer has no chart for this selection.'));
+        } else {
+          refreshSelectAllBar();
+        }
       } else {
         const data = await api(`/api/explore/releases?genre=${state.exploreGenre}`);
         const grid = el('div', { class: 'grid' });
         renderGrid(grid, data.results, data.note || 'No new releases.');
         body.replaceChildren(
-          ...[data.note ? el('p', { class: 'hint' }, data.note) : null, grid].filter(Boolean),
+          ...[
+            data.note ? el('p', { class: 'hint' }, data.note) : null,
+            el('div', { id: 'grid-tools-host' }),
+            grid,
+          ].filter(Boolean),
         );
+        refreshSelectAllBar();
       }
     } catch (e) {
       body.replaceChildren(empty(e.message));
@@ -4667,6 +4689,10 @@ They will not be listed again, even if a later scan finds them.`)) {
       b.addEventListener('click', () => {
         state.exploreTab = b.dataset.explore;
         $$('#explore-tabs button').forEach((x) => x.classList.toggle('active', x === b));
+        // A batch belongs to the list it was picked from. Carrying it into
+        // another tab leaves you holding releases you can no longer see, and
+        // the count in the bar stops matching anything on screen.
+        clearPicks();
         loadExplore();
       }),
     );
