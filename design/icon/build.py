@@ -7,17 +7,15 @@ in the repo at 512px -- the size of the largest asset generated from it, so
 nothing here is ever upscaled -- trimmed to its alpha bounds and squared, so
 the icon sits centred rather than wherever the export happened to leave it.
 
-Two things are deliberate.
+Every size is a straight downscale. The artwork before this was a detailed
+illustration that turned to mush at 16px and needed the frame tightened to the
+skull to survive; this one is a badge -- a cream skull on a black disc, one
+silhouette, high contrast -- and it reads small on its own. Checked against the
+owner's own 16, 32 and 48px exports: indistinguishable, so there is nothing for
+a crop to rescue and a crop would only differ from what they exported.
 
-Small sizes are CROPPED, not just shrunk. This is a detailed illustration:
-headphones, a bandana, an eye patch, a full set of teeth. Shrunk whole to 16px
-it is a grey speck with the skull too small to make out, so at and below 32px
-the frame is tightened to the skull -- the same icon, framed for the size,
-which is what every platform icon set does. Above that the whole illustration
-is used.
-
-And anything a browser puts in a tab strip keeps its transparent ground, while
-the iOS and Windows tiles get the app's own --bg: neither platform honours
+Anything a browser puts in a tab strip keeps its transparent ground, while the
+iOS and Windows tiles get the app's own --bg: neither platform honours
 transparency there, and both would otherwise pick a colour themselves.
 """
 
@@ -33,28 +31,16 @@ OUT = os.path.join(ROOT, "lox", "web", "static", "images")
 
 INK = "#17150f"  # --bg, for the platforms that will not take a clear ground
 
-#: At and below this, the frame is tightened to the skull.
-SMALL = 32
-#: How much of the frame the tightened crop keeps. Measured by rendering the
-#: candidates side by side at 16, 20, 24 and 32px on light and dark: the whole
-#: illustration is a speck, 68% fills the frame edge to edge and reads as a
-#: busy rectangle, and this is where the eye patch survives to 20px.
-CROP_KEEP = 0.58
-#: Nudged up, because the bandana makes the artwork top-heavy.
-CROP_RISE = 0.06
-#: And inset inside its frame, so the small sizes keep a silhouette instead of
-#: running artwork into all four corners. 0.88 rather than 0.92 because at
-#: 16px the difference is a whole pixel, and at 0.92 the headband still
-#: reached one corner.
-SMALL_INSET = 0.88
-
 TRANSPARENT = {
     "favicon-16x16.png": 16,
     "favicon-32x32.png": 32,
     "favicon-96x96.png": 96,
     "favicon-128.png": 128,
     "favicon-196x196.png": 196,
-    "logo.png": 512,
+    # The largest anything displays this is the login page at 56px, so 256
+    # is already generous on a 3x screen. At 512 it was a third of a megabyte
+    # fetched to draw a 32px mark in the sidebar.
+    "logo.png": 256,
 }
 
 ON_INK = {
@@ -72,7 +58,11 @@ ON_INK = {
     "mstile-310x310.png": 310,
 }
 
-ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
+#: Sizes inside the .ico. It stops at 64 on purpose: a browser reaching into
+#: an .ico wants 16, 32 or 48, and the larger sizes are declared as their own
+#: PNG links anyway. Carrying 128 and 256 in here as well took the file from
+#: 21KB to 143KB, fetched on every cold load to be ignored.
+ICO_SIZES = [16, 24, 32, 48, 64]
 
 
 def source() -> Image.Image:
@@ -81,7 +71,7 @@ def source() -> Image.Image:
 
 
 def render(px: int) -> Image.Image:
-    """The icon at one size, framed for that size.
+    """The icon at one size.
 
     Args:
         px: Width and height in pixels.
@@ -89,21 +79,7 @@ def render(px: int) -> Image.Image:
     Returns:
         An RGBA image, transparent everywhere the artwork is not.
     """
-    art = source()
-    if px > SMALL:
-        return art.resize((px, px), Image.LANCZOS)
-
-    width = art.width
-    keep = int(width * CROP_KEEP)
-    left = (width - keep) // 2
-    top = max(0, left - int(width * CROP_RISE))
-    art = art.crop((left, top, left + keep, top + keep))
-
-    inner = max(1, round(px * SMALL_INSET))
-    frame = Image.new("RGBA", (px, px), (0, 0, 0, 0))
-    frame.alpha_composite(art.resize((inner, inner), Image.LANCZOS),
-                          ((px - inner) // 2, (px - inner) // 2))
-    return frame
+    return source().resize((px, px), Image.LANCZOS)
 
 
 def padded(px: int, ratio: float = 0.86) -> Image.Image:
@@ -135,9 +111,9 @@ def main() -> int:
     wide.save(os.path.join(OUT, "mstile-310x150.png"))
     written.append("mstile-310x150.png")
 
-    # One .ico holding every size a browser might reach for. Built per size
-    # rather than by handing Pillow one image, so the small entries get the
-    # tightened crop instead of the whole illustration squeezed into 16px.
+    # One .ico holding every size a browser might reach for, each resized from
+    # the source rather than from one another, so no entry is a downscale of a
+    # downscale.
     frames = [render(s) for s in ICO_SIZES]
     frames[-1].save(
         os.path.join(OUT, "favicon.ico"),

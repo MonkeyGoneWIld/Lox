@@ -75,6 +75,17 @@ def main() -> int:
     sizes = {w for w, _ in ico.ico.sizes()}
     check("the .ico carries the sizes a tab asks for", {16, 32} <= sizes, str(sorted(sizes)))
 
+    # --- and nothing is heavier than it needs to be -------------------
+    # A favicon is fetched on every cold load. The .ico carried 128 and 256
+    # entries no browser reaches into -- they are declared as their own PNG
+    # links -- which made it 143KB instead of 21KB. logo.png is displayed at
+    # 56px at its largest, on the login page.
+    for name, ceiling in (("favicon.ico", 40_000), ("logo.png", 160_000),
+                          ("favicon-16x16.png", 4_000), ("favicon-32x32.png", 8_000)):
+        size = os.path.getsize(os.path.join(IMAGES, name))
+        check(f"{name} is not carrying weight nothing renders",
+              size < ceiling, f"{size:,} bytes")
+
     # --- the home-screen tiles do carry one, deliberately -----------------
     # iOS and Windows do not honour transparency there and would pick a ground
     # for us, so the app's own --bg is baked in.
