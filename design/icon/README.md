@@ -1,7 +1,7 @@
 # The Lox mark
 
-A solid head over two stripes, pointing up: the cut of a lox fillet, and the
-direction everything in the pipeline goes.
+Four bars off a baseline: the spectrogram, which is the screen this app is
+really about and the one you read on every upload.
 
 `marks.py` holds the geometry — the mark, and the four candidates it beat, kept
 because a mark is chosen by looking at it beside the others. `build.py` turns it

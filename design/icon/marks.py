@@ -1,10 +1,9 @@
 """The Lox mark, as geometry.
 
-One shape, three pieces: a solid head over two stripes, pointing up. It is the
-cut of a lox fillet, and it is the direction everything in this app is going --
-Deezer down, tracker up. It replaces a cartoon fish from Flaticon that came
-with the upstream project, sat on an opaque pale-blue square, and belonged to
-somebody else.
+Four bars off a baseline: the spectrogram, which is the screen this app is
+really about and the one thing a user looks at on every upload. It replaces a
+cartoon fish from Flaticon that came with the upstream project, sat on an
+opaque pale-blue square, and belonged to somebody else.
 
 Everything is drawn in a 32x32 unit square, so the same numbers produce the
 16px favicon and the 512px app icon. The four candidates that lost are kept in
@@ -41,15 +40,16 @@ def _shrink(polys, k: float = 0.94, c: float = 16.0):
     return [[(c + (x - c) * k, c + (y - c) * k) for x, y in poly] for poly in polys]
 
 
-#: The mark, as polygons in the 32x32 box. Centred on 16 vertically: the head
-#: runs 1.75..12.25 and the last stripe ends at 30.25, before the shrink.
-LOX = _shrink(
-    [
-        [(4, 12.25), (16, 1.75), (28, 12.25), (16, 7.55)],
-        _chevron(13.75, 5.0, 4.3, 5.5, 26.5),
-        _chevron(20.95, 5.0, 4.3, 5.5, 26.5),
-    ]
-)
+def _bar(x: float, top: float, width: float = 4.5, floor: float = 27.5):
+    """One band, standing on the baseline."""
+    return [(x, top), (x + width, top), (x + width, floor), (x, floor)]
+
+
+#: The mark, as polygons in the 32x32 box. Four bars on a 7-unit pitch, so the
+#: block runs 3.25..28.75 and the tallest 4.5..27.5 -- centred on 16 both ways.
+#: The gap is 2.5 units, which is 1.25px at favicon size: any thinner and the
+#: bars close up into a block.
+LOX = [_bar(3.25, 12.5), _bar(10.25, 4.5), _bar(17.25, 16.5), _bar(24.25, 8.5)]
 
 
 def _draw(polys, draw, s: float, fill: str) -> None:
@@ -105,11 +105,20 @@ def _alt_stripes(draw, s):
     _draw([_chevron(a, 5.6, 4.9, 4.5, 27.5) for a in (2.8, 12.0, 21.2)], draw, s, AMBER)
 
 
-def _alt_spectral(draw, s):
-    """The spectrogram: honest about the product, quiet about the name."""
-    for i, top in enumerate((13.0, 5.0, 17.0, 9.0)):
-        x = 5.0 + i * 7.0
-        draw.rectangle([x * s, top * s, (x + 4.5) * s, 28 * s], fill=AMBER)
+def _alt_fillet(draw, s):
+    """A solid head over two stripes: the cut of a fillet, pointing up."""
+    _draw(
+        _shrink(
+            [
+                [(4, 12.25), (16, 1.75), (28, 12.25), (16, 7.55)],
+                _chevron(13.75, 5.0, 4.3, 5.5, 26.5),
+                _chevron(20.95, 5.0, 4.3, 5.5, 26.5),
+            ]
+        ),
+        draw,
+        s,
+        AMBER,
+    )
 
 
 def _alt_monogram(draw, s):
@@ -123,8 +132,8 @@ def _alt_tail(draw, s):
 
 
 ALTERNATES = {
+    "Fillet": _alt_fillet,
     "Stripes": _alt_stripes,
-    "Spectral": _alt_spectral,
     "Monogram": _alt_monogram,
     "Tail": _alt_tail,
 }
