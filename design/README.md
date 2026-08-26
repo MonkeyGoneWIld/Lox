@@ -1,28 +1,46 @@
-# Interface directions
+# Interface prototype
 
-Design source for a proposed redesign of the Lox web UI. Nothing here is
-wired into the app — these are the drawings, kept in the repo so the
-decision and its reasoning live with the code.
+Design source for the Lox redesign. Nothing here is wired into the app yet —
+these are the drawings, kept in the repo so the decision and its reasoning
+live next to the code they describe.
 
-Each `.dc.html` is one artboard on a canvas:
+Direction A, "Console", was chosen. `Main.dc.html` is a clickable prototype
+of the pipeline; the other two directions are kept on a second page for
+reference.
 
-| file | what it argues |
+| file | what it is |
 |---|---|
-| `Flow.dc.html` | the navigation problem: eight peer tabs for four entry points and a three-stage pipeline |
-| `Main.dc.html` | direction A, Console — the leading candidate, at full size |
-| `DirectionB.dc.html` | direction B, Editorial — paper-light, serif |
-| `DirectionC.dc.html` | direction C, Studio — the smallest leap from today |
-| `canvas.json` | layout and the notes making the case for and against each |
+| `Main.dc.html` | the prototype — rail, queue, downloads, the upload flow, requests, settings |
+| `Flow.dc.html` | why the navigation changed |
+| `DirectionB.dc.html` | not chosen — Editorial |
+| `DirectionC.dc.html` | not chosen — Studio |
+| `canvas.json` | layout, pages and the notes |
+| `check-prototype.mjs` | drives every handler in the prototype |
 
-## Why
+## Running the checks
 
-The current palette is `--accent: #a238ff` on `#16161d`, `system-ui`, 10px
-radii. That combination is the house style of nearly every AI-generated
-app, which is what makes it read as one. The three directions each replace
-it with a deliberate one.
+    node design/check-prototype.mjs
 
-The flow problem is separate and is not a matter of taste, so all three
-directions fix it the same way: the four ways of finding work are grouped
-and renamed for what they do, and Found/Downloads/Uploads become a
-numbered pipeline whose counts are visible from every screen — including
-how many runs are blocked waiting for an answer.
+The artboard renders inside a sandboxed iframe, so nothing outside it can
+click its buttons. The logic class is plain JS, so this lifts it out and
+drives it: every handler is called and the state it produces is checked,
+including that no value handed to the template is undefined — an undefined
+one interpolates the word "undefined" into a CSS declaration and silently
+drops it.
+
+It says the flow works. It cannot say the flow looks right.
+
+## The two problems this answers
+
+**Looks like every AI-built app.** The palette was `--accent: #a238ff` on
+`#16161d` with `system-ui` and 10px radii, which is the house style of
+nearly every AI-generated app. Replaced with a warm near-black, one amber
+that only ever means "this needs you", green only for "there is something
+to upload here", IBM Plex Sans with Plex Mono for anything compared across
+rows. No violet, no pills, no gradients.
+
+**Makes very little sense.** Eight peer tabs, in an order nobody chose, for
+what is really four ways of finding work and a three-stage pipeline. Now
+two groups: the four entry points renamed for what they do, and a numbered
+pipeline whose counts are visible from every screen — including how many
+runs are sitting blocked waiting for an answer.

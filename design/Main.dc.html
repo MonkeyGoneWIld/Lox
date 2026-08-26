@@ -12,201 +12,679 @@
     body { margin: 0; }
     a { color: #e8a33d; text-decoration: none; }
     a:hover { color: #f2bd78; }
+    .m { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; }
+    .cap { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace;
+           font-size: 9.5px; letter-spacing: 0.14em; color: #6d6558; }
+    .navrow { display: flex; align-items: center; justify-content: space-between;
+              padding: 7px 18px; cursor: pointer; }
+    .btn { font: inherit; font-size: 12.5px; padding: 7px 15px; cursor: pointer;
+           background: none; border: 1px solid #3a3428; color: #ece7dd; }
+    .btn:hover { border-color: #6b6047; }
+    .go { background: #e8a33d; border-color: #e8a33d; color: #17150f; font-weight: 600; }
+    .go:hover { background: #f2bd78; border-color: #f2bd78; }
+    .kill { border-color: #6b3a30; color: #d4674f; }
+    .kill:hover { border-color: #d4674f; }
+    .row { display: flex; align-items: center; gap: 14px; padding: 12px 2px;
+           border-bottom: 1px solid #23201a; }
+    .tag { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace;
+           font-size: 10px; letter-spacing: 0.07em; padding: 2px 6px;
+           border: 1px solid #3a3428; color: #7d7568; white-space: nowrap; }
+    .fld { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    .fld label { font-size: 12px; font-weight: 600; }
+    .fld input { width: 100%; background: #100f0a; border: 1px solid #3a3428;
+                 color: #ece7dd; font: inherit; font-size: 12.5px; padding: 7px 10px; }
+    .fld span { font-size: 11px; color: #7d7568; line-height: 1.45; }
   </style>
 </helmet>
 
 <div style="width: 1440px; height: 900px; display: flex; background: #17150f; color: #ece7dd; font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif; font-size: 13px; overflow: hidden;">
 
-  <!-- ── rail: the pipeline, in order, with what is waiting on you ── -->
-  <div style="width: 212px; flex: none; background: #100f0a; border-right: 1px solid #2e2a20; display: flex; flex-direction: column;">
-
+  <!-- ─────────────── rail ─────────────── -->
+  <div style="width: 214px; flex: none; background: #100f0a; border-right: 1px solid #2e2a20; display: flex; flex-direction: column;">
     <div style="padding: 18px 18px 14px; border-bottom: 1px solid #2e2a20;">
-      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 15px; font-weight: 600; letter-spacing: 0.14em; color: #ece7dd;">LOX</div>
-      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.08em; color: #7d7568; margin-top: 3px;">deezer &rarr; gazelle</div>
+      <div class="m" style="font-size: 15px; font-weight: 600; letter-spacing: 0.14em;">LOX</div>
+      <div class="m" style="font-size: 10px; letter-spacing: 0.08em; color: #7d7568; margin-top: 3px;">deezer &rarr; gazelle</div>
     </div>
 
-    <div style="padding: 16px 0 6px;">
-      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6d6558; padding: 0 18px 8px;">FIND WORK</div>
-      <div style="display: flex; flex-direction: column;">
-        <div style="display: flex; align-items: center; gap: 10px; padding: 7px 18px; color: #b8b0a2;">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-          <span>Search</span>
+    <div style="padding: 16px 0 4px;">
+      <div class="cap" style="padding: 0 18px 8px;">FIND WORK</div>
+      <sc-for list="{{ findNav }}" as="item" hint-placeholder-count="4">
+        <div class="navrow" style="background: {{item.bg}}; color: {{item.fg}}; font-weight: {{item.fw}};" onClick="{{ item.pick }}">
+          <span>{{ item.label }}</span>
+          <span class="m" style="font-size: 10.5px; color: {{item.countFg}};">{{ item.count }}</span>
         </div>
-        <div style="display: flex; align-items: center; gap: 10px; padding: 7px 18px; color: #b8b0a2;">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
-          <span>Browse</span>
-        </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px; color: #b8b0a2;">
-          <span style="display: flex; align-items: center; gap: 10px;">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v6M12 15v6M3 12h6M15 12h6"/><circle cx="12" cy="12" r="2.5"/></svg>
-            <span>Scan</span>
-          </span>
-        </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px; color: #b8b0a2;">
-          <span style="display: flex; align-items: center; gap: 10px;">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 5h14v14H5z"/><path d="M9 10h6M9 14h4"/></svg>
-            <span>Requests</span>
-          </span>
-          <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568;">27</span>
-        </div>
-      </div>
+      </sc-for>
     </div>
 
-    <div style="padding: 14px 0 6px; margin-top: 4px; border-top: 1px solid #23201a;">
-      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6d6558; padding: 0 18px 8px;">PIPELINE</div>
-
-      <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px; color: #b8b0a2;">
-        <span style="display: flex; align-items: center; gap: 10px;">
-          <span style="width: 15px; text-align: center; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #6d6558;">1</span>
-          <span>Queue</span>
-        </span>
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568;">7</span>
-      </div>
-
-      <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px; color: #b8b0a2;">
-        <span style="display: flex; align-items: center; gap: 10px;">
-          <span style="width: 15px; text-align: center; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #6d6558;">2</span>
-          <span>Downloading</span>
-        </span>
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568;">2</span>
-      </div>
-
-      <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 18px 7px 15px; color: #17150f; background: #e8a33d; border-left: 3px solid #f4c778; font-weight: 600;">
-        <span style="display: flex; align-items: center; gap: 10px;">
-          <span style="width: 15px; text-align: center; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; opacity: 0.65;">3</span>
-          <span>Uploading</span>
-        </span>
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px;">1</span>
-      </div>
+    <div style="padding: 14px 0 4px; margin-top: 6px; border-top: 1px solid #23201a;">
+      <div class="cap" style="padding: 0 18px 8px;">PIPELINE</div>
+      <sc-for list="{{ pipeNav }}" as="item" hint-placeholder-count="3">
+        <div class="navrow" style="background: {{item.bg}}; color: {{item.fg}}; font-weight: {{item.fw}};" onClick="{{ item.pick }}">
+          <span style="display: flex; align-items: center; gap: 10px;">
+            <span class="m" style="width: 15px; text-align: center; font-size: 10px; color: {{item.numFg}};">{{ item.num }}</span>
+            <span>{{ item.label }}</span>
+          </span>
+          <span class="m" style="font-size: 10.5px; color: {{item.countFg}};">{{ item.count }}</span>
+        </div>
+      </sc-for>
     </div>
 
     <div style="flex-grow: 1;"></div>
 
-    <!-- ── budget: the number that decides what you can do next ── -->
-    <div style="padding: 14px 18px 16px; border-top: 1px solid #2e2a20; display: flex; flex-direction: column; gap: 11px;">
-      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6d6558;">TRACKER CALLS LEFT</div>
-      <div>
-        <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; margin-bottom: 5px;">
-          <span style="color: #b8b0a2;">RED</span><span style="color: #ece7dd;">114<span style="color: #6d6558;">/120</span></span>
+    <div class="navrow" style="border-top: 1px solid #23201a; background: {{settingsBg}}; color: {{settingsFg}};" onClick="{{ goSettings }}">
+      <span>Settings</span>
+    </div>
+
+    <div style="padding: 13px 18px 16px; border-top: 1px solid #2e2a20; display: flex; flex-direction: column; gap: 10px;">
+      <div class="cap">TRACKER CALLS LEFT</div>
+      <sc-for list="{{ budgets }}" as="b" hint-placeholder-count="2">
+        <div>
+          <div class="m" style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 5px;">
+            <span style="color: #b8b0a2;">{{ b.code }}</span>
+            <span>{{ b.left }}<span style="color: #6d6558;">{{ b.of }}</span></span>
+          </div>
+          <div style="height: 2px; background: #2e2a20;">
+            <div style="width: {{b.pct}}%; height: 100%; background: #7fb069;"></div>
+          </div>
         </div>
-        <div style="height: 2px; background: #2e2a20;"><div style="width: 95%; height: 100%; background: #7fb069;"></div></div>
-      </div>
-      <div>
-        <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; margin-bottom: 5px;">
-          <span style="color: #b8b0a2;">OPS</span><span style="color: #ece7dd;">105<span style="color: #6d6558;">/120</span></span>
-        </div>
-        <div style="height: 2px; background: #2e2a20;"><div style="width: 87.5%; height: 100%; background: #7fb069;"></div></div>
-      </div>
+      </sc-for>
       <div style="display: flex; align-items: center; gap: 7px; margin-top: 2px;">
         <span style="width: 6px; height: 6px; background: #7fb069;"></span>
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568;">Deezer AE &middot; FLAC</span>
+        <span class="m" style="font-size: 10.5px; color: #7d7568;">Deezer AE &middot; FLAC</span>
       </div>
     </div>
   </div>
 
-  <!-- ── work surface ── -->
-  <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column;">
+  <!-- ─────────────── work surface ─────────────── -->
+  <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden;">
 
-    <div style="padding: 20px 26px 0; display: flex; align-items: baseline; justify-content: space-between;">
+    <div style="padding: 20px 26px 16px; display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid #23201a;">
       <div style="display: flex; align-items: baseline; gap: 12px;">
-        <h1 style="margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em;">Uploading</h1>
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #7d7568;">/data/media/deemix</span>
+        <h1 style="margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em;">{{ title }}</h1>
+        <span class="m" style="font-size: 11.5px; color: #7d7568;">{{ subtitle }}</span>
       </div>
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.09em; color: #17150f; background: #e8a33d; padding: 3px 7px;">DRY RUN</span>
-        <span style="font-size: 12px; color: #7d7568;">nothing is posted</span>
-      </div>
-    </div>
-
-    <!-- ── the run that needs you, first, because it is blocking ── -->
-    <div style="margin: 18px 26px 0; border: 1px solid #4a3d22; background: #1c1912;">
-      <div style="display: flex; align-items: center; gap: 11px; padding: 12px 16px; border-bottom: 1px solid #2e2a20;">
-        <span style="width: 7px; height: 7px; background: #e8a33d; flex: none;"></span>
-        <strong style="font-size: 13.5px; font-weight: 600;">Doja Cat &mdash; Scarlet (2023) [WEB FLAC]</strong>
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.08em; color: #e8a33d; border: 1px solid #4a3d22; padding: 2px 6px;">NEEDS YOU</span>
-        <span style="flex-grow: 1;"></span>
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #7d7568;">step 4 of 9 &middot; RED</span>
-        <button style="background: none; border: 1px solid #3a3428; color: #b8b0a2; font: inherit; font-size: 12px; padding: 5px 11px; cursor: pointer;">Cancel</button>
-      </div>
-
-      <div style="padding: 16px 16px 14px;">
-        <div style="font-size: 15px; font-weight: 600; margin-bottom: 5px;">Is this release lossy mastered?</div>
-        <div style="font-size: 12.5px; color: #9c948a; margin-bottom: 14px;">Four tracks show a shelf near 16&nbsp;kHz. Look before you answer &mdash; a wrong call here is a report on the tracker.</div>
-
-        <div style="display: flex; gap: 6px; margin-bottom: 14px;">
-          <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px;">
-            <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #7d7568;">01 Paint The Town Red.flac</div>
-            <div style="display: flex; gap: 2px; height: 92px;">
-              <div style="flex-grow: 1; background: linear-gradient(180deg, #2a1a3a 0%, #7a2a3a 22%, #c9502a 48%, #e08a2a 74%, #f0c04a 100%);"></div>
-              <div style="width: 46px; flex: none; background: linear-gradient(180deg, #241634 0%, #6a2438 30%, #b8452a 62%, #d97f28 100%);"></div>
-            </div>
-          </div>
-          <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px;">
-            <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #7d7568;">02 Demons.flac</div>
-            <div style="display: flex; gap: 2px; height: 92px;">
-              <div style="flex-grow: 1; background: linear-gradient(180deg, #241634 0%, #7a2a3a 26%, #c9502a 52%, #e08a2a 78%, #f0c04a 100%);"></div>
-              <div style="width: 46px; flex: none; background: linear-gradient(180deg, #241634 0%, #6a2438 34%, #b8452a 66%, #d97f28 100%);"></div>
-            </div>
-          </div>
-          <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px;">
-            <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #7d7568;">03 Wet Vagina.flac</div>
-            <div style="display: flex; gap: 2px; height: 92px;">
-              <div style="flex-grow: 1; background: linear-gradient(180deg, #2a1a3a 0%, #6a2438 24%, #c9502a 50%, #e08a2a 76%, #f0c04a 100%);"></div>
-              <div style="width: 46px; flex: none; background: linear-gradient(180deg, #241634 0%, #6a2438 30%, #b8452a 64%, #d97f28 100%);"></div>
-            </div>
-          </div>
-        </div>
-
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <button style="background: #e8a33d; border: 1px solid #e8a33d; color: #17150f; font: inherit; font-size: 13px; font-weight: 600; padding: 8px 18px; cursor: pointer;">No &mdash; it is fine</button>
-          <button style="background: none; border: 1px solid #3a3428; color: #ece7dd; font: inherit; font-size: 13px; padding: 8px 16px; cursor: pointer;">Yes, lossy</button>
-          <button style="background: none; border: 1px solid #3a3428; color: #b8b0a2; font: inherit; font-size: 13px; padding: 8px 16px; cursor: pointer;">Re-check</button>
-          <span style="flex-grow: 1;"></span>
-          <span style="font-size: 12px; color: #7d7568;">All 12 spectrals</span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7d7568" stroke-width="1.8" stroke-linecap="round"><path d="M9 5l7 7-7 7"/></svg>
-        </div>
+      <div style="display: flex; align-items: center; gap: 9px;">
+        <span class="m" style="font-size: 10px; letter-spacing: 0.09em; padding: 3px 7px; cursor: pointer; color: {{dryFg}}; background: {{dryBg}}; border: 1px solid {{dryBd}};" onClick="{{ toggleDry }}">{{ dryLabel }}</span>
+        <span style="font-size: 12px; color: #7d7568;">{{ dryNote }}</span>
       </div>
     </div>
 
-    <!-- ── everything else, dense, no cards ── -->
-    <div style="margin: 22px 26px 0; flex-grow: 1; min-height: 0;">
-      <div style="display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 9px; border-bottom: 1px solid #2e2a20;">
-        <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6d6558;">READY TO UPLOAD &middot; 3</div>
-        <div style="display: flex; gap: 14px; font-size: 12px; color: #7d7568;">
-          <span>Upload to</span>
-          <span style="color: #ece7dd; border-bottom: 1px solid #e8a33d; padding-bottom: 2px;">RED</span>
-          <span>OPS</span>
-        </div>
-      </div>
+    <div style="flex-grow: 1; min-height: 0; overflow: auto; padding: 20px 26px 26px;">
 
-      <div style="display: flex; align-items: center; gap: 14px; padding: 13px 2px; border-bottom: 1px solid #23201a;">
-        <div style="flex-grow: 1; min-width: 0;">
-          <div style="font-size: 13.5px;">Mohamed Hamaki &mdash; Sammaouny</div>
-          <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568; margin-top: 2px;">2026 &middot; WEB FLAC &middot; 18 tracks &middot; 412 MB</div>
+      <!-- ════ QUEUE ════ -->
+      <sc-if value="{{ isQueue }}" hint-placeholder-val="{{ true }}">
+        <div>
+          <div style="display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid #2e2a20;">
+            <button class="btn go" onClick="{{ startDownload }}">{{ queueAction }}</button>
+            <button class="btn" onClick="{{ clearSel }}">Clear</button>
+            <span style="flex-grow: 1;"></span>
+            <span style="font-size: 12px; color: #7d7568;">{{ queueNote }}</span>
+          </div>
+          <sc-for list="{{ queue }}" as="q" hint-placeholder-count="4">
+            <div class="row" style="cursor: pointer;" onClick="{{ q.toggle }}">
+              <span style="width: 15px; height: 15px; flex: none; display: flex; align-items: center; justify-content: center; font-size: 11px; border: 1px solid {{q.boxBd}}; background: {{q.boxBg}}; color: {{q.boxFg}};">{{ q.tick }}</span>
+              <div style="flex-grow: 1; min-width: 0;">
+                <div style="font-size: 13.5px;">{{ q.name }}</div>
+                <div class="m" style="font-size: 10.5px; color: #7d7568; margin-top: 2px;">{{ q.meta }}</div>
+              </div>
+              <sc-for list="{{ q.marks }}" as="mk" hint-placeholder-count="2">
+                <span class="tag" style="color: {{mk.fg}}; border-color: {{mk.bd}};">{{ mk.text }}</span>
+              </sc-for>
+            </div>
+          </sc-for>
+          <div style="margin-top: 16px; font-size: 12.5px; color: #7d7568; max-width: 84ch;">Every row says which trackers are still missing it, and when that was last checked. Nothing here has been downloaded yet.</div>
         </div>
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.07em; color: #7fb069; border: 1px solid #33402c; padding: 2px 6px;">FILLS A REQUEST</span>
-        <button style="background: none; border: 1px solid #3a3428; color: #ece7dd; font: inherit; font-size: 12.5px; padding: 6px 15px; cursor: pointer;">Upload</button>
-      </div>
+      </sc-if>
 
-      <div style="display: flex; align-items: center; gap: 14px; padding: 13px 2px; border-bottom: 1px solid #23201a;">
-        <div style="flex-grow: 1; min-width: 0;">
-          <div style="font-size: 13.5px;">Biffy Clyro &mdash; Opposites (Deluxe)</div>
-          <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568; margin-top: 2px;">2013 &middot; WEB FLAC &middot; 20 tracks &middot; 631 MB</div>
+      <!-- ════ DOWNLOADING ════ -->
+      <sc-if value="{{ isDownloading }}" hint-placeholder-val="{{ true }}">
+        <div>
+          <sc-for list="{{ downloads }}" as="d" hint-placeholder-count="3">
+            <div style="padding: 14px 0; border-bottom: 1px solid #23201a;">
+              <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px;">
+                <span style="flex-grow: 1; font-size: 13.5px;">{{ d.name }}</span>
+                <span class="m" style="font-size: 11px; color: #7d7568;">{{ d.detail }}</span>
+              </div>
+              <div style="height: 3px; background: #2e2a20;">
+                <div style="width: {{d.pct}}%; height: 100%; background: {{d.bg}};"></div>
+              </div>
+            </div>
+          </sc-for>
+          <div style="margin-top: 18px; color: #7d7568; font-size: 12.5px; max-width: 84ch;">Everything queued downloads at once, not one at a time. A release that finishes moves itself to Uploading.</div>
         </div>
-        <button style="background: none; border: 1px solid #3a3428; color: #ece7dd; font: inherit; font-size: 12.5px; padding: 6px 15px; cursor: pointer;">Upload</button>
-      </div>
+      </sc-if>
 
-      <div style="display: flex; align-items: center; gap: 14px; padding: 13px 2px; border-bottom: 1px solid #23201a;">
-        <div style="flex-grow: 1; min-width: 0;">
-          <div style="font-size: 13.5px;">Taylor Swift &mdash; The Life of a Showgirl</div>
-          <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #7d7568; margin-top: 2px;">2025 &middot; WEB FLAC &middot; 12 tracks &middot; 288 MB</div>
+      <!-- ════ UPLOADING ════ -->
+      <sc-if value="{{ isUploading }}" hint-placeholder-val="{{ true }}">
+        <div>
+          <div style="display: flex; align-items: center; gap: 11px; padding: 12px 15px; border: 1px solid #4a3d22; background: #1c1912;">
+            <span style="width: 7px; height: 7px; flex: none; background: {{pulseBg}};"></span>
+            <strong style="font-size: 13.5px;">Doja Cat &mdash; Scarlet (2023) [WEB FLAC]</strong>
+            <span class="tag" style="color: {{stateFg}}; border-color: {{stateBd}};">{{ stateTag }}</span>
+            <span style="flex-grow: 1;"></span>
+            <span class="m" style="font-size: 11px; color: #7d7568;">{{ stepLabel }}</span>
+            <button class="btn" style="font-size: 12px; padding: 5px 11px;" onClick="{{ restart }}">Start over</button>
+          </div>
+
+          <div style="display: flex; gap: 3px; margin: 3px 0 22px;">
+            <sc-for list="{{ steps }}" as="st" hint-placeholder-count="5">
+              <div style="flex-grow: 1; height: 3px; background: {{st.bg}};"></div>
+            </sc-for>
+          </div>
+
+          <!-- 1 · existing group -->
+          <sc-if value="{{ atGroup }}" hint-placeholder-val="{{ true }}">
+            <div>
+              <div style="font-size: 16px; font-weight: 600; margin-bottom: 4px;">Upload into a group that already exists?</div>
+              <div style="font-size: 12.5px; color: #9c948a; margin-bottom: 16px; max-width: 84ch;">One group on RED matches. Adding to it keeps the release together; starting a new one splits it in two and somebody has to merge them later.</div>
+              <div style="border: 1px solid #3a3428; padding: 13px 15px; cursor: pointer;" onClick="{{ pickGroup }}">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <div style="flex-grow: 1; min-width: 0;">
+                    <div style="font-size: 13.5px;">Doja Cat &mdash; Scarlet (2023) &middot; Album</div>
+                    <div class="m" style="font-size: 10.5px; color: #7d7568; margin-top: 3px;">group 2087126 &middot; 16 torrents &middot; pop, hip.hop, rap</div>
+                  </div>
+                  <span class="tag">OPEN ON RED &nearr;</span>
+                </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-top: 16px;">
+                <button class="btn go" onClick="{{ pickGroup }}">Use this group</button>
+                <button class="btn" onClick="{{ pickNewGroup }}">Start a new group</button>
+                <span style="flex-grow: 1;"></span>
+                <span style="font-size: 12px; color: #7d7568;">or paste a URL</span>
+                <input type="text" placeholder="https://redacted.sh/torrents.php?id=" style="width: 250px; background: #100f0a; border: 1px solid #3a3428; color: #ece7dd; font: inherit; font-size: 12.5px; padding: 7px 10px;">
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- 2 · lossy master -->
+          <sc-if value="{{ atLossy }}" hint-placeholder-val="{{ true }}">
+            <div>
+              <div style="font-size: 16px; font-weight: 600; margin-bottom: 4px;">Is this release lossy mastered?</div>
+              <div style="font-size: 12.5px; color: #9c948a; margin-bottom: 16px; max-width: 84ch;">Four tracks show a shelf near 16&nbsp;kHz. Look before you answer &mdash; a wrong call here becomes a report on the tracker.</div>
+              <div style="display: flex; gap: 6px; margin-bottom: 16px;">
+                <sc-for list="{{ spectrals }}" as="sp" hint-placeholder-count="4">
+                  <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0;">
+                    <div class="m" style="font-size: 10px; color: #7d7568; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ sp.name }}</div>
+                    <div style="display: flex; gap: 2px; height: 132px;">
+                      <div style="flex-grow: 1; background: linear-gradient(180deg, #2a1a3a 0%, {{sp.a}} 24%, {{sp.b}} 52%, {{sp.c}} 100%);"></div>
+                      <div style="width: 52px; flex: none; background: linear-gradient(180deg, #241634 0%, {{sp.a}} 32%, {{sp.b}} 66%, {{sp.c}} 100%);"></div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <button class="btn go" onClick="{{ notLossy }}">No &mdash; it is fine</button>
+                <button class="btn" onClick="{{ isLossy }}">Yes, lossy</button>
+                <button class="btn" onClick="{{ recheck }}">Re-check</button>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- 3 · metadata -->
+          <sc-if value="{{ atMeta }}" hint-placeholder-val="{{ true }}">
+            <div>
+              <div style="font-size: 16px; font-weight: 600; margin-bottom: 4px;">Everything it will be posted with</div>
+              <div style="font-size: 12.5px; color: #9c948a; margin-bottom: 18px; max-width: 84ch;">Change what you need. The hint sits under its own field, so a long one never pushes its input out of line with the rest of the row.</div>
+              <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px 20px; margin-bottom: 20px;">
+                <div class="fld"><label>Album title</label><input type="text" value="Scarlet"><span></span></div>
+                <div class="fld"><label>Release type</label><input type="text" value="Album"><span></span></div>
+                <div class="fld"><label>Original release year</label><input type="text" value="2023"><span>When the album first came out.</span></div>
+                <div class="fld"><label>Edition year</label><input type="text" value="2023"><span>When this pressing came out.</span></div>
+                <div class="fld"><label>Record label</label><input type="text" value="Kemosabe Records"><span></span></div>
+                <div class="fld"><label>Catalogue number</label><input type="text" value=""><span></span></div>
+                <div class="fld"><label>UPC</label><input type="text" value="196871470124"><span></span></div>
+                <div class="fld"><label>Edition title</label><input type="text" value=""><span>Deluxe, Remastered. Blank for the original.</span></div>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn go" onClick="{{ saveMeta }}">Save and continue</button>
+                <button class="btn" onClick="{{ saveMeta }}">Leave unchanged</button>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- 4 · fill a request -->
+          <sc-if value="{{ atRequest }}" hint-placeholder-val="{{ true }}">
+            <div>
+              <div style="font-size: 16px; font-weight: 600; margin-bottom: 4px;">Fill a request with this?</div>
+              <div style="font-size: 12.5px; color: #9c948a; margin-bottom: 16px; max-width: 84ch;">Two open requests on RED would take it. Each says what the requester will accept, so you can tell them apart without opening the tracker.</div>
+              <sc-for list="{{ fillables }}" as="rq" hint-placeholder-count="2">
+                <div style="border: 1px solid #3a3428; padding: 12px 15px; margin-bottom: 7px; cursor: pointer;" onClick="{{ rq.pick }}">
+                  <div style="display: flex; align-items: center; gap: 12px;">
+                    <div style="flex-grow: 1; min-width: 0;">
+                      <div style="font-size: 13.5px;">{{ rq.name }}</div>
+                      <div class="m" style="font-size: 10.5px; color: #7d7568; margin-top: 3px;">{{ rq.accepts }}</div>
+                    </div>
+                    <span class="m" style="font-size: 11.5px; color: #e8a33d;">{{ rq.bounty }}</span>
+                    <span class="tag">OPEN REQUEST &nearr;</span>
+                  </div>
+                </div>
+              </sc-for>
+              <div style="margin-top: 14px;">
+                <button class="btn" onClick="{{ fillNone }}">Fill nothing</button>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- 5 · result -->
+          <sc-if value="{{ atDone }}" hint-placeholder-val="{{ true }}">
+            <div>
+              <div style="font-size: 16px; font-weight: 600; margin-bottom: 4px;">{{ doneTitle }}</div>
+              <div style="font-size: 12.5px; color: #9c948a; margin-bottom: 16px; max-width: 84ch;">{{ doneNote }}</div>
+              <div style="border: 1px solid #2e2a20; background: #1c1a14; padding: 14px 16px; margin-bottom: 14px;">
+                <div class="cap" style="margin-bottom: 10px;">WHAT IT WOULD POST</div>
+                <sc-for list="{{ payload }}" as="p" hint-placeholder-count="7">
+                  <div style="display: flex; gap: 16px; padding: 4px 0;">
+                    <span class="m" style="width: 168px; flex: none; color: #7d7568; font-size: 11.5px;">{{ p.k }}</span>
+                    <span style="font-size: 12.5px;">{{ p.v }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="border: 1px solid #2e2a20; padding: 14px 16px;">
+                <div class="cap" style="margin-bottom: 4px;">FILES THIS REHEARSAL LEFT BEHIND</div>
+                <div style="font-size: 12.5px; color: #9c948a; margin-bottom: 11px;">Nothing was posted or seeded, so none of it is in use.</div>
+                <sc-for list="{{ leftovers }}" as="lf" hint-placeholder-count="2">
+                  <div style="display: flex; align-items: center; gap: 12px; padding: 7px 0;">
+                    <div style="flex-grow: 1; min-width: 0;">
+                      <div style="font-size: 12.5px;">{{ lf.what }}</div>
+                      <div class="m" style="font-size: 11px; color: #7d7568; margin-top: 2px; overflow-wrap: anywhere;">{{ lf.path }}</div>
+                    </div>
+                    <button class="btn kill" style="font-size: 12px; padding: 5px 12px;">Delete</button>
+                  </div>
+                </sc-for>
+                <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2e2a20;">
+                  <button class="btn kill">Delete all 2</button>
+                </div>
+              </div>
+              <div style="margin-top: 18px;">
+                <button class="btn go" onClick="{{ restart }}">Run the next one</button>
+              </div>
+            </div>
+          </sc-if>
         </div>
-        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.07em; color: #7d7568; border: 1px solid #3a3428; padding: 2px 6px;">ON RED ALREADY</span>
-        <button style="background: none; border: 1px solid #3a3428; color: #b8b0a2; font: inherit; font-size: 12.5px; padding: 6px 15px; cursor: pointer;">Upload</button>
-      </div>
+      </sc-if>
+
+      <!-- ════ REQUESTS ════ -->
+      <sc-if value="{{ isRequests }}" hint-placeholder-val="{{ true }}">
+        <div>
+          <div style="display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid #2e2a20;">
+            <button class="btn go" onClick="{{ checkRequests }}">{{ reqAction }}</button>
+            <span style="font-size: 12px; color: #7d7568;">{{ reqCost }}</span>
+            <span style="flex-grow: 1;"></span>
+            <span style="font-size: 12px; color: #7d7568;">Pages to fetch</span>
+            <input type="text" value="4" style="width: 54px; background: #100f0a; border: 1px solid #3a3428; color: #ece7dd; font: inherit; font-size: 12.5px; padding: 6px 9px; text-align: center;">
+          </div>
+
+          <sc-if value="{{ reqRunning }}" hint-placeholder-val="{{ true }}">
+            <div style="padding: 14px 0 6px;">
+              <div style="height: 3px; background: #2e2a20; margin-bottom: 8px;">
+                <div style="width: {{reqPct}}%; height: 100%; background: #e8a33d;"></div>
+              </div>
+              <div class="m" style="font-size: 11px; color: #9c948a;">{{ reqProgress }}</div>
+            </div>
+          </sc-if>
+
+          <div style="display: flex; gap: 14px; padding: 12px 2px; border-bottom: 1px solid #2e2a20;">
+            <span class="cap" style="flex-grow: 1;">REQUEST</span>
+            <span class="cap" style="width: 76px;">AGE</span>
+            <span class="cap" style="width: 66px;">FILLED</span>
+            <span class="cap" style="width: 136px;">RESULT</span>
+          </div>
+          <sc-for list="{{ requests }}" as="r" hint-placeholder-count="5">
+            <div style="display: flex; gap: 14px; align-items: center; padding: 11px 2px; border-bottom: 1px solid #23201a;">
+              <div style="flex-grow: 1; min-width: 0;">
+                <div style="font-size: 13px;">{{ r.name }}</div>
+                <div class="m" style="font-size: 10.5px; color: #7d7568; margin-top: 2px;">{{ r.meta }}</div>
+              </div>
+              <span class="m" style="width: 76px; font-size: 11.5px; color: #9c948a;">{{ r.age }}</span>
+              <span style="width: 66px;"><span class="tag" style="color: {{r.filledFg}}; border-color: {{r.filledBd}};">{{ r.filled }}</span></span>
+              <span style="width: 136px;"><span class="tag" style="color: {{r.resultFg}}; border-color: {{r.resultBd}};">{{ r.result }}</span></span>
+            </div>
+          </sc-for>
+          <div style="margin-top: 16px; font-size: 12.5px; color: #7d7568; max-width: 84ch;">Age and Filled come free in the row the tracker already sent. A request somebody has filled is never checked against Deezer.</div>
+        </div>
+      </sc-if>
+
+      <!-- ════ SEARCH ════ -->
+      <sc-if value="{{ isSearch }}" hint-placeholder-val="{{ true }}">
+        <div>
+          <div style="display: flex; gap: 8px; margin-bottom: 24px;">
+            <input type="text" placeholder="An album, a track, an artist" style="flex-grow: 1; background: #100f0a; border: 1px solid #3a3428; color: #ece7dd; font: inherit; font-size: 13.5px; padding: 10px 13px;">
+            <button class="btn go">Search Deezer</button>
+          </div>
+          <div class="cap" style="margin-bottom: 10px;">CHECKED RECENTLY &mdash; NO TRACKER CALLS SPENT</div>
+          <sc-for list="{{ recent }}" as="rc" hint-placeholder-count="3">
+            <div class="row">
+              <div style="flex-grow: 1; min-width: 0;">
+                <div style="font-size: 13.5px;">{{ rc.name }}</div>
+                <div class="m" style="font-size: 10.5px; color: #7d7568; margin-top: 2px;">{{ rc.meta }}</div>
+              </div>
+              <span class="tag" style="color: {{rc.fg}}; border-color: {{rc.bd}};">{{ rc.mark }}</span>
+              <button class="btn" style="font-size: 12px; padding: 6px 13px;" onClick="{{ rc.queue }}">Add to queue</button>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- ════ SETTINGS ════ -->
+      <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ true }}">
+        <div>
+          <div style="font-size: 12.5px; color: #9c948a; margin-bottom: 20px; max-width: 84ch;">Grouped by what you are trying to do, rather than by which section of a config file the value happens to live in.</div>
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;">
+            <sc-for list="{{ settingGroups }}" as="g" hint-placeholder-count="6">
+              <div style="border: 1px solid #2e2a20; padding: 15px 16px;">
+                <div style="font-size: 13.5px; font-weight: 600; margin-bottom: 6px;">{{ g.name }}</div>
+                <div style="font-size: 12px; color: #7d7568; line-height: 1.5;">{{ g.what }}</div>
+                <div class="m" style="font-size: 10.5px; color: #6d6558; margin-top: 12px;">{{ g.count }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
     </div>
   </div>
 </div>
+
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      view: 'uploading',
+      step: 0,
+      dry: true,
+      group: null,
+      filled: null,
+      picked: ['hamaki', 'biffy'],
+      moved: [],
+      reqRun: 0,
+    };
+  }
+
+  go(patch) { this.setState(patch); }
+
+  nav(id, label, count) {
+    const on = this.state.view === id;
+    return {
+      id: id,
+      label: label,
+      count: count === null ? '' : String(count),
+      bg: on ? '#e8a33d' : 'transparent',
+      fg: on ? '#17150f' : '#b8b0a2',
+      fw: on ? '600' : '400',
+      countFg: on ? '#17150f' : '#7d7568',
+      pick: () => this.go({ view: id }),
+    };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const queued = 7 - s.moved.length;
+
+    const findNav = [
+      this.nav('search', 'Search', null),
+      this.nav('browse', 'Browse', null),
+      this.nav('scan', 'Scan', null),
+      this.nav('requests', 'Requests', 27),
+    ];
+
+    const pipeNav = [
+      ['queue', 'Queue', queued],
+      ['downloading', 'Downloading', 2 + s.moved.length],
+      ['uploading', 'Uploading', 1],
+    ].map((row, i) => {
+      const item = this.nav(row[0], row[1], row[2]);
+      const on = s.view === row[0];
+      item.num = String(i + 1);
+      item.numFg = on ? '#17150f' : '#6d6558';
+      if (row[0] === 'uploading' && !on) {
+        item.fg = '#e8a33d';
+        item.countFg = '#e8a33d';
+      }
+      return item;
+    });
+
+    const titles = {
+      search: ['Search', 'Deezer — free, no tracker calls'],
+      browse: ['Settings', ''],
+      scan: ['Settings', ''],
+      requests: ['Requests', 'RED'],
+      queue: ['Queue', 'worth uploading, not started'],
+      downloading: ['Downloading', '/data/media/deemix'],
+      uploading: ['Uploading', '/data/media/deemix'],
+      settings: ['Settings', ''],
+    };
+    const t = titles[s.view] || ['Lox', ''];
+
+    const stepNames = ['group', 'lossy', 'metadata', 'request', 'result'];
+    const steps = stepNames.map((n, i) => ({
+      bg: i < s.step ? '#7fb069' : (i === s.step ? '#e8a33d' : '#2e2a20'),
+    }));
+    const waiting = s.step < 4;
+
+    const spectrals = [
+      { name: '01 Paint The Town Red.flac', a: '#7a2a3a', b: '#c9502a', c: '#f0c04a' },
+      { name: '02 Demons.flac', a: '#6a2438', b: '#b8452a', c: '#e8b45a' },
+      { name: '03 Wet Vagina.flac', a: '#7a2a3a', b: '#c25028', c: '#f0c04a' },
+      { name: '04 Fuck The Girls (FTG).flac', a: '#6a2438', b: '#b8452a', c: '#e0a94e' },
+    ];
+
+    const payload = [
+      { k: 'artists', v: 'Doja Cat' },
+      { k: 'title', v: 'Scarlet' },
+      { k: 'year', v: '2023' },
+      { k: 'format / bitrate', v: 'FLAC / Lossless' },
+      { k: 'media', v: 'WEB' },
+      { k: 'groupid', v: s.group === 'existing' ? '2087126' : 'a new group' },
+      { k: 'requestid', v: s.filled === null ? 'none' : s.filled },
+    ];
+
+    const leftovers = [
+      { what: 'Seeding folder — RED',
+        path: '/data/torrents/upload-music/RED/Doja Cat - Scarlet (2023) [WEB FLAC]' },
+      { what: 'Downconversion',
+        path: '/data/torrents/upload-music/RED/Doja Cat - Scarlet (2023) [WEB MP3 V0]' },
+    ];
+
+    const green = { fg: '#7fb069', bd: '#33402c' };
+    const amber = { fg: '#e8a33d', bd: '#4a3d22' };
+    const dim = { fg: '#7d7568', bd: '#3a3428' };
+
+    const queueRows = [
+      ['hamaki', 'Mohamed Hamaki — Sammaouny', '2026 · WEB FLAC · 18 tracks · 412 MB · checked 4 min ago',
+        [{ text: 'FILLS AN OPS REQUEST', fg: amber.fg, bd: amber.bd },
+         { text: 'RED MISSING', fg: green.fg, bd: green.bd }]],
+      ['biffy', 'Biffy Clyro — Opposites (Deluxe)', '2013 · WEB FLAC · 20 tracks · 631 MB · checked 2 hours ago',
+        [{ text: 'RED MISSING', fg: green.fg, bd: green.bd },
+         { text: 'OPS MISSING', fg: green.fg, bd: green.bd }]],
+      ['eclipses', 'Los Eclipses — Eden Sauvage (Remix)', '2025 · WEB FLAC · 12 tracks · 388 MB · checked 5 min ago',
+        [{ text: 'OPS MISSING', fg: green.fg, bd: green.bd },
+         { text: 'RED HAS IT', fg: dim.fg, bd: dim.bd }]],
+      ['taylor', 'Taylor Swift — The Life of a Showgirl', '2025 · WEB FLAC · 12 tracks · 288 MB · checked 1 day ago',
+        [{ text: 'RED HAS IT', fg: dim.fg, bd: dim.bd },
+         { text: 'OPS HAS IT', fg: dim.fg, bd: dim.bd }]],
+    ];
+
+    const queue = queueRows
+      .filter((row) => s.moved.indexOf(row[0]) === -1)
+      .map((row) => {
+        const id = row[0];
+        const on = s.picked.indexOf(id) !== -1;
+        return {
+          id: id,
+          name: row[1],
+          meta: row[2],
+          marks: row[3],
+          tick: on ? '✓' : '',
+          boxBd: on ? '#e8a33d' : '#3a3428',
+          boxBg: on ? '#e8a33d' : 'transparent',
+          boxFg: on ? '#17150f' : '#7d7568',
+          toggle: () => this.go({
+            picked: on ? s.picked.filter((p) => p !== id) : s.picked.concat([id]),
+          }),
+        };
+      });
+
+    const baseDownloads = [
+      { name: 'Los Eclipses — Eden Sauvage (Remix)', detail: '9 of 12 · 4.2 MB/s', pct: 74 },
+      { name: 'Jigitz & Tabi — the time', detail: '1 of 1 · finishing', pct: 96 },
+    ];
+    const movedNames = {
+      hamaki: 'Mohamed Hamaki — Sammaouny',
+      biffy: 'Biffy Clyro — Opposites (Deluxe)',
+      eclipses: 'Los Eclipses — Eden Sauvage (Remix)',
+      taylor: 'Taylor Swift — The Life of a Showgirl',
+    };
+    const downloads = baseDownloads
+      .concat(s.moved.map((id) => ({ name: movedNames[id], detail: 'starting', pct: 4 })))
+      .map((d) => ({
+        name: d.name,
+        detail: d.detail,
+        pct: String(d.pct),
+        bg: d.pct > 90 ? '#7fb069' : '#e8a33d',
+      }));
+
+    const requestRows = [
+      ['Aoki Takamasa — Quantum', '2003 · 1.00 GB · Lossless / FLAC', '19 hours', false],
+      ['Bobby Jackson — Desiree Song', '2017 · 25.00 GB · Lossless', '22 hours', false],
+      ['Ty Segall — The Wrong Girls', '2026 · 200 MB · FLAC / WEB', '1 day', false],
+      ['Evocation — Tales from the Tomb', '2007 · 100 MB · FLAC', '2 days', true],
+      ['Geoff Mann — Second Chants', '1992 · 100 MB · Lossless', '4 days', false],
+    ];
+    const requests = requestRows.map((row, i) => {
+      const done = s.reqRun > i;
+      const isFilled = row[3];
+      let result = 'not checked';
+      let rc = dim;
+      if (done && isFilled) { result = 'already filled'; rc = amber; }
+      else if (done && i === 0) { result = '94% match'; rc = green; }
+      else if (done) { result = 'no Deezer match'; rc = dim; }
+      return {
+        name: row[0],
+        meta: row[1],
+        age: row[2],
+        filled: isFilled ? 'filled' : 'open',
+        filledFg: isFilled ? dim.fg : green.fg,
+        filledBd: isFilled ? dim.bd : green.bd,
+        result: result,
+        resultFg: rc.fg,
+        resultBd: rc.bd,
+      };
+    });
+
+    const recent = [
+      { name: 'Doja Cat — Scarlet', meta: '2023 · 17 tracks · all FLAC, all streamable',
+        mark: 'ON BOTH', fg: dim.fg, bd: dim.bd },
+      { name: 'Los Eclipses — Eden Sauvage (Remix)', meta: '2025 · 12 tracks · all FLAC, all streamable',
+        mark: 'MISSING ON OPS', fg: green.fg, bd: green.bd },
+      { name: 'Biffy Clyro — Opposites (Deluxe)', meta: '2013 · 20 tracks · all FLAC, all streamable',
+        mark: 'MISSING ON BOTH', fg: green.fg, bd: green.bd },
+    ].map((r) => ({
+      name: r.name, meta: r.meta, mark: r.mark, fg: r.fg, bd: r.bd,
+      queue: () => this.go({ view: 'queue' }),
+    }));
+
+    const settingGroups = [
+      { name: 'Accounts', what: 'Deezer ARL, RED and OPS keys, image hosts. Every credential has a Test beside it that actually calls the service.', count: '14 settings' },
+      { name: 'What gets uploaded', what: 'Dry run, auto-answer, downconversions, what goes in a description.', count: '18 settings' },
+      { name: 'Naming', what: 'Folder and file templates, and what stands in for a character a filesystem will not take.', count: '9 settings' },
+      { name: 'Where files go', what: 'Downloads, seeding layout, torrent clients, and the paths behind them.', count: '16 settings' },
+      { name: 'Tracker budget', what: 'How much one press of a check button is allowed to spend, and what happens when it runs out.', count: '10 settings' },
+      { name: 'Maintenance', what: 'Debug log, diagnostics bundle, scan history.', count: '6 settings' },
+    ];
+
+    const settingsOn = s.view === 'settings' || s.view === 'browse' || s.view === 'scan';
+
+    return {
+      findNav: findNav,
+      pipeNav: pipeNav,
+      steps: steps,
+      spectrals: spectrals,
+      payload: payload,
+      leftovers: leftovers,
+      queue: queue,
+      downloads: downloads,
+      requests: requests,
+      recent: recent,
+      settingGroups: settingGroups,
+      budgets: [
+        { code: 'RED', left: '114', of: '/120', pct: '95' },
+        { code: 'OPS', left: '105', of: '/120', pct: '87' },
+      ],
+
+      title: t[0],
+      subtitle: t[1],
+      settingsBg: settingsOn ? '#e8a33d' : 'transparent',
+      settingsFg: settingsOn ? '#17150f' : '#b8b0a2',
+      goSettings: () => this.go({ view: 'settings' }),
+
+      dryLabel: s.dry ? 'DRY RUN' : 'LIVE',
+      dryNote: s.dry ? 'nothing is posted — click to go live' : 'uploads are real — click for a rehearsal',
+      dryFg: s.dry ? '#17150f' : '#d4674f',
+      dryBg: s.dry ? '#e8a33d' : 'transparent',
+      dryBd: s.dry ? '#e8a33d' : '#6b3a30',
+      toggleDry: () => this.go({ dry: !s.dry }),
+
+      isSearch: s.view === 'search',
+      isQueue: s.view === 'queue',
+      isDownloading: s.view === 'downloading',
+      isUploading: s.view === 'uploading',
+      isRequests: s.view === 'requests',
+      isSettings: settingsOn,
+
+      atGroup: s.step === 0,
+      atLossy: s.step === 1,
+      atMeta: s.step === 2,
+      atRequest: s.step === 3,
+      atDone: s.step === 4,
+      stepLabel: 'step ' + (s.step + 1) + ' of 5 · RED',
+      stateTag: waiting ? 'NEEDS YOU' : 'FINISHED',
+      stateFg: waiting ? '#e8a33d' : '#7fb069',
+      stateBd: waiting ? '#4a3d22' : '#33402c',
+      pulseBg: waiting ? '#e8a33d' : '#7fb069',
+
+      pickGroup: () => this.go({ group: 'existing', step: 1 }),
+      pickNewGroup: () => this.go({ group: 'new', step: 1 }),
+      notLossy: () => this.go({ step: 2 }),
+      isLossy: () => this.go({ step: 2 }),
+      recheck: () => this.go({ step: 1 }),
+      saveMeta: () => this.go({ step: 3 }),
+      fillNone: () => this.go({ filled: null, step: 4 }),
+      restart: () => this.go({ step: 0, group: null, filled: null }),
+
+      fillables: [
+        { name: 'Doja Cat — Scarlet [2023]',
+          accepts: 'Accepts Lossless / FLAC / WEB or CD · opened 3 weeks ago',
+          bounty: '5.0 GiB',
+          pick: () => this.go({ filled: '8811', step: 4 }) },
+        { name: 'Doja Cat — Scarlet (Deluxe) [2024]',
+          accepts: 'Accepts Lossless or 24bit / FLAC / WEB · opened 6 days ago',
+          bounty: '1.0 GiB',
+          pick: () => this.go({ filled: '9902', step: 4 }) },
+      ],
+
+      doneTitle: s.dry ? 'Dry run finished — nothing was posted or seeded' : 'Uploaded to RED',
+      doneNote: s.filled === null
+        ? 'No request was filled.'
+        : 'It would have filled request ' + s.filled + '.',
+
+      queueAction: 'Download ' + s.picked.length + ' selected',
+      queueNote: s.picked.length + ' of ' + queue.length + ' selected',
+      clearSel: () => this.go({ picked: [] }),
+      startDownload: () => this.go({
+        moved: s.moved.concat(s.picked), picked: [], view: 'downloading',
+      }),
+
+      reqRunning: s.reqRun > 0 && s.reqRun < 5,
+      reqPct: String(s.reqRun * 20),
+      reqProgress: 'checking ' + s.reqRun + '/5 · one tracker call each',
+      reqAction: s.reqRun === 0 ? 'Check 5 selected' : (s.reqRun < 5 ? 'Checking…' : 'Checked'),
+      reqCost: s.reqRun === 0 ? 'Costs 5 of 105 calls left on RED.' : '',
+      checkRequests: () => this.go({ reqRun: s.reqRun < 5 ? s.reqRun + 1 : 0 }),
+    };
+  }
+}
+</script>
 </x-dc>
 </body>
 </html>

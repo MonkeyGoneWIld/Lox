@@ -1,46 +1,47 @@
 {
+  "pages": [
+    { "id": "page-1", "name": "Prototype" },
+    { "id": "page-2", "name": "Not chosen" }
+  ],
   "artboards": [
-    { "file": "Flow.dc.html", "x": 0, "y": 0, "w": 1180, "h": 700, "title": "The flow problem" },
-    { "file": "Main.dc.html", "x": 1300, "y": 0, "w": 1440, "h": 900, "title": "A — Console (leading)" },
-    { "file": "DirectionB.dc.html", "x": 0, "y": 1030, "w": 1000, "h": 620, "title": "B — Editorial" },
-    { "file": "DirectionC.dc.html", "x": 1120, "y": 1030, "w": 1000, "h": 620, "title": "C — Studio" }
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1440, "h": 900, "title": "Lox — clickable", "page": "page-1" },
+    { "file": "Flow.dc.html", "x": 1560, "y": 0, "w": 1180, "h": 700, "title": "Why the nav changed", "page": "page-1" },
+    { "file": "DirectionB.dc.html", "x": 0, "y": 0, "w": 1000, "h": 620, "title": "B — Editorial", "page": "page-2" },
+    { "file": "DirectionC.dc.html", "x": 1120, "y": 0, "w": 1000, "h": 620, "title": "C — Studio", "page": "page-2" }
   ],
   "annotations": [
     {
-      "id": "brief",
+      "id": "how",
       "x": 0,
-      "y": -210,
-      "w": 520,
-      "text": "Two separate complaints, two separate fixes.\n\nUGLY / looks AI-built — the current palette is #a238ff violet on #16161d with system-ui and 10px radii. That is the house style of every AI-generated app. Three replacements below.\n\nMAKES NO SENSE — eight peer tabs for what is really four entry points and a three-stage pipeline. Fixed the same way in all three directions, because it is not a matter of taste."
+      "y": -300,
+      "w": 460,
+      "page": "page-1",
+      "text": "CLICK IT — the whole pipeline works.\n\nRail: every entry moves you. Uploading stays amber from anywhere while a run is blocked.\n\nUploading: answer the question and it advances — group → lossy master → metadata → fill a request → result. The strip under the header fills in as you go. \"Start over\" resets it.\n\nQueue: tick rows, press Download — they move to Downloading and the rail counts change.\n\nRequests: press Check repeatedly to watch the bar advance a row at a time.\n\nDRY RUN in the header toggles. Live changes the result wording."
     },
     {
-      "id": "pick-a",
-      "x": 1300,
-      "y": -210,
-      "w": 420,
-      "text": "A — CONSOLE (shown at full size)\n\nFor: it reads as a tool, not a product. Dense enough to see the whole queue at once, mono for anything you compare (budgets, track counts, paths), one amber that only ever means \"this needs you\".\n\nAgainst: unfriendly to a newcomer. Warm near-black is still dark — if the objection was dark itself, pick B."
+      "id": "why",
+      "x": 1560,
+      "y": -300,
+      "w": 460,
+      "page": "page-1",
+      "text": "WHAT CHANGED, AND WHY\n\nPalette: warm near-black instead of #16161d, one amber that only ever means \"this needs you\", green only for \"there is something to upload here\". No violet, no 10px pills, no gradient anywhere.\n\nType: IBM Plex Sans, with Plex Mono for everything you compare across rows — budgets, paths, counts, track numbers. Numbers line up because they are tabular.\n\nDensity: rules instead of cards. The queue shows twice as many rows in the same space, and a row carries its per-tracker state instead of one merged line.\n\nMetadata form: the hint sits under its own field, so a long one can never push its input out of line with the rest of the row."
     },
     {
-      "id": "pick-b",
+      "id": "todo",
+      "x": 480,
+      "y": -300,
+      "w": 440,
+      "page": "page-1",
+      "text": "WHAT THIS PROTOTYPE DOES NOT COVER YET\n\nBrowse and Scan land on Settings — I have not drawn them.\n\nSettings is one screen of groups, not the real form. It shows the regrouping (by what you are doing, not by config section) and nothing else.\n\nThe numbers are sample values shaped like your real ones, so the layout is honest about the widths it has to hold. None of it is live data.\n\nSay which of these you want next and I will draw it before touching app.css."
+    },
+    {
+      "id": "shelved",
       "x": 0,
-      "y": 1700,
-      "w": 420,
-      "text": "B — EDITORIAL\n\nFor: paper-light, serif headings, the furthest thing from an AI app. Music libraries suit it; long release titles read better.\n\nAgainst: least dense of the three — more scrolling on a 200-row request table. Light UI at night is a real cost if you work late."
-    },
-    {
-      "id": "pick-c",
-      "x": 1120,
-      "y": 1700,
-      "w": 420,
-      "text": "C — STUDIO\n\nFor: closest to what you have, so the smallest leap. Slate-teal and citron instead of violet-on-charcoal kills the generic look without changing the shape of anything.\n\nAgainst: still recognisably a dark app with cards and rounded corners. If \"looks like every AI app\" is the main objection, this is the weakest answer to it."
-    },
-    {
-      "id": "next",
-      "x": 1760,
-      "y": -210,
-      "w": 420,
-      "text": "WHAT I NEED FROM YOU\n\n1. Which direction — A, B or C. I will take the winner to full fidelity across every screen.\n\n2. Static mockups, or working prototype? These are static. A prototype would let you click through the whole pipeline before I touch the real CSS.\n\nNothing here is in the app yet. The .dc.html sources are committed to the branch."
+      "y": -190,
+      "w": 460,
+      "page": "page-2",
+      "text": "Not chosen — kept for reference.\n\nB was the furthest from an AI-built app but the least dense; C was the smallest leap but still a dark app with cards and rounded corners.\n\nDelete this page whenever you want."
     }
   ],
-  "launch": { "view": "canvas" }
+  "launch": { "view": "canvas", "page": "page-1" }
 }
