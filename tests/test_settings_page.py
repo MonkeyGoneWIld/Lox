@@ -123,7 +123,9 @@ async def main() -> int:
     labelled = [f for f in FIELDS if f.kind == "choice" and f.labels]
     check("the queue rules are labelled", len(labelled) >= 5, str(len(labelled)))
     check("and no label is left as the raw value",
-          all(l != c for f in labelled for l, c in zip(f.labels, f.choices)), "")
+          all(shown != stored
+              for f in labelled
+              for shown, stored in zip(f.labels, f.choices, strict=True)), "")
 
     # --- the queue rules are on the page ------------------------------
     queue_keys = {f.key for f in FIELDS if f.section == "queue"}

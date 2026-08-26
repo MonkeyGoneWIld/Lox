@@ -244,6 +244,11 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
     Returns:
         Dictionary of uploaded URLs.
     """
+    # Anything but the host that just failed, and never a name that is not a
+    # host: the default here was "ptpimg" long after ptpimg stopped existing,
+    # so pressing Enter answered with something the next line rejected, and the
+    # loop asked again forever.
+    fallback = next((h for h in HOSTS if h != cfg.image.specs_uploader), next(iter(HOSTS)))
     while True:
         host_input: str = await click.prompt(
             click.style(
@@ -252,7 +257,7 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
                 fg="magenta",
                 bold=True,
             ),
-            default="ptpimg",
+            default=fallback,
         )
         host = host_input.lower()
         if host not in HOSTS:

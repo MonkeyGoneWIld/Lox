@@ -37,7 +37,7 @@ os.makedirs(os.environ["LOX_DOWNLOAD_DIR"], exist_ok=True)
 
 import aiohttp  # noqa: E402
 
-from lox.checker.queue_rules import QueueRules, admits, partition, rules_from  # noqa: E402
+from lox.checker.queue_rules import QueueRules, admits, partition  # noqa: E402
 
 results: list[tuple[str, bool, str]] = []
 
@@ -135,7 +135,7 @@ def main_predicate() -> None:
           len(held) == 2 and all(h["held_reason"] for h in held), str(len(held)))
     check("nothing is lost between the two", len(shown) + len(held) == 3, "")
     check("the rule describes itself in words",
-          "RED must be missing there and OPS must be missing there" == both.describe(), both.describe())
+          both.describe() == "RED must be missing there and OPS must be missing there", both.describe())
     check("including the request part",
           "only releases that fill a request" in rules(requests="only").describe(),
           rules(requests="only").describe())
