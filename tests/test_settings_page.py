@@ -149,6 +149,49 @@ async def main() -> int:
         check("a host with no key says so rather than passing",
               body.get("ok") is False and "anonymous" in body["message"].lower(), str(body)[:110])
 
+        # --- a stored secret can be looked at, on request ------------
+        #
+        # "•••••••• (saved)" cannot answer which key is in there, which is the
+        # only question anyone has about one. It is revealed one at a time and
+        # never in the page payload, so an unrevealed secret is not sitting in
+        # the DOM of every open tab.
+        async with session.put(
+            f"http://127.0.0.1:{PORT}/api/settings",
+            json={"changes": {"metadata.discogs_token": "DISCOGS-TOKEN-abc123"}},
+        ) as resp:
+            check("a secret can be saved", resp.status == 200, str(resp.status))
+
+        async with session.get(f"http://127.0.0.1:{PORT}/api/settings") as resp:
+            payload = await resp.json()
+        check("the payload still withholds it",
+              payload["values"].get("metadata.discogs_token") is None,
+              repr(payload["values"].get("metadata.discogs_token")))
+        check("while saying it is set",
+              "metadata.discogs_token" in payload["secrets_set"], "")
+
+        async with session.get(
+            f"http://127.0.0.1:{PORT}/api/settings/secret?key=metadata.discogs_token"
+        ) as resp:
+            revealed = await resp.json()
+        check("and it can be revealed by name",
+              revealed.get("value") == "DISCOGS-TOKEN-abc123", str(revealed)[:80])
+
+        # Only secrets. Anything else is a bug in the caller and says so.
+        async with session.get(
+            f"http://127.0.0.1:{PORT}/api/settings/secret?key=upload.dry_run"
+        ) as resp:
+            body = await resp.json()
+            check("a setting that is not a secret is refused",
+                  resp.status == 400 and "not a secret" in body.get("error", ""), str(body)[:80])
+        async with session.get(f"http://127.0.0.1:{PORT}/api/settings/secret?key=made.up") as resp:
+            check("and so is one that does not exist", resp.status == 400, str(resp.status))
+
+        # Behind the same door as everything else.
+        async with aiohttp.ClientSession() as anon, anon.get(
+            f"http://127.0.0.1:{PORT}/api/settings/secret?key=metadata.discogs_token"
+        ) as resp:
+            check("revealing needs a signed-in session", resp.status == 401, str(resp.status))
+
         # The page itself still serves, with the new shape.
         async with session.get(f"http://127.0.0.1:{PORT}/api/settings") as resp:
             payload = await resp.json()

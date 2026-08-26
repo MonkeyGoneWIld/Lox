@@ -1390,3 +1390,22 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .budget-head { font-family: var(--mono); font-size: 11px; }
 .budget-bar { height: 2px; border-radius: 0; }
 .budget-fill { border-radius: 0; }
+
+/* A secret with a way to look at it. "•••••••• (saved)" cannot answer which
+   key is in there, which is the only question anyone has about a stored one. */
+.secret-field { display: flex; gap: 6px; align-items: stretch; }
+.secret-field input { flex: 1 1 auto; min-width: 0; }
+
+.eye {
+  flex: none;
+  width: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--text-dim);
+}
+.eye:hover:not(:disabled) { color: var(--text); }
+.eye svg { width: 16px; height: 16px; }
+/* Revealed text is the value itself, so it is set in the face used for
+   anything compared character by character. */
+.secret-field input[type="text"] { font-family: var(--mono); font-size: 12px; }

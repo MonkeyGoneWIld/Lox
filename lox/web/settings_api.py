@@ -19,7 +19,7 @@ import lox.trackers
 from lox import cfg, settings
 from lox import debug as debuglog
 from lox.config.client_url import CLIENTS, build_client_url, split_client_url
-from lox.config.schema import BOOTSTRAP_KEYS, sections_with_fields
+from lox.config.schema import BOOTSTRAP_KEYS, FIELDS_BY_KEY, sections_with_fields
 from lox.config.store import SettingsError, coerce, get_value, set_value
 from lox.config.validations import validate as validate_config
 from lox.deezer.gw import DeezerGW, DeezerGWError
@@ -255,6 +255,23 @@ def _compose_entries(entries: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+@routes.get("/api/settings/seedboxes/secret")
+async def api_seedbox_secret(request: web.Request) -> web.Response:
+    """The stored password for one torrent client.
+
+    Same reasoning as the settings reveal: the page is told a password is set,
+    never what it is, and "which password is in there" is a fair question when a
+    client will not connect. Looked up by the entry's name, one at a time.
+    """
+    name = request.query.get("name", "")
+    for box in cfg.seedbox:
+        if box.name == name:
+            password = split_client_url(box.torrent_client or "").get("password", "")
+            debuglog.log("settings: revealed the password for torrent client %s", name, level=20)
+            return _json({"name": name, "value": password, "set": bool(password)})
+    return _json({"error": f"no torrent client called {name or '(unnamed)'}"}, status=400)
+
+
 @routes.put("/api/settings/seedboxes")
 async def api_seedboxes_save(request: web.Request) -> web.Response:
     """Replace the torrent-client list."""
@@ -271,6 +288,40 @@ async def api_seedboxes_save(request: web.Request) -> web.Response:
         return _json({"error": f"Could not save: {type(e).__name__}: {e}"}, status=400)
     settings.apply_to(cfg)
     return _json({"saved": len(stored)})
+
+
+@routes.get("/api/settings/secret")
+async def api_settings_secret(request: web.Request) -> web.Response:
+    """Hand back one stored secret, so it can be read on the page that set it.
+
+    Secrets are deliberately not in the settings payload: the page is told a key
+    is set, never what it is, so a value nobody asked for is not sitting in the
+    DOM of every open tab. But "•••••••• (saved)" cannot answer the question
+    people actually have, which is *which* key is in there -- the one from the
+    right account, or the one pasted from the wrong tab an hour ago.
+
+    So it is revealed on request, one key at a time, and never in bulk. This
+    grants no access that the page did not already have: anyone who can reach
+    it can already spend the credential by pressing Test or starting an upload.
+    It is logged for the same reason a password reveal is logged anywhere --
+    reading a secret is an event worth having a record of.
+
+    Args:
+        request: Carries ``key``, a dotted settings key.
+
+    Returns:
+        The key and its value, or 400 if the key is not a secret this page owns.
+    """
+    key = request.query.get("key", "")
+    field = FIELDS_BY_KEY.get(key)
+    if field is None or field.kind != "secret":
+        # Named rather than silently empty: asking for a non-secret is a bug in
+        # the caller, and asking for one that does not exist is worth saying.
+        return _json({"error": f"{key or 'that'} is not a secret this page stores"}, status=400)
+
+    value = get_value(cfg, key)
+    debuglog.log("settings: revealed %s to the browser", key, level=20)
+    return _json({"key": key, "value": value or "", "set": bool(value)})
 
 
 @routes.post("/api/settings/reset")
