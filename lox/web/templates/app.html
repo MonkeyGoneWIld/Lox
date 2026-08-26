@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>lox</title>
   <link rel="icon" href="{{ static_root_url }}/images/favicon.ico">
+  <link rel="stylesheet" href="{{ static_root_url }}/css/fonts.css?v={{ asset_version }}">
   <link rel="stylesheet" href="{{ static_root_url }}/css/app.css?v={{ asset_version }}">
 </head>
 <body>
@@ -18,16 +19,48 @@
         </div>
       </div>
 
-      <ul class="nav" role="tablist">
-        <li><button class="nav-item active" data-view="search" role="tab">Search</button></li>
-        <li><button class="nav-item" data-view="explore" role="tab">Explore</button></li>
-        <li><button class="nav-item" data-view="missing" role="tab">Scan</button></li>
-        <li><button class="nav-item" data-view="requests" role="tab">Requests</button></li>
-        <li><button class="nav-item" data-view="found" role="tab">Found</button></li>
-        <li><button class="nav-item" data-view="downloads" role="tab">Downloads <span class="badge" id="dl-badge" hidden></span></button></li>
-        <li><button class="nav-item" data-view="uploads" role="tab">Uploads</button></li>
-        <li><button class="nav-item" data-view="settings" role="tab">Settings</button></li>
-      </ul>
+      <!-- Two groups, and one of them is in order.
+           Eight peers said nothing about what this app does. Four of these are
+           different ways to find work and any of them can start you off; the
+           other three are stages one release passes through, which is why they
+           are numbered and why their counts are always on screen. -->
+      <nav class="nav" role="tablist">
+        <div class="nav-group">
+          <span class="cap">Find work</span>
+          <ul>
+            <li><button class="nav-item active" data-view="search" role="tab">
+              <span class="nav-label">Search</span></button></li>
+            <li><button class="nav-item" data-view="explore" role="tab">
+              <span class="nav-label">Browse</span></button></li>
+            <li><button class="nav-item" data-view="missing" role="tab">
+              <span class="nav-label">Scan</span></button></li>
+            <li><button class="nav-item" data-view="requests" role="tab">
+              <span class="nav-label">Requests</span></button></li>
+          </ul>
+        </div>
+
+        <div class="nav-group">
+          <span class="cap">Pipeline</span>
+          <ul>
+            <li><button class="nav-item" data-view="found" role="tab">
+              <span class="nav-step">1</span><span class="nav-label">Queue</span>
+              <span class="nav-count" id="found-count-rail"></span></button></li>
+            <li><button class="nav-item" data-view="downloads" role="tab">
+              <span class="nav-step">2</span><span class="nav-label">Downloading</span>
+              <span class="nav-count" id="dl-badge"></span></button></li>
+            <li><button class="nav-item" data-view="uploads" role="tab">
+              <span class="nav-step">3</span><span class="nav-label">Uploading</span>
+              <span class="nav-count" id="upload-count-rail"></span></button></li>
+          </ul>
+        </div>
+
+        <div class="nav-group">
+          <ul>
+            <li><button class="nav-item" data-view="settings" role="tab">
+              <span class="nav-label">Settings</span></button></li>
+          </ul>
+        </div>
+      </nav>
 
       <div class="sidebar-foot">
         <div class="status-line" id="deezer-status">

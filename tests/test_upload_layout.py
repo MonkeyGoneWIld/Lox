@@ -138,6 +138,78 @@ def main() -> int:
           "if (result.dry_run)" in left, "")
     check("the result panel renders it", "leftovers(result)" in js, "")
 
+    # --- the look is a decision, not a default -----------------------
+    #
+    # The palette this replaced was #a238ff violet on #16161d with system-ui
+    # and 10px radii. That exact combination is the house style of nearly every
+    # generated app, which is what made this one read as one. Each half of it
+    # is pinned so it cannot drift back.
+    import re as _re  # noqa: PLC0415
+
+    tokens = rule(css, ":root")
+    # Comments stripped first: the header names the palette it replaced, and
+    # naming it is the point of the comment.
+    live = _re.sub(r"/\*.*?\*/", "", css, flags=_re.S)
+    check("the violet is gone", "#a238ff" not in live and "#7b2bc4" not in live, "")
+    check("and the blue-black with it", "#16161d" not in live, "")
+    check("one accent, and it is the amber",
+          "--accent: #e8a33d" in tokens, tokens[tokens.find("--accent"):][:24])
+    check("corners are squared, not pilled",
+          "--radius: 3px" in tokens, tokens[tokens.find("--radius"):][:20])
+    check("no pill radius survives anywhere", "border-radius: 99px" not in css, "")
+    check("both faces are named as tokens",
+          "--sans:" in tokens and "--mono:" in tokens, "")
+    check("and nothing falls back to system-ui", "system-ui" not in live, "")
+
+    # Every colour a state is drawn in has to exist in both themes, or the
+    # light theme silently inherits a dark one and washes out.
+    light = rule(css, ':root[data-theme="light"]')
+    for token in ("--accent", "--ok", "--bad", "--text-faint", "--border-soft"):
+        check(f"{token} is defined for the light theme too", token + ":" in light, "")
+
+    # --- the fonts are ours ------------------------------------------
+    #
+    # A <link> to fonts.googleapis.com would announce every page load of a
+    # private instance -- one holding tracker sessions and a Deezer ARL -- to a
+    # third party, and would leave the UI wrong on a LAN with no route out.
+    shell = read("..", "templates", "app.html")
+    fonts = read("css", "fonts.css")
+    check("no page asks a font host for anything",
+          "fonts.googleapis.com" not in shell and "fonts.gstatic.com" not in shell
+          and "gstatic" not in fonts, "")
+    check("the faces are served from here",
+          fonts.count("url('../fonts/") >= 12, str(fonts.count("url('../fonts/")))
+    check("and every one of them is on disk",
+          all(os.path.exists(os.path.join(STATIC, "fonts", name))
+              for name in _re.findall(r"url\('\.\./fonts/([^']+)'\)", fonts)), "")
+    check("a face is only fetched for text that needs it",
+          fonts.count("unicode-range:") == fonts.count("@font-face"), "")
+    check("and the stylesheet is versioned like the others",
+          "fonts.css?v=" in shell, "")
+
+    # --- the nav says what the app does ------------------------------
+    #
+    # Eight peers said nothing. Four of these are ways to find work and any can
+    # start you off; three are stages one release passes through.
+    check("the sidebar is grouped", shell.count('class="nav-group"') == 3,
+          str(shell.count('class="nav-group"')))
+    check("the pipeline is numbered because the order is real",
+          all(f'class="nav-step">{n}<' in shell for n in (1, 2, 3)), "")
+    check("its stages are named for what they are doing",
+          all(w in shell for w in ("Queue", "Downloading", "Uploading")), "")
+    check("and each carries a count", shell.count('class="nav-count"') == 3,
+          str(shell.count('class="nav-count"')))
+    check("a stage with nothing in it stays quiet",
+          "n ? String(n) : ''" in js, "")
+
+    # The one interruption worth colouring from anywhere in the app.
+    check("a blocked run is visible from every screen",
+          ".nav-item.needs-you" in css and "railNeedsYou" in js, "")
+    check("counted off the cards, after their state is set",
+          """$$('.flow-head[data-state="waiting"]').length""" in js, "")
+    check("the tab name survives the number and the count beside it",
+          "navLabel(view)" in js and ".nav-label" in js, "")
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

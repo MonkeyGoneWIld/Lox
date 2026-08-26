@@ -101,11 +101,27 @@
 
   // ---------------------------------------------------------------- routing
 
+  // A count on the pipeline rail. Blank rather than zero: a stage with nothing
+  // in it should be quiet, not report a nought.
+  function railCount(sel, n) {
+    const el2 = $(sel);
+    if (!el2) return;
+    el2.textContent = n ? String(n) : '';
+  }
+
+  // The one interruption worth colouring from anywhere in the app: a run that
+  // has stopped and is waiting on an answer. Without this the only way to find
+  // out was to already be looking at Uploading.
+  function railNeedsYou(n) {
+    railCount('#upload-count-rail', n);
+    $(`.nav-item[data-view="uploads"]`)?.classList.toggle('needs-you', n > 0);
+  }
+
   function setView(view) {
     state.view = view;
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
-    $('#view-title').textContent = $(`.nav-item[data-view="${view}"]`).textContent.trim();
+    $('#view-title').textContent = navLabel(view);
     if (view === 'explore') loadExplore();
     if (view === 'missing') loadWatchlists();
     if (view === 'found') loadFound();
@@ -145,9 +161,7 @@
     if (!state.missingTrackers.size) state.trackers.forEach((t) => state.missingTrackers.add(t.code));
     renderTrackerPickers();
 
-    const badge = $('#dl-badge');
-    badge.hidden = !status.downloads.active;
-    badge.textContent = status.downloads.active;
+    railCount('#dl-badge', status.downloads.active);
     $('#downloads-dir').textContent = `Saving to ${status.downloads.directory} as ${status.downloads.format}`;
     $('#uploads-dir').textContent = status.downloads.directory;
     renderProblems(status.problems);
@@ -516,7 +530,13 @@
 
   // What a tab is called, for the crumb that goes back to it.
   function viewLabel(view) {
-    return $(`.nav-item[data-view="${view}"]`)?.textContent.trim() || 'Back';
+    return navLabel(view) || 'Back';
+  }
+
+  // The name of a tab, without the step number or the count beside it.
+  function navLabel(view) {
+    const item = $(`.nav-item[data-view="${view}"]`);
+    return (item?.querySelector('.nav-label') || item)?.textContent.trim() || '';
   }
 
   // A name for the pane being left behind, taken from what it is showing.
@@ -1270,9 +1290,7 @@
         const { jobs } = await api('/api/downloads');
         renderDownloads(jobs);
         const active = jobs.some((j) => ['queued', 'running'].includes(j.status));
-        const badge = $('#dl-badge');
-        badge.hidden = !active;
-        badge.textContent = jobs.filter((j) => ['queued', 'running'].includes(j.status)).length;
+        railCount('#dl-badge', jobs.filter((j) => ['queued', 'running'].includes(j.status)).length);
         if (active) {
           state.pollers.set('downloads', setTimeout(tick, 1000));
         } else {
@@ -2333,6 +2351,7 @@
 
   function renderFound() {
     const body = $('#found-body');
+    railCount('#found-count-rail', state.found.length);
     if (!state.found.length) {
       body.replaceChildren(empty('Nothing yet. Run a scan or check some requests.'));
       $('#found-count').textContent = '';
@@ -3411,6 +3430,11 @@ They will not be listed again, even if a later scan finds them.`)) {
         ].filter(Boolean),
       );
     }
+
+    // Counted off the cards after this one has been updated, so it is right
+    // whether a run just started, just answered, or was cancelled in another
+    // tab. Counting before would have used this card's previous state.
+    railNeedsYou($$('.flow-head[data-state="waiting"]').length);
 
     const stage = card.querySelector('.flow-stage');
     if (stage.textContent !== (flow.stage || '')) stage.textContent = flow.stage || '';

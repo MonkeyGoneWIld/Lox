@@ -1,49 +1,107 @@
 /* lox web UI
-   Layout follows deemix's shape - fixed sidebar, scrolling main - without
-   reusing any of its code. */
+
+   A tool, not a product page. The palette it replaced was #a238ff violet on
+   #16161d with system-ui and 10px radii, which is the house style of nearly
+   every generated app -- and it read as one. What is here instead:
+
+   One signal colour. Amber means "this needs you" and nothing else, so a
+   glance at the sidebar answers the only urgent question the app has. Green
+   means "there is something to upload here". Red means destructive. Nothing
+   else is coloured, so the coloured things are seen.
+
+   Warm near-black rather than blue-black, and squared corners: 3px, not the
+   10px pill. Rules instead of cards wherever a card was only drawing a box
+   round a list.
+
+   Two faces. Plex Sans for prose; Plex Mono, tabular, for anything compared
+   down a column -- budgets, counts, paths, track numbers, timestamps. Numbers
+   that line up can be read without being read. */
 
 :root {
-  --bg: #16161d;
-  --bg-raised: #1e1e27;
-  --bg-input: #26262f;
-  --border: #33333f;
-  --text: #e9e9ef;
-  --text-dim: #9a9aab;
-  --accent: #a238ff;
-  --accent-dim: #7b2bc4;
-  --ok: #33cc66;
-  --warn: #f5a623;
-  --bad: #ef4a4a;
-  --radius: 10px;
-  --sidebar: 232px;
+  /* Warm near-black. The blue-black it replaced made every accent look
+     synthetic against it. */
+  --bg: #17150f;
+  --bg-raised: #1c1a14;
+  --bg-input: #100f0a;
+  --border: #2e2a20;
+  --border-soft: #23201a;
+  --text: #ece7dd;
+  --text-dim: #9c948a;
+  --text-faint: #7d7568;
+  /* Amber, and only for "this needs you". */
+  --accent: #e8a33d;
+  --accent-dim: #f2bd78;
+  --accent-ink: #17150f;
+  --accent-edge: #4a3d22;
+  --ok: #7fb069;
+  --ok-edge: #33402c;
+  --warn: #e8a33d;
+  --bad: #d4674f;
+  --bad-edge: #6b3a30;
+  --radius: 3px;
+  --sidebar: 214px;
+  --sans: "IBM Plex Sans", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
+/* Paper, not white. Same reasoning as the dark theme: a warm ground so the
+   one signal colour still reads as a signal. */
 :root[data-theme="light"] {
-  --bg: #f4f4f8;
-  --bg-raised: #ffffff;
-  --bg-input: #ececf3;
-  --border: #d9d9e3;
-  --text: #1b1b22;
-  --text-dim: #6a6a7a;
+  --bg: #f6f2ea;
+  --bg-raised: #fffdf8;
+  --bg-input: #efe9dd;
+  --border: #ddd5c7;
+  --border-soft: #e6dfd2;
+  --text: #1c1a17;
+  --text-dim: #6b6459;
+  --text-faint: #8b8172;
+  --accent: #a8681c;
+  --accent-dim: #8c5514;
+  --accent-ink: #fffdf8;
+  --accent-edge: #d8bc8e;
+  --ok: #4a6b3c;
+  --ok-edge: #bfd0b3;
+  --bad: #a63a28;
+  --bad-edge: #d8b8b3;
 }
 
 :root[data-theme="dark"] {
-  --bg: #16161d;
-  --bg-raised: #1e1e27;
-  --bg-input: #26262f;
-  --border: #33333f;
-  --text: #e9e9ef;
-  --text-dim: #9a9aab;
+  --bg: #17150f;
+  --bg-raised: #1c1a14;
+  --bg-input: #100f0a;
+  --border: #2e2a20;
+  --border-soft: #23201a;
+  --text: #ece7dd;
+  --text-dim: #9c948a;
+  --text-faint: #7d7568;
+  --accent: #e8a33d;
+  --accent-dim: #f2bd78;
+  --accent-ink: #17150f;
+  --accent-edge: #4a3d22;
+  --ok: #7fb069;
+  --ok-edge: #33402c;
+  --bad: #d4674f;
+  --bad-edge: #6b3a30;
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
-    --bg: #f4f4f8;
-    --bg-raised: #ffffff;
-    --bg-input: #ececf3;
-    --border: #d9d9e3;
-    --text: #1b1b22;
-    --text-dim: #6a6a7a;
+    --bg: #f6f2ea;
+    --bg-raised: #fffdf8;
+    --bg-input: #efe9dd;
+    --border: #ddd5c7;
+    --border-soft: #e6dfd2;
+    --text: #1c1a17;
+    --text-dim: #6b6459;
+    --text-faint: #8b8172;
+    --accent: #a8681c;
+    --accent-dim: #8c5514;
+    --accent-ink: #fffdf8;
+    --accent-edge: #d8bc8e;
+    --ok: #4a6b3c;
+    --ok-edge: #bfd0b3;
+    --bad: #a63a28;
+    --bad-edge: #d8b8b3;
   }
 }
 
@@ -65,13 +123,14 @@ a {
 }
 
 a:hover { color: var(--accent); }
-a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 13px/1.55 var(--sans);
+  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -103,7 +162,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--border);
 }
 
-.brand-logo { width: 32px; height: 32px; border-radius: 8px; }
+.brand-logo { width: 32px; height: 32px; border-radius: var(--radius); }
 .brand-name { font-weight: 650; letter-spacing: -0.01em; }
 .brand-sub { font-size: 11px; color: var(--text-dim); }
 
@@ -116,7 +175,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   background: none;
   border: 0;
   padding: 9px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   cursor: pointer;
   color: var(--text-dim);
   display: flex;
@@ -129,7 +188,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 
 .badge {
   background: rgba(255, 255, 255, 0.25);
-  border-radius: 99px;
+  border-radius: 2px;
   padding: 1px 7px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -203,7 +262,7 @@ textarea,
 input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 9px 12px;
   width: 100%;
   resize: vertical;
@@ -216,14 +275,14 @@ input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button { appearance: none; margin: 0; }
 
-textarea { margin-bottom: 10px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12.5px; }
+textarea { margin-bottom: 10px; font-family: var(--mono); font-size: 12.5px; }
 
 input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 button {
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 9px 16px;
   cursor: pointer;
 }
@@ -239,7 +298,7 @@ button.ghost { background: none; }
   display: inline-block;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 9px 16px;
   text-decoration: none;
   color: var(--text);
@@ -252,8 +311,8 @@ button.ghost { background: none; }
 .searchbar { display: flex; gap: 10px; align-items: center; }
 .searchbar input { flex: 1; }
 
-.segmented { display: inline-flex; background: var(--bg-input); border-radius: 8px; padding: 3px; gap: 2px; }
-.segmented button { background: none; border: 0; padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--text-dim); }
+.segmented { display: inline-flex; background: var(--bg-input); border-radius: var(--radius); padding: 3px; gap: 2px; }
+.segmented button { background: none; border: 0; padding: 6px 12px; border-radius: var(--radius); font-size: 13px; color: var(--text-dim); }
 .segmented button.active { background: var(--accent); color: #fff; font-weight: 600; }
 
 .tabstrip { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
@@ -261,7 +320,7 @@ button.ghost { background: none; }
 .tabstrip button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 
 .filterbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-.chip { background: var(--bg-input); border: 1px solid var(--border); border-radius: 99px; padding: 5px 13px; font-size: 12.5px; }
+.chip { background: var(--bg-input); border: 1px solid var(--border); border-radius: 2px; padding: 5px 13px; font-size: 12.5px; }
 .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* ---------- cards ---------- */
@@ -400,7 +459,7 @@ button.ghost { background: none; }
 .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 22px; }
 .split-side { min-width: 0; }
 .split-head { justify-content: space-between; margin-bottom: 6px; }
-.split-art { width: 96px; height: 96px; border-radius: 8px; object-fit: cover; flex: none; }
+.split-art { width: 96px; height: 96px; border-radius: var(--radius); object-fit: cover; flex: none; }
 .album-title-sm { margin: 0 0 4px; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
 .split-tracks { margin: 12px 0 0; padding-left: 22px; font-size: 12.5px; color: var(--text-dim); }
 .split-tracks li { padding: 2px 0; }
@@ -409,7 +468,7 @@ button.ghost { background: none; }
    will not let its page be framed. */
 .request-view { display: flex; flex-direction: column; gap: 16px; }
 .request-head { display: flex; gap: 14px; align-items: flex-start; }
-.request-cover { width: 108px; border-radius: 8px; flex: none; background: var(--bg-input); }
+.request-cover { width: 108px; border-radius: var(--radius); flex: none; background: var(--bg-input); }
 .request-headings { min-width: 0; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .request-tags { display: flex; flex-wrap: wrap; gap: 5px; }
 .request-section > h4 { margin: 0 0 7px; font-size: 12.5px; text-transform: uppercase;
@@ -422,7 +481,7 @@ button.ghost { background: none; }
 .fact-value { overflow-wrap: anywhere; }
 
 .comments { display: flex; flex-direction: column; gap: 10px; }
-.comment { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg-input); }
+.comment { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--bg-input); }
 .comment-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
                 font-size: 12px; margin-bottom: 6px; }
 .comment-head .dim { color: var(--text-dim); }
@@ -430,7 +489,7 @@ button.ghost { background: none; }
 /* Rendered BBCode. The tracker's markup is someone else's, so it is boxed in
    here: it cannot widen the pane and its images cannot overflow it. */
 .bb { font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
-.bb img.bb-img { max-width: 100%; height: auto; border-radius: 6px; margin: 6px 0; }
+.bb img.bb-img { max-width: 100%; height: auto; border-radius: var(--radius); margin: 6px 0; }
 .bb .bb-quote {
   margin: 8px 0;
   padding: 8px 12px;
@@ -442,7 +501,7 @@ button.ghost { background: none; }
 .bb .bb-code {
   background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 9px 11px;
   overflow-x: auto;
   font-size: 12px;
@@ -512,7 +571,7 @@ button.ghost { background: none; }
 .table th { color: var(--text-dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
 .table tr:hover td { background: var(--bg-input); }
 
-.tag { display: inline-block; border-radius: 5px; padding: 2px 7px; font-size: 11px; font-weight: 600; }
+.tag { display: inline-block; border-radius: 2px; padding: 2px 7px; font-size: 11px; font-weight: 600; }
 .tag.ok { background: rgba(51, 204, 102, 0.16); color: var(--ok); }
 .tag.bad { background: rgba(239, 74, 74, 0.16); color: var(--bad); }
 .tag.warn { background: rgba(245, 166, 35, 0.16); color: var(--warn); }
@@ -532,11 +591,11 @@ button.ghost { background: none; }
   margin-bottom: 10px;
 }
 
-.dl-art { width: 52px; height: 52px; border-radius: 7px; background: var(--bg-input) center/cover; }
+.dl-art { width: 52px; height: 52px; border-radius: var(--radius); background: var(--bg-input) center/cover; }
 .dl-title { font-weight: 600; }
 .dl-sub { color: var(--text-dim); font-size: 12px; }
 
-.bar { height: 5px; background: var(--bg-input); border-radius: 3px; overflow: hidden; margin-top: 7px; }
+.bar { height: 5px; background: var(--bg-input); border-radius: 2px; overflow: hidden; margin-top: 7px; }
 /* Eased over a whole poll interval. The server reports once a second, so a
    0.25s transition finished long before the next number arrived and the bar
    spent most of its time stationary -- which reads as jumping. */
@@ -546,7 +605,7 @@ button.ghost { background: none; }
 
 .joblog {
   background: var(--bg-input);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 10px 12px;
   font-size: 12px;
   color: var(--text-dim);
@@ -558,9 +617,9 @@ button.ghost { background: none; }
 .console {
   background: #0e0e14;
   color: #d8d8e4;
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 14px;
-  font: 12.5px/1.55 ui-monospace, "Cascadia Code", Consolas, monospace;
+  font: 12.5px/1.55 var(--mono);
   max-height: 420px;
   overflow: auto;
   white-space: pre-wrap;
@@ -588,7 +647,7 @@ button.ghost { background: none; }
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 11px 15px;
   box-shadow: 0 8px 26px rgba(0, 0, 0, 0.3);
   max-width: 340px;
@@ -612,7 +671,7 @@ button.ghost { background: none; }
   padding: 12px 14px;
   border: 1px solid var(--warn);
   border-left-width: 3px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: rgba(245, 166, 35, 0.1);
   font-size: 13px;
 }
@@ -659,14 +718,14 @@ button.link {
 .login-error {
   background: rgba(239, 74, 74, 0.14);
   color: var(--bad);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 9px 12px;
   font-size: 13px;
   margin: 14px 0 0;
 }
 
 .login-foot { margin: 18px 0 0; font-size: 12px; }
-.login-foot code { background: var(--bg-input); border-radius: 4px; padding: 1px 5px; }
+.login-foot code { background: var(--bg-input); border-radius: 2px; padding: 1px 5px; }
 
 /* ---------- per-album tracker check ---------- */
 
@@ -687,13 +746,13 @@ button.link {
 .watchrow { border-bottom: 1px solid var(--border); padding: 8px 0; }
 .watchrow:last-of-type { border-bottom: 0; }
 
-.filebtn { border: 1px solid var(--border); border-radius: 8px; padding: 9px 16px; background: var(--bg-input); }
+.filebtn { border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 16px; background: var(--bg-input); }
 .filebtn:hover { border-color: var(--accent); }
 
 select {
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 9px 12px;
 }
 
@@ -818,7 +877,7 @@ select {
   padding: 12px 14px;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
 }
 
 /* The whole card answers the question, so it has to look like it does: it
@@ -854,7 +913,7 @@ select {
   padding: 7px 9px;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
 }
 
 .checkgroup .check { font-size: 12.5px; }
@@ -879,7 +938,7 @@ select {
 .test-btn { font-size: 12.5px; padding: 6px 13px; }
 
 .test-result {
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 10px 13px;
   font-size: 13px;
   margin-top: 10px;
@@ -892,7 +951,7 @@ select {
 .test-detail { margin: 8px 0 0; font-size: 12px; }
 
 .bootstrap-list { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--text-dim); }
-.bootstrap-list code { background: var(--bg-input); border-radius: 4px; padding: 1px 5px; }
+.bootstrap-list code { background: var(--bg-input); border-radius: 2px; padding: 1px 5px; }
 
 /* ---------- flows: an upload you can actually click ---------- */
 
@@ -1003,7 +1062,7 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .spectral-num {
   color: var(--text-dim);
   font-size: 12px;
-  font-family: ui-monospace, "SFMono-Regular", "Consolas", monospace;
+  font-family: var(--mono);
   margin-bottom: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1041,7 +1100,7 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .flow-result { display: flex; flex-direction: column; gap: 8px; }
 .result-block {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 9px 12px;
   background: var(--bg);
 }
@@ -1060,7 +1119,7 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .leftover-path {
   margin: 0;
   font-size: 11.5px;
-  font-family: ui-monospace, "SFMono-Regular", "Consolas", monospace;
+  font-family: var(--mono);
   overflow-wrap: anywhere;
 }
 .leftover-all { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -1074,7 +1133,7 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
   line-height: 1.5;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 10px 12px;
   margin: 0 0 12px;
   max-height: 340px;
@@ -1222,3 +1281,112 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
    the same bar rather than each spelling out "working 3/25". */
 .joblog-bar { margin: 2px 0 8px; }
 .joblog-line { white-space: pre-wrap; }
+
+/* ---------- the console pass ---------- */
+
+/* Anything read down a column rather than along a line. Budgets, counts,
+   paths, track numbers, sizes, timestamps: figures that are compared are set
+   in mono and tabular, so the digits line up and the eye does the comparing
+   instead of the reader. */
+.m,
+.budget,
+.card-sub,
+.meta-track-no,
+.leftover-path,
+.result-desc,
+.diff-field,
+.meta-field,
+.torrent-table,
+.req-age,
+.joblog-line,
+.console { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* A caption, not a heading: the label above a group of controls. */
+.cap {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* Tags stop being pills. A tag is a state, and a state reads as a stamp. */
+.tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+/* One signal colour, one meaning. Amber is "this needs you" and nothing else;
+   green is "there is something to upload here"; red is destructive. Anything
+   else stays uncoloured so that the coloured things are seen. */
+.tag.warn { color: var(--accent); border: 1px solid var(--accent-edge); background: none; }
+.tag.ok { color: var(--ok); border: 1px solid var(--ok-edge); background: none; }
+.tag.bad { color: var(--bad); border: 1px solid var(--bad-edge); background: none; }
+.tag.dim { color: var(--text-faint); border: 1px solid var(--border); background: none; }
+
+/* ---------- sidebar: two groups, one of them in order ---------- */
+
+.nav-group { margin: 14px 0 2px; }
+.nav-group + .nav-group { border-top: 1px solid var(--border-soft); padding-top: 12px; }
+.nav-group > .cap { padding: 0 18px 8px; display: block; }
+
+.nav-item {
+  border-radius: 0;
+  padding: 7px 18px;
+  gap: 10px;
+}
+
+.nav-item.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* The step number. The pipeline has an order and the order is real: nothing
+   reaches 3 without passing 2. */
+.nav-step {
+  font-family: var(--mono);
+  font-size: 10px;
+  width: 15px;
+  flex: none;
+  text-align: center;
+  color: var(--text-faint);
+}
+
+.nav-item.active .nav-step { color: inherit; opacity: 0.6; }
+
+/* A count sitting where a badge used to. Not a pill, not a colour, until
+   there is something to say. */
+.nav-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-item.active .nav-count { color: inherit; }
+
+/* The one interruption worth colouring from across the app: a run that has
+   stopped and is waiting on an answer. */
+.nav-item.needs-you:not(.active) { color: var(--accent); }
+.nav-item.needs-you:not(.active) .nav-count { color: var(--accent); }
+
+.nav-label { flex: 1; text-align: left; }
+
+/* ---------- density ---------- */
+
+/* Rules, not cards, wherever the card was only drawing a box round a list.
+   The queue shows about twice as many rows in the same space. */
+.table td, .table th { padding: 11px 12px; }
+.table tbody tr { border-bottom: 1px solid var(--border-soft); }
+
+.panel { border-radius: var(--radius); }
+
+/* The budget readout: the number that decides what a check button may cost. */
+.budget-head { font-family: var(--mono); font-size: 11px; }
+.budget-bar { height: 2px; border-radius: 0; }
+.budget-fill { border-radius: 0; }

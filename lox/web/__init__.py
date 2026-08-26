@@ -135,7 +135,9 @@ def _asset_version() -> str:
     """
     digest = hashlib.sha1()
     static = join(dirname(__file__), "static")
-    for relative in ("scripts/app.js", "css/app.css"):
+    # fonts.css names the vendored faces; a change to it has to bust the cache
+    # like any other, or a swapped font is served against a stale stylesheet.
+    for relative in ("scripts/app.js", "css/app.css", "css/fonts.css"):
         path = join(static, relative)
         try:
             with open(path, "rb") as handle:
