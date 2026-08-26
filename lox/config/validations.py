@@ -140,14 +140,13 @@ class Directory(BaseStruct):
         _note("directory.download_directory", ensure_dir(self.download_directory, "Download directory"))
 
 
-ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox"]
+ImgUploaderLiteral = Literal["ptscreens", "oeimg", "catbox", "imgbb", "imgbox"]
 
 
 class ImageUploader(BaseStruct):
     image_uploader: ImgUploaderLiteral = "catbox"
     cover_uploader: ImgUploaderLiteral = "catbox"
     specs_uploader: ImgUploaderLiteral = "catbox"
-    ptpimg_key: str | None = None
     ptscreens_key: str | None = None
     oeimg_key: str | None = None
     imgbb_key: str | None = None
@@ -162,7 +161,6 @@ class ImageUploader(BaseStruct):
         missing = [
             host
             for host, key in (
-                ("ptpimg", self.ptpimg_key),
                 ("ptscreens", self.ptscreens_key),
                 ("oeimg", self.oeimg_key),
                 ("imgbb", self.imgbb_key),

@@ -210,6 +210,31 @@ def main() -> int:
     check("the tab name survives the number and the count beside it",
           "navLabel(view)" in js and ".nav-label" in js, "")
 
+    # --- looking at a secret is not editing it ------------------------
+    #
+    # The input event is what records a change; setting .value in code does not
+    # fire one, and re-masking has to put the box back exactly as it was, or a
+    # look would cost a write on the next Save.
+    reveal = js[js.index("function revealButton"):]
+    reveal = reveal[: reveal.index("\n  }\n")]
+    check("a secret is fetched only when asked for",
+          "/api/settings/secret" in js, "")
+    check("re-masking restores the field it found",
+          "input.type = 'password'" in reveal and "input.value = ''" in reveal
+          and "input.placeholder = placeholder" in reveal, "")
+    check("and nothing in the reveal marks the form dirty",
+          "markDirty" not in reveal and "state.pending" not in reveal, "")
+    check("what is already typed is shown without a round trip",
+          "if (input.value)" in reveal, "")
+    check("the torrent client password gets one too",
+          "/api/settings/seedboxes/secret" in js, "")
+
+    # ICON() is declared near the bottom of the file. A const initialised above
+    # it runs first and throws before the app mounts, which for a script with no
+    # build step takes the whole UI down -- so these stay lazy.
+    check("the eye icons are not evaluated before ICON exists",
+          "const eyeIcon = () => ICON(" in js and "const ICON_EYE =" not in js, "")
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

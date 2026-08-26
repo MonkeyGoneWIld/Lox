@@ -8,7 +8,17 @@ from lox import cfg
 from lox.errors import ImageUploadFailed
 from lox.images.base import BaseImageUploader
 
-HEADERS: dict[str, str] = {"X-API-Key": cfg.image.ptscreens_key or ""}
+API_URL = "https://ptscreens.com/api/1/upload"
+
+
+def headers() -> dict[str, str]:
+    """Auth header, read when the request is made.
+
+    Built at import time this was a snapshot: a key entered on the settings
+    page updates cfg in place, but never the dict, so the new key did not
+    reach an upload until the process restarted.
+    """
+    return {"X-API-Key": cfg.image.ptscreens_key or ""}
 
 
 class ImageUploader(BaseImageUploader):
@@ -32,11 +42,10 @@ class ImageUploader(BaseImageUploader):
         data = aiohttp.FormData()
         data.add_field("source", file_data, filename=Path(filename).name)
 
-        url = "https://ptscreens.com/api/1/upload"
         try:
             async with (
                 aiohttp.ClientSession() as session,
-                session.post(url, headers=HEADERS, data=data) as resp,
+                session.post(API_URL, headers=headers(), data=data) as resp,
             ):
                 resp.raise_for_status()
                 r = await resp.json(loads=msgspec.json.decode)

@@ -87,6 +87,12 @@ jobs:
         # still caught.
         run: uv run python tests/test_upload_prompts.py
 
+      - name: A wrong image-host key tests as wrong
+        # The one credential the settings page exists to verify was the one it
+        # could not: every made-up key passed. Run against the bodies the live
+        # hosts actually return.
+        run: uv run python tests/test_image_hosts.py
+
       - name: Sign-in accounts
         run: uv run python tests/test_accounts.py
 

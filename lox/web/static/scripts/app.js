@@ -3534,6 +3534,82 @@ They will not be listed again, even if a later scan finds them.`)) {
     return [total, 'B'];
   }
 
+  // Show a stored secret, on request.
+  //
+  // A field that says "•••••••• (saved)" cannot answer the question people
+  // actually have, which is *which* key is in there. The value is fetched when
+  // the eye is pressed rather than shipped with the page, so an unrevealed
+  // secret is never sitting in the DOM.
+  //
+  // Revealing must not make the field dirty: the input event is what records a
+  // change, and setting .value in code does not fire one. Re-masking puts the
+  // box back exactly as it was, so a look costs nothing on save.
+  function revealButton(input, fetchValue, placeholder) {
+    let shown = false;
+    const eye = el('button', {
+      type: 'button',
+      class: 'eye',
+      title: 'Show what is stored',
+      'aria-label': 'Show what is stored',
+    });
+
+    const paint = () => {
+      eye.innerHTML = shown ? eyeOffIcon() : eyeIcon();
+      eye.title = shown ? 'Hide it again' : 'Show what is stored';
+      eye.setAttribute('aria-label', eye.title);
+      eye.setAttribute('aria-pressed', String(shown));
+    };
+    paint();
+
+    eye.addEventListener('click', async () => {
+      if (shown) {
+        shown = false;
+        input.type = 'password';
+        input.value = '';
+        input.placeholder = placeholder;
+        paint();
+        return;
+      }
+      // Anything typed but not saved is what the user is looking at already.
+      if (input.value) {
+        shown = true;
+        input.type = 'text';
+        paint();
+        return;
+      }
+      eye.disabled = true;
+      try {
+        const value = await fetchValue();
+        if (!value) {
+          toast('Nothing stored for that one yet', 'bad');
+          return;
+        }
+        shown = true;
+        input.type = 'text';
+        input.value = value;
+        paint();
+      } catch (e) {
+        toast(e.message, 'bad');
+      } finally {
+        eye.disabled = false;
+      }
+    });
+    return eye;
+  }
+
+  // Drawn, not typed: a glyph out of whatever font carries it arrives at a
+  // different weight and sits off the baseline.
+  //
+  // Functions, not constants. ICON() is declared further down this file, and a
+  // const initialised up here would run before it exists -- a ReferenceError at
+  // load, which for a script with no build step takes the whole UI with it.
+  const eyeIcon = () => ICON('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z"/>'
+    + '<circle cx="12" cy="12" r="2.6"/>');
+  const eyeOffIcon = () => ICON('<path d="M4 4l16 16"/>'
+    + '<path d="M9.9 5.7A10.6 10.6 0 0 1 12 5.5c6.4 0 10 6.5 10 6.5a18 18 0 0 1-3.3 4.1"/>'
+    + '<path d="M6.6 7.6A17.7 17.7 0 0 0 2 12s3.6 6.5 10 6.5a10.8 10.8 0 0 0 4-.75"/>'
+    + '<path d="M9.7 9.9a2.6 2.6 0 0 0 3.5 3.6"/>');
+
   function settingField(field, values, secretsSet) {
     const value = values[field.key];
     const isSecret = field.kind === 'secret';
@@ -3594,12 +3670,20 @@ They will not be listed again, even if a later scan finds them.`)) {
         ...field.choices.map((c) => el('option', { value: c, selected: c === value }, c)),
       );
     } else if (isSecret) {
+      const placeholder = configured ? '•••••••• (saved — type to replace)' : 'Not set';
       input = el('input', {
         type: 'password',
         autocomplete: 'new-password',
-        placeholder: configured ? '•••••••• (saved — type to replace)' : 'Not set',
+        placeholder,
         oninput: onInput,
       });
+      if (configured) {
+        input = el('div', { class: 'secret-field' }, input,
+          revealButton(input, async () => {
+            const got = await api(`/api/settings/secret?key=${encodeURIComponent(field.key)}`);
+            return got.value;
+          }, placeholder));
+      }
     } else if (field.kind === 'list') {
       // Stored as a list, edited as one per line, which is how anyone would
       // write a list of genres by hand.
@@ -3930,11 +4014,20 @@ They will not be listed again, even if a later scan finds them.`)) {
       el('input', { type: 'text', autocomplete: 'off', value: conn.username || '',
                     oninput: (e) => (conn.username = e.target.value) }),
     ));
+    const pwPlaceholder = conn.password_set ? '•••••••• (saved — type to replace)' : 'Not set';
+    const pw = el('input', { type: 'password', autocomplete: 'new-password',
+                             placeholder: pwPlaceholder,
+                             oninput: (e) => (conn.password = e.target.value) });
     grid.append(settingBox(
       'Password',
-      el('input', { type: 'password', autocomplete: 'new-password',
-                    placeholder: conn.password_set ? '•••••••• (saved — type to replace)' : 'Not set',
-                    oninput: (e) => (conn.password = e.target.value) }),
+      conn.password_set
+        ? el('div', { class: 'secret-field' }, pw,
+             revealButton(pw, async () => {
+               const got = await api(
+                 `/api/settings/seedboxes/secret?name=${encodeURIComponent(box.name || '')}`);
+               return got.value;
+             }, pwPlaceholder))
+        : pw,
     ));
 
     if (spec.secure) {

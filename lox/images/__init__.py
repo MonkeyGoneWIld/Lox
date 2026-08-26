@@ -11,10 +11,9 @@ from lox import cfg
 from lox.common import AliasedCommands, commandgroup
 from lox.database import DB_PATH
 from lox.errors import ImageUploadFailed
-from lox.images import catbox, imgbb, imgbox, oeimg, ptpimg, ptscreens
+from lox.images import catbox, imgbb, imgbox, oeimg, ptscreens
 
 HOSTS = {
-    "ptpimg": ptpimg,
     "catbox": catbox,
     "ptscreens": ptscreens,
     "oeimg": oeimg,

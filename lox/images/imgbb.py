@@ -8,6 +8,9 @@ from lox import cfg
 from lox.errors import ImageUploadFailed
 from lox.images.base import BaseImageUploader
 
+API_URL = "https://api.imgbb.com/1/upload"
+"""Shared with the settings test, so the two cannot drift apart."""
+
 HEADERS = {"referer": "https://imgbb.com/", "User-Agent": cfg.upload.user_agent}
 
 
@@ -33,11 +36,10 @@ class ImageUploader(BaseImageUploader):
         data.add_field("key", cfg.image.imgbb_key)
         data.add_field("image", file_data, filename=Path(filename).name)
 
-        url = "https://api.imgbb.com/1/upload"
         try:
             async with (
                 aiohttp.ClientSession() as session,
-                session.post(url, headers=HEADERS, data=data) as resp,
+                session.post(API_URL, headers=HEADERS, data=data) as resp,
             ):
                 resp.raise_for_status()
                 resp_data = await resp.json(loads=msgspec.json.decode)
