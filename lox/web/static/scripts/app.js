@@ -600,7 +600,7 @@
 
       const sections = Object.entries(data.sections || {}).filter(([, rows]) => rows.length);
       if (!sections.length) {
-        results.replaceChildren(empty('Nothing found.'));
+        results.replaceChildren(empty('No matches. Try fewer words, or just the artist.'));
         return;
       }
       results.replaceChildren(
@@ -686,7 +686,7 @@
           grid.append(...chart[key].map(card));
           body.append(el('h2', { class: 'section-title' }, label), grid);
         }
-        if (!body.children.length) body.replaceChildren(empty('No chart data.'));
+        if (!body.children.length) body.replaceChildren(empty('Deezer has no chart for this selection.'));
       } else {
         const data = await api(`/api/explore/releases?genre=${state.exploreGenre}`);
         const grid = el('div', { class: 'grid' });
@@ -757,7 +757,7 @@
           grid,
         );
       }
-      if (!channel.sections.length) body.append(empty('This channel returned no modules.'));
+      if (!channel.sections.length) body.append(empty('Deezer sent nothing back for this channel.'));
     } catch (e) {
       body.replaceChildren(empty(e.message));
     }
@@ -1756,7 +1756,7 @@
   async function loadRequestFilters() {
     const host = $('#requests-filters');
     if (!state.requestsTracker) {
-      host.replaceChildren(empty('No tracker configured.'));
+      host.replaceChildren(empty('No tracker set up yet. Add one in Settings to see requests.'));
       return;
     }
     let spec;
@@ -1954,7 +1954,7 @@
   function renderRequestRows() {
     const container = $('#requests-results');
     if (!state.requestRows.length) {
-      container.replaceChildren(empty('No open requests found.'));
+      container.replaceChildren(empty('Nothing matched. Widen the filters, or fetch more pages.'));
       return;
     }
     container.replaceChildren(
@@ -2276,7 +2276,7 @@
                   c.edited ? el('span', { class: 'dim' },
                                `edited ${c.edited_by ? `by ${c.edited_by} ` : ''}${when(c.edited)}`) : null),
                 el('div', { class: 'bb', html: c.html }))))
-          : empty('No comments.')),
+          : empty('No comments on this request.')),
     );
   }
 
@@ -2518,7 +2518,7 @@ They will not be listed again, even if a later scan finds them.`)) {
         return;
       }
       if (!folders.length) {
-        list.replaceChildren(empty('No release folders yet.'));
+        list.replaceChildren(empty('Nothing here yet. Finished downloads turn up ready to upload.'));
         return;
       }
       list.replaceChildren(
