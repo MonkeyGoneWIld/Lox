@@ -144,8 +144,8 @@ def _asset_version() -> str:
         "scripts/app.js",
         "css/app.css",
         "css/fonts.css",
-        "images/icon.svg",
         "images/favicon.ico",
+        "images/logo.png",
     ):
         path = join(static, relative)
         try:

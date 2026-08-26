@@ -82,29 +82,32 @@ def main() -> int:
     check("the ios tile is on the app's own ground",
           tile.getpixel((0, 0)) == (23, 21, 15, 255), str(tile.getpixel((0, 0))))
 
-    # --- the scalable one, which is what a modern browser prefers ---------
-    svg = read(os.path.join(IMAGES, "icon.svg"))
-    check("an svg icon is built", svg.startswith("<svg"), svg[:40])
-    check("and it paints no background", "<rect" not in svg and "background" not in svg, "")
-    check("it is self-contained, with nothing to fetch",
-          "http" not in svg.replace("http://www.w3.org/2000/svg", ""), "")
-    check("and draws the disc the mark is built on", "<circle" in svg, "")
-    check("in the icon's own palette", "#fb3b8f" in svg.lower(), "")
+    # --- there is no SVG, and that is deliberate -----------------------
+    # The artwork is an illustration, not geometry. A raster wrapped in an
+    # <svg> would scale no better than the PNG and would advertise something
+    # the file cannot do, so the page links PNGs and the .ico instead.
+    check("no SVG is served", not os.path.exists(os.path.join(IMAGES, "icon.svg")), "")
 
     # --- the page asks for it, and asks for a fresh copy ------------------
     app_html = read(os.path.join(TEMPLATES, "app.html"))
-    check("the page links the svg icon", 'type="image/svg+xml"' in app_html, "")
-    check("with the .ico behind it for the rest", "favicon.ico" in app_html, "")
-    for asset in ("icon.svg", "favicon.ico"):
+    check("the page does not claim an SVG it has not got",
+          'type="image/svg+xml"' not in app_html, "")
+    check("it links the .ico", "favicon.ico" in app_html, "")
+    for size in ("16x16", "32x32"):
+        check(f"and the {size} png a tab actually reaches for",
+              f"favicon-{size}.png" in app_html, "")
+    for asset in ("favicon.ico", "favicon-32x32.png", "logo.png"):
         check(f"{asset} is versioned, because a favicon caches hard",
               f"{asset}?v=" in app_html, "")
+    check("and the sign-in page is versioned too -- it is seen first",
+          "favicon.ico?v=" in read(os.path.join(TEMPLATES, "login.html")), "")
 
     # ... and the fingerprint has to actually move when the icon does, or the
     # version on those URLs is decoration.
     web_init = read(os.path.join(REPO, "lox", "web", "__init__.py"))
     start = web_init.index("def _asset_version")
     body = web_init[start:start + 900]
-    for asset in ("images/icon.svg", "images/favicon.ico"):
+    for asset in ("images/favicon.ico", "images/logo.png"):
         check(f"the asset fingerprint covers {asset}", asset in body, "")
 
     # --- nobody else's mark, nobody else's credit -------------------------
@@ -118,7 +121,7 @@ def main() -> int:
     # --- the mark is reproducible ----------------------------------------
     # Drawn from geometry in the repo rather than an image dropped in, so it
     # rebuilds at any size and carries nobody else's licence.
-    for name in ("artwork.py", "build.py"):
+    for name in ("source.png", "build.py"):
         check(f"design/icon/{name} is in the repo",
               os.path.exists(os.path.join(REPO, "design", "icon", name)), "")
 
