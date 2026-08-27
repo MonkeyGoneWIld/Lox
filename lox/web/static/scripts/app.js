@@ -2103,6 +2103,45 @@
     $('#requests-progress-label').textContent = label;
   }
 
+  // How much of the search is on screen, and how much there was.
+  //
+  // This was a toast: it said "25 requests from 1 of 871 pages -- about 21,775
+  // match in total" and then vanished, which for the one number that decides
+  // whether to fetch more pages is the wrong place to put it. It stays until
+  // the next search replaces it.
+  function requestsSummary({ shown, pages, totalPages, estimate, filtered, cancelled, running }) {
+    const host = $('#requests-summary');
+    if (!host) return;
+    if (shown === null) { host.hidden = true; host.replaceChildren(); return; }
+
+    const partial = totalPages > pages;
+    const parts = [];
+    parts.push(partial
+      ? `Showing ${shown.toLocaleString()} of about ${estimate.toLocaleString()} matching requests.`
+      : `Showing all ${shown.toLocaleString()} matching request${shown === 1 ? '' : 's'}.`);
+    if (totalPages) {
+      parts.push(`Read ${pages.toLocaleString()} of ${totalPages.toLocaleString()} page${totalPages === 1 ? '' : 's'}.`);
+    }
+    if (filtered) parts.push(`${filtered} already filled, left out.`);
+    if (cancelled) parts.push('Stopped early.');
+    if (running) parts.push('Still reading…');
+
+    host.hidden = false;
+    host.className = `requests-summary${partial ? ' partial' : ''}`;
+    host.replaceChildren(
+      el('span', {}, parts.join(' ')),
+      // The number is only useful next to the thing that acts on it.
+      partial && !running
+        ? el('button', {
+            class: 'ghost',
+            onclick: () => {
+              const box = $('#requests-limit');
+              if (box) { box.value = String(Math.min(totalPages, pages * 2)); box.focus(); requestsCost(); }
+            },
+          }, 'Read more pages')
+        : null);
+  }
+
   function requestsProgressDone() {
     const box = $('#requests-progress');
     if (box) box.hidden = true;
@@ -2160,11 +2199,22 @@
     const pageSize = state.requestFilters?.page_size || 25;
     const params = requestsParams();
     const container = $('#requests-results');
+    const tracker = state.requestsTracker;
+
+    // Only a run that was going to look things up looks things up. The box
+    // below decides *when* -- it used to decide *whether*, which meant ticking
+    // it turned "show me the list" into a run that spent budget on every row.
+    const pipeline = thenCheck && ticked('requests-pipeline');
 
     const abort = new AbortController();
     state.requestsAbort = abort;
     let cancelled = false;
-    abort.signal.addEventListener('abort', () => { cancelled = true; });
+    abort.signal.addEventListener('abort', () => {
+      cancelled = true;
+      // Stop the lookup this search started, not just the pages. Leaving it
+      // running after Cancel is what "cancel" is supposed to prevent.
+      state.checkCancelButton?.click();
+    });
 
     const rows = [];
     const seen = new Set();
@@ -2174,8 +2224,51 @@
     let estimate = 0;
     let ranDry = false;
 
+    // --- the pipelined half ------------------------------------------------
+    // Reading a page is a tracker call with a pause either side of it; looking
+    // a request up is a tracker call, a Deezer search and some matching. Doing
+    // all the reading and then all the looking up means the second half starts
+    // when the first is completely finished, and on a twenty-page search that
+    // is a long time to watch a list of rows that say "not checked".
+    //
+    // So each page's requests go off to be looked up as soon as that page
+    // lands. Chained rather than parallel: two check jobs at once race the
+    // budget guard, and the tracker end is serialised by the gateway anyway,
+    // so the gain is in overlapping the Deezer half with the next page's wait.
+    const log = $('#requests-log');
+    let chain = Promise.resolve();
+    let pipelineChecked = 0;
+    const pipelineSkipped = [];
+    let pipelineWindow = 0;
+
+    if (pipeline) {
+      log.hidden = false;
+      log.textContent = 'Starting…';
+      $$('.requests-check-btn').forEach((b) => { b.disabled = true; });
+    }
+
+    const lookUpLater = (ids) => {
+      if (!ids.length) return;
+      chain = chain
+        .then(async () => {
+          if (cancelled) return;
+          const job = await runCheckJob(tracker, ids, {
+            onSkipped: (note) => {
+              // Collected rather than shown per page: twenty pages would be
+              // twenty panels saying the same thing.
+              pipelineSkipped.push(...(note.requests || []));
+              pipelineWindow = note.recheck_after_days;
+            },
+          });
+          pipelineChecked += job.result_count || 0;
+        })
+        .catch((e) => { if (!cancelled) toast(e.message, 'bad'); });
+    };
+
+    // --- reading the pages -------------------------------------------------
     container.replaceChildren(spinner(`Reading page 1 of ${pages}`));
     requestsProgress(0, pages, `Page 1 of ${pages}`);
+    requestsSummary({ shown: null });
 
     try {
       for (let page = 1; page <= pages; page++) {
@@ -2197,10 +2290,13 @@
         filtered += data.filtered || 0;
         totalPages = data.pages || totalPages;
         estimate = data.total_estimate || estimate;
+
+        const fresh = [];
         for (const row of data.requests || []) {
           if (seen.has(row.id)) continue;
           seen.add(row.id);
           rows.push(row);
+          fresh.push(row.id);
         }
 
         // Show what has landed rather than making the whole thing wait.
@@ -2208,6 +2304,11 @@
         state.selectedRequests = new Set(rows.map((r) => r.id));
         renderRequestRows();
         requestsProgress(page, pages, `Page ${page} of ${pages} — ${rows.length} so far`);
+        requestsSummary({
+          shown: rows.length, pages: page, totalPages, estimate, filtered,
+          cancelled: false, running: true,
+        });
+        if (pipeline) lookUpLater(fresh);
 
         // The tracker has no more to give: stop rather than paying for pages
         // of nothing. An empty page that only dropped filled rows is not the
@@ -2218,31 +2319,48 @@
     } catch (e) {
       requestsProgressDone();
       container.replaceChildren(empty(e.message));
+      requestsSummary({ shown: null });
       return;
     }
 
     requestsProgressDone();
     if (!rows.length && cancelled) {
       container.replaceChildren(empty('Search cancelled.'));
+      requestsSummary({ shown: null });
       refreshStatus();
       return;
     }
 
-    // Say how much of the search this actually is. A four-page read of a
-    // search the tracker answers with four hundred pages used to report
-    // "100 requests" and look like the whole result, so a search matching ten
-    // thousand and one matching a hundred were indistinguishable.
-    const read = Math.min(calls, totalPages || calls);
-    const parts = [`${rows.length} request${rows.length === 1 ? '' : 's'}`];
-    if (totalPages > read) {
-      parts.push(`from ${read} of ${totalPages} pages — about ${estimate.toLocaleString()} match in total`);
-    } else if (ranDry || read >= (totalPages || read)) {
-      parts.push('— that is everything matching');
-    }
-    if (filtered) parts.push(`(${filtered} already filled, dropped)`);
-    if (cancelled) parts.push('— cancelled');
-    toast(parts.join(' '), cancelled ? '' : 'ok');
+    // How much of the search this is. A four-page read of a search the tracker
+    // answers with four hundred pages used to report "100 requests" and look
+    // like the whole result, so a search matching ten thousand and one
+    // matching a hundred were indistinguishable.
+    const read = ranDry ? calls : Math.min(calls, totalPages || calls);
+    requestsSummary({
+      shown: rows.length,
+      pages: read,
+      totalPages: ranDry ? read : totalPages,
+      estimate,
+      filtered,
+      cancelled,
+      running: false,
+    });
     refreshStatus();
+
+    if (pipeline) {
+      await chain;
+      if (pipelineSkipped.length) {
+        showSkipped(tracker, {
+          count: pipelineSkipped.length,
+          requests: pipelineSkipped,
+          recheck_after_days: pipelineWindow,
+        });
+      }
+      $$('.requests-check-btn').forEach((b) => { b.disabled = false; });
+      jobFinished(log, `Done. ${pipelineChecked} request(s) checked.`);
+      refreshStatus();
+      return;
+    }
 
     if (!cancelled && rows.length && thenCheck) {
       await requestsCheck(rows.map((r) => r.id));
@@ -2331,6 +2449,44 @@
   // sat above an empty list and was pressable with nothing to press it on. The
   // caller says what to check now, and each caller only exists where there is
   // something to check.
+  // One check job, start to finish.
+  //
+  // Pulled out of requestsCheck because there are now two ways to run one: all
+  // the requests once the search has finished, or a page at a time while the
+  // search is still going. Both want the same job, the same log line and the
+  // same Stop button; only the batching differs.
+  async function runCheckJob(tracker, ids, { recheck = false, prefix = '', onSkipped = null } = {}) {
+    const log = $('#requests-log');
+    const { job_id: jobId } = await api('/api/requests/check', {
+      method: 'POST',
+      body: { tracker, request_ids: ids, recheck },
+    });
+    const cancel = jobCancel(jobId, 'Stop checking');
+    log.after(cancel);
+    // So the search's own Cancel can stop the lookup it started, rather than
+    // only stopping the pages and leaving the lookup running behind it.
+    state.checkCancelButton = cancel;
+
+    let reported = false;
+    const job = await new Promise((resolve) => {
+      followJob(jobId, {
+        onUpdate: (j) => {
+          jobProgress(log, j, prefix);
+          j.results.forEach(applyRequestResult);
+          const note = j.events.find((e) => e.event === 'skipped' && e.count);
+          if (note && !reported) {
+            reported = true;
+            if (onSkipped) onSkipped(note);
+          }
+        },
+        onDone: resolve,
+      });
+    });
+    cancel.remove();
+    state.checkCancelButton = null;
+    return job;
+  }
+
   async function requestsCheck(entries, { placeholders = false, recheck = false } = {}) {
     // Callers used to hand over bare ids; they hand over {id, tracker} now,
     // and a bare id still works so a caller that has only an id is not forced
@@ -2375,32 +2531,15 @@
 
     let checked = 0;
     let stoppedEarly = null;
-    const skipNotes = new Map();
     try {
       for (const [tracker, ids] of groups) {
-        const { job_id: jobId } = await api('/api/requests/check', {
-          method: 'POST',
-          body: { tracker, request_ids: ids, recheck },
-        });
-        const cancel = jobCancel(jobId, 'Stop checking');
-        log.after(cancel);
         // eslint-disable-next-line no-await-in-loop -- deliberately serial:
         // two trackers at once would race the budget guard on both.
-        const job = await new Promise((resolve) => {
-          followJob(jobId, {
-            onUpdate: (j) => {
-              jobProgress(log, j, groups.size > 1 ? `${tracker}: ` : '');
-              j.results.forEach(applyRequestResult);
-              const note = j.events.find((e) => e.event === 'skipped' && e.count);
-              if (note && !skipNotes.has(tracker)) {
-                skipNotes.set(tracker, note);
-                showSkipped(tracker, note);
-              }
-            },
-            onDone: resolve,
-          });
+        const job = await runCheckJob(tracker, ids, {
+          recheck,
+          prefix: groups.size > 1 ? `${tracker}: ` : '',
+          onSkipped: (note) => showSkipped(tracker, note),
         });
-        cancel.remove();
         checked += job.result_count || 0;
         stoppedEarly = stoppedEarly || job.events.find((e) => e.event === 'budget_exhausted');
         if (stoppedEarly) break;

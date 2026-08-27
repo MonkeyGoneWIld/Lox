@@ -203,6 +203,13 @@
           <div class="row" id="requests-actions-row">
             <button class="primary" id="requests-fetch-check">Find requests I can fill</button>
             <button id="requests-fetch">Show requests only</button>
+            <!-- Only about WHEN the lookups happen, never whether: the box it
+                 replaced turned "show me the list" into a run that spent
+                 budget on every row, which is not what either name promised. -->
+            <label class="check">
+              <input type="checkbox" id="requests-pipeline" checked>
+              Look up on Deezer as pages arrive
+            </label>
             <button class="danger" id="requests-cancel" hidden>Cancel</button>
             <span class="hint" id="requests-cost"></span>
           </div>
@@ -229,6 +236,11 @@
           </details>
           <div class="joblog" id="requests-log" hidden></div>
         </div>
+
+        <!-- How much of the search is on screen and how much there was. This
+             was a toast, which vanished -- for the one number that decides
+             whether to read more pages, the wrong place to put it. -->
+        <div class="requests-summary" id="requests-summary" hidden></div>
         <div id="requests-results"></div>
         </div>
 

@@ -1074,6 +1074,27 @@ select {
    already looked up. */
 .reqtabs { margin-bottom: 14px; }
 
+/* What the search actually covered. Stays on screen: it was a toast, and the
+   number that decides whether to read more pages is not a thing to show for
+   four seconds and take away. */
+.requests-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* A partial read is worth noticing, because more of it is one click away. */
+.requests-summary.partial { border-left: 3px solid var(--accent); color: var(--text); }
+
 /* What a run passed over. Sits under the log it belongs to, and goes when it
    is acted on. */
 .skipped-note { margin-top: 12px; border-left: 3px solid var(--accent); }

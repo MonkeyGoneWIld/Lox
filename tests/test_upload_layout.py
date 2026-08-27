@@ -532,8 +532,36 @@ def main() -> int:
     check("with the list-only one beside it", "Show requests only" in shell, "")
     check("and the old jargon gone",
           "Search requests" not in shell and "Search and check" not in shell, "")
-    check("the redundant 'check automatically' box is gone",
+    check("the box that decided WHETHER to look things up is gone",
           'id="requests-autocheck"' not in shell, "")
+
+    # It was indistinguishable from the button beside it, and ticking it turned
+    # "show me the list" into a run that spent budget on every row. It decides
+    # when the lookups happen now, never whether.
+    check("and is replaced by one that decides when",
+          'id="requests-pipeline"' in shell, "")
+    check("named for what it actually does",
+          "Look up on Deezer as pages arrive" in shell, "")
+    check("a list-only run never looks anything up, ticked or not",
+          "thenCheck && ticked('requests-pipeline')" in js, "")
+    check("each page's requests go off as that page lands",
+          "lookUpLater(fresh)" in js, "")
+    check("chained rather than parallel, so two jobs cannot race the budget",
+          "chain = chain" in js, "")
+    check("and Cancel stops the lookup it started, not just the pages",
+          "state.checkCancelButton?.click()" in js, "")
+
+    # --- how much of the search this is -----------------------------------
+    # It was a toast: the one number that decides whether to read more pages,
+    # shown for four seconds and then taken away.
+    check("the coverage line is part of the page, not a notification",
+          'id="requests-summary"' in shell, "")
+    check("and stays until the next search replaces it",
+          "function requestsSummary" in js, "")
+    check("a partial read is marked as one",
+          "border-left" in rule(css, ".requests-summary.partial"),
+          rule(css, ".requests-summary.partial").strip()[:60])
+    check("with more pages one click away", "Read more pages" in js, "")
     check("and so is the note under the file picker",
           "starts checking as soon as you pick it" not in shell, "")
 
