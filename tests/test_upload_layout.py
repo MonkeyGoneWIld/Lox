@@ -580,9 +580,34 @@ def main() -> int:
 
     # The window is a setting, offered where it is used.
     check("how long an answer is trusted is set on the page that uses it",
-          "requests-recheck" in js and "RECHECK_CHOICES" in js, "")
-    check("in units people think in, not a box of days",
-          "More than a week ago" in js, "")
+          "requests-recheck" in js, "")
+
+    # Durations were a dropdown of seven guesses -- a day, a week, a month,
+    # three months, a year -- which is fine until someone wants two months or
+    # three years, and then there is nothing to pick.
+    check("a duration is a number and a unit",
+          "function durationControl" in js, "")
+    check("with every unit anyone would reach for",
+          "['days', 1], ['weeks', 7], ['months', 30], ['years', 365]" in js, "")
+    check("stored as days whatever was typed", "function partsToDays" in js, "")
+    check("and read back as the largest unit that fits, so 30 is one month",
+          "function daysToParts" in js, "")
+    check("the recheck window can also be turned off entirely",
+          "never: true" in js, "")
+    check("and the unit agrees with the number", "function pluralise" in js, "")
+
+    # The same control on the history filter, which had the same seven guesses.
+    check("the history filter takes a typed duration too",
+          "history-age-dir" in js and "history-age-amount" in js, "")
+    check("in either direction", "'in the last'" in js and "'not for'" in js, "")
+    check("hidden until a direction is chosen", "function syncHistoryAge" in js, "")
+    check("and the old fixed list is gone",
+          "within:30" not in js and "before:90" not in js, "")
+
+    # --- what the second tab is called ------------------------------------
+    check("the lookup history has a name that says what it is",
+          "Lookup History" in shell, "")
+    check("rather than an adjective", "Already checked" not in shell, "")
 
     # --- the running-cost commentary is gone ------------------------------
     check("the standing 'checking costs one more call' line is gone",

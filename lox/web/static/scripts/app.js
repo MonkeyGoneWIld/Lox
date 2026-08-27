@@ -2022,11 +2022,12 @@
     // how long an answer is good for is part of setting up a search, and
     // sending someone to another page to change it and back again is how a
     // setting ends up never being changed.
-    rows.push(formRow('Look up again if checked',
-      el('select', {
+    rows.push(formRow('Look up again if checked more than',
+      ...durationControl({
         id: 'requests-recheck',
-        onchange: async (e) => {
-          const days = Number(e.target.value);
+        days: state.recheckDays,
+        never: true,
+        onChange: async (days) => {
           state.recheckDays = days;
           try {
             await api('/api/settings', {
@@ -2037,9 +2038,8 @@
             toast(err.message, 'bad');
           }
         },
-      },
-      ...RECHECK_CHOICES.map(([days, label]) =>
-        el('option', { value: String(days), selected: days === state.recheckDays }, label)))));
+      }),
+      el('span', { class: 'hint reqhint' }, 'ago')));
 
     rows.push(formRow('Pages to fetch',
       // Pages, not a row count. One page is one call against the budget.
@@ -2077,17 +2077,82 @@
       : '';
   }
 
-  // How long a request's answer is trusted before it is worth asking again.
-  // Written in the units people think in rather than a box of days.
-  const RECHECK_CHOICES = [
-    [0, 'Never — an answer is final'],
-    [1, 'More than a day ago'],
-    [7, 'More than a week ago'],
-    [30, 'More than a month ago'],
-    [90, 'More than three months ago'],
-    [180, 'More than six months ago'],
-    [365, 'More than a year ago'],
-  ];
+  // Durations are a number and a unit.
+  //
+  // They were a dropdown of seven guesses -- a day, a week, a month, three
+  // months, a year -- which is fine until someone wants two months or three
+  // years, and then there is nothing to pick. Everything is stored as days;
+  // this is only how it is typed and read back.
+  const UNITS = [['days', 1], ['weeks', 7], ['months', 30], ['years', 365]];
+
+  /** Days as the largest whole unit that fits, so 30 reads back as 1 month. */
+  function daysToParts(days) {
+    const total = Number(days) || 0;
+    if (total <= 0) return { amount: 0, unit: 'days' };
+    for (let i = UNITS.length - 1; i >= 0; i--) {
+      const [unit, size] = UNITS[i];
+      if (total % size === 0) return { amount: total / size, unit };
+    }
+    return { amount: total, unit: 'days' };
+  }
+
+  function partsToDays(amount, unit) {
+    const size = (UNITS.find(([name]) => name === unit) || UNITS[0])[1];
+    return Math.max(0, Math.round(Number(amount) || 0)) * size;
+  }
+
+  /**
+   * A number box and a unit picker.
+   *
+   * @param {object} opts - `id` prefixes both controls, `days` is the current
+   *   value, `onChange` receives the new value in days, and `never` adds a
+   *   unit that means "no limit" rather than making zero mean it silently.
+   * @returns {Array} The two elements, to spread into a row.
+   */
+  function durationControl({ id, days, onChange, never = false }) {
+    const { amount, unit } = daysToParts(days);
+    const isNever = never && (Number(days) || 0) <= 0;
+
+    const amountBox = el('input', {
+      id: `${id}-amount`,
+      class: 'reqsmall',
+      type: 'number',
+      min: '1',
+      step: '1',
+      value: String(isNever ? '' : amount || 1),
+      disabled: isNever,
+      onchange: () => { pluralise(); emit(); },
+      oninput: pluralise,
+    });
+
+    const unitBox = el('select', {
+      id: `${id}-unit`,
+      onchange: () => {
+        amountBox.disabled = unitBox.value === 'never';
+        emit();
+      },
+    },
+    ...UNITS.map(([name]) =>
+      el('option', { value: name, selected: !isNever && name === unit }, name)),
+    never ? el('option', { value: 'never', selected: isNever }, 'never') : null);
+
+    // "1 months" is the sort of thing that makes a page look unfinished.
+    function pluralise() {
+      const one = Number(amountBox.value) === 1;
+      for (const option of unitBox.options) {
+        if (option.value === 'never') continue;
+        option.textContent = one ? option.value.slice(0, -1) : option.value;
+      }
+    }
+
+    function emit() {
+      onChange(unitBox.value === 'never' ? 0 : partsToDays(amountBox.value, unitBox.value));
+    }
+
+    pluralise();
+
+    return [amountBox, unitBox];
+  }
 
   const ticked = (id) => !!$(`#${id}`)?.checked;
 
@@ -2596,7 +2661,7 @@
   }
 
   // ------------------------------------------------------------------
-  // Already checked
+  // Lookup history
   // ------------------------------------------------------------------
   // Every request that has been looked up, and what came of it. The answers
   // were already being kept -- they are what stops a second run paying for the
@@ -2649,18 +2714,33 @@
                       onchange: onChange }),
         el('input', { id: 'history-year-max', class: 'reqsmall', type: 'number', placeholder: 'to',
                       onchange: onChange })),
-      // Two ways of asking the same thing, because both are how people ask it:
-      // "what did I check this week" and "what has gone stale".
-      formRow('Checked',
-        el('select', { id: 'history-age', onchange: onChange },
-          el('option', { value: '' }, 'Any time'),
-          el('option', { value: 'within:1' }, 'In the last day'),
-          el('option', { value: 'within:7' }, 'In the last week'),
-          el('option', { value: 'within:30' }, 'In the last month'),
-          el('option', { value: 'before:30' }, 'Not for a month'),
-          el('option', { value: 'before:90' }, 'Not for three months'),
-          el('option', { value: 'before:365' }, 'Not for a year'))),
+      // Two ways of asking the same thing, because both are how people ask
+      // it: "what did I look up this week" and "what has gone stale". The
+      // duration beside it is typed, so two months and three years are as
+      // reachable as one week.
+      formRow('Looked up',
+        el('select', {
+          id: 'history-age-dir',
+          onchange: () => { syncHistoryAge(); onChange(); },
+        },
+        el('option', { value: '' }, 'any time'),
+        el('option', { value: 'within' }, 'in the last'),
+        el('option', { value: 'before' }, 'not for')),
+        ...durationControl({ id: 'history-age', days: 30, onChange }),
+        el('span', { class: 'hint reqhint', id: 'history-age-suffix' }, '')),
     );
+    syncHistoryAge();
+  }
+
+  /** The duration only means anything once a direction is chosen. */
+  function syncHistoryAge() {
+    const direction = $('#history-age-dir')?.value || '';
+    for (const id of ['#history-age-amount', '#history-age-unit']) {
+      const box = $(id);
+      if (box) box.hidden = !direction;
+    }
+    const suffix = $('#history-age-suffix');
+    if (suffix) suffix.textContent = direction === 'before' ? 'or longer' : '';
   }
 
   function historyQuery() {
@@ -2677,10 +2757,10 @@
     const to = $('#history-year-max') ? $('#history-year-max').value : '';
     if (from) params.set('min_year', from);
     if (to) params.set('max_year', to);
-    const age = $('#history-age') ? $('#history-age').value : '';
-    if (age) {
-      const parts = age.split(':');
-      params.set(parts[0] === 'within' ? 'checked_within' : 'checked_before', parts[1]);
+    const direction = $('#history-age-dir') ? $('#history-age-dir').value : '';
+    if (direction) {
+      const days = partsToDays($('#history-age-amount')?.value, $('#history-age-unit')?.value);
+      if (days > 0) params.set(direction === 'within' ? 'checked_within' : 'checked_before', String(days));
     }
     return params;
   }
@@ -2695,8 +2775,8 @@
       state.historySelected = new Set();
       historyPick(null, false);
       $('#history-count').textContent = data.total === data.shown
-        ? `${data.total} checked`
-        : `showing ${data.shown} of ${data.total} checked`;
+        ? `${data.total} looked up`
+        : `showing ${data.shown} of ${data.total} looked up`;
       renderHistoryRows(data);
     } catch (e) {
       host.replaceChildren(empty(e.message));
@@ -2717,7 +2797,7 @@
   function renderHistoryRows(data) {
     const host = $('#history-results');
     if (!state.history.length) {
-      host.replaceChildren(empty('Nothing checked yet that matches these filters.'));
+      host.replaceChildren(empty('No lookups match these filters.'));
       return;
     }
     const window_ = data.recheck_after_days;
