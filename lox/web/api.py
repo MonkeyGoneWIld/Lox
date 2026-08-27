@@ -742,6 +742,15 @@ async def api_found(request: web.Request) -> web.Response:
                     existing[key] = row[key]
             existing["kind"] = "request"
         existing["sources"] = sorted({*existing.get("sources", ()), *row.get("sources", ())})
+        # Deezer facts are the same release's facts whichever check found them,
+        # so whichever row actually looked wins over the one that did not.
+        for key in ("all_flac", "flac_count", "deezer_tracks"):
+            if existing.get(key) is None and row.get(key) is not None:
+                existing[key] = row[key]
+        # A request's terms only ever come from the request row.
+        for key in ("request_formats", "request_encodings"):
+            if row.get(key):
+                existing[key] = row[key]
         existing["title"] = existing.get("title") or row.get("title") or ""
         existing["artist"] = existing.get("artist") or row.get("artist") or ""
         # The newest check is the one the "last checked" column should quote.
@@ -767,6 +776,11 @@ async def api_found(request: web.Request) -> web.Response:
                 "found_on": entry.get("found_on") or [],
                 "checked_at": entry.get("checked_at"),
                 "url": f"https://www.deezer.com/album/{album_id}",
+                # What Deezer can actually supply. None means nobody looked,
+                # which the queue treats as unproven rather than as fine.
+                "all_flac": entry.get("all_flac"),
+                "flac_count": entry.get("flac_count"),
+                "deezer_tracks": entry.get("deezer_tracks"),
             },
         )
 
@@ -803,6 +817,12 @@ async def api_found(request: web.Request) -> web.Response:
                 "request_url": entry.get("request_url") or "",
                 "checked_at": entry.get("checked_at"),
                 "url": entry.get("deezer_url") or "",
+                "all_flac": entry.get("all_flac"),
+                "deezer_tracks": entry.get("deezer_tracks"),
+                # What this request will accept. A release that is not all
+                # FLAC is only queueable when one of these says so.
+                "request_formats": entry.get("request_formats") or [],
+                "request_encodings": entry.get("request_encodings") or [],
             },
         )
 
@@ -825,6 +845,12 @@ async def api_found(request: web.Request) -> web.Response:
             "held": held[:HELD_SAMPLE],
             "held_count": len(held),
             "held_shown": min(len(held), HELD_SAMPLE),
+            # Split out, because "held back by your queue rules" is the wrong
+            # thing to tell someone whose rows are held because nobody has
+            # checked what Deezer can supply. One is a setting they chose; the
+            # other is work waiting to be done, and they read very differently.
+            "held_unproven": sum(1 for r in held if "not checked yet" in r["held_reason"]),
+            "held_lossy": sum(1 for r in held if "not all FLAC" in r["held_reason"]),
             "rule": rules.describe(),
             "blacklisted": sum(1 for d in dismissed.values() if d.get("blacklist")),
         }
@@ -1218,8 +1244,11 @@ async def api_requests_list(request: web.Request) -> web.Response:
         # tracker budget is what actually limits it. 500 was exactly 20 pages,
         # which silently capped anyone who asked for more.
         limit = max(1, min(25_000, int(request.query.get("limit", 25))))
+        # The browser reads one page per call so it can show progress and be
+        # stopped; this is which page it is asking for.
+        start_page = max(1, int(request.query.get("start_page") or 1))
     except ValueError:
-        return error("limit must be a number")
+        return error("limit and start_page must be numbers")
 
     def flag(name: str) -> bool:
         return request.query.get(name, "") in ("1", "true", "yes", "on")
@@ -1248,6 +1277,7 @@ async def api_requests_list(request: web.Request) -> web.Response:
             bounty_min=request.query.get("bounty_min", ""),
             bounty_max=request.query.get("bounty_max", ""),
             categories=labels("category"),
+            start_page=start_page,
         )
     except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
         return error(str(e), status=502)

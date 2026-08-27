@@ -47,6 +47,9 @@
     linking: false,
     requestRows: [],
     selectedRequests: new Set(),
+    // The running search, so Cancel has something to stop and a second click
+    // on Search cannot start a parallel one.
+    requestsAbort: null,
     // Check results by request id, so the split view can show what was found.
     requestMatches: new Map(),
     trackers: [],
@@ -1883,14 +1886,18 @@
   // while all of them are on and it is not is simply wrong. Some groups have
   // no All at all: RED's categories are seven bare boxes, because leaving them
   // clear is how you ask RED for every category.
-  function checkGroup(id, options, { withAll = true, checked = true, strictId = '' } = {}) {
+  function checkGroup(id, options, { withAll = true, checked = [], strictId = '' } = {}) {
+    // `checked` is the tracker's own default selection, not a blanket on/off:
+    // the form opens on the search almost everyone runs rather than on every
+    // box ticked, which matched nothing useful and had to be undone by hand.
+    const on = new Set(checked);
     const boxes = el('div', { class: 'reqchecks', id },
       ...options.map((name) =>
         el('label', { class: 'check' },
           el('input', {
             type: 'checkbox',
             value: name,
-            checked,
+            checked: on.has(name),
             onchange: () => { syncAll(id); requestsCost(); },
           }),
           name)));
@@ -1901,7 +1908,7 @@
         el('input', {
           type: 'checkbox',
           id: `${id}-all`,
-          checked,
+          checked: options.length > 0 && options.every((name) => on.has(name)),
           onchange: (e) => {
             $$(`#${id} input`).forEach((box) => { box.checked = e.target.checked; });
             requestsCost();
@@ -1981,7 +1988,12 @@
             el('input', { type: 'radio', name: 'requests-tags-mode', value: 'all' }), 'All'));
       }
       if (item.kind === 'toggle') {
-        return formRow(item.label, el('input', { type: 'checkbox', id: `requests-${item.key.replace(/_/g, '-')}` }));
+        return formRow(item.label,
+          el('input', {
+            type: 'checkbox',
+            id: `requests-${item.key.replace(/_/g, '-')}`,
+            checked: !!item.default,
+          }));
       }
       if (item.kind === 'bounty') {
         return formRow(item.label,
@@ -1992,7 +2004,7 @@
       if (item.kind === 'group' && item.options.length) {
         return formRow(item.label, checkGroup(GROUP_IDS[item.key], item.options, {
           withAll: item.all,
-          checked: item.default,
+          checked: item.checked || [],
           strictId: STRICT_IDS[item.strict] || '',
         }));
       }
@@ -2017,76 +2029,183 @@
     requestsCost();
   }
 
-  // What a fetch will cost, before you spend it.
+  // The running cost used to be printed beside the button and again under it,
+  // on every visit, whether or not anything was about to be spent. The budget
+  // is on screen permanently in the sidebar, so this now speaks only when
+  // asking for more pages than the tracker has calls left -- the one case the
+  // sidebar cannot tell you about, because it is about what you just typed.
   function requestsCost() {
     const limitEl = $('#requests-limit');
-    if (!limitEl) return;
+    const cost = $('#requests-cost');
+    if (!limitEl || !cost) return;
     const pages = Number(limitEl.value) || 1;
     const budget = state.trackers.find((t) => t.code === state.requestsTracker);
-    const note = `Costs up to ${pages} call${pages === 1 ? '' : 's'}`;
-    const cost = $('#requests-cost');
-    cost.textContent = budget ? `${note} of ${budget.remaining} left on ${budget.code}.` : `${note}.`;
-    // With the page count typed rather than picked, asking for more than the
-    // budget holds is now possible, so it says so rather than letting the fetch
-    // stop halfway through and look broken.
     const over = budget && pages > budget.remaining;
     cost.classList.toggle('cost-over', !!over);
-    if (over) {
-      cost.textContent = `${note}, but only ${budget.remaining} left on ${budget.code} — it will stop when they run out.`;
-    }
+    cost.textContent = over
+      ? `Only ${budget.remaining} call${budget.remaining === 1 ? '' : 's'} left on ${budget.code} — the search will stop when they run out.`
+      : '';
   }
 
   const ticked = (id) => !!$(`#${id}`)?.checked;
 
-  async function requestsFetch() {
+  // The search bar and its Cancel. Both are hidden until something is running,
+  // because a progress bar sitting at zero with nothing behind it is furniture.
+  function requestsProgress(done, total, label) {
+    const box = $('#requests-progress');
+    const bar = $('#requests-progress-bar');
+    if (!box || !bar) return;
+    box.hidden = false;
+    $('#requests-cancel').hidden = false;
+    $('#requests-fetch').disabled = true;
+    $('#requests-fetch-check').disabled = true;
+    bar.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+    $('#requests-progress-label').textContent = label;
+  }
+
+  function requestsProgressDone() {
+    const box = $('#requests-progress');
+    if (box) box.hidden = true;
+    const cancel = $('#requests-cancel');
+    if (cancel) cancel.hidden = true;
+    for (const id of ['requests-fetch', 'requests-fetch-check']) {
+      const button = $(`#${id}`);
+      if (button) button.disabled = false;
+    }
+    state.requestsAbort = null;
+  }
+
+  /** Everything the form is asking for, minus which page. */
+  function requestsParams() {
+    const params = new URLSearchParams({
+      tracker: state.requestsTracker,
+      search: $('#requests-search').value,
+      tags: $('#requests-tags').value,
+      tags_all: $('input[name="requests-tags-mode"]:checked')?.value === 'all' ? '1' : '0',
+      show_filled: ticked('requests-show-filled') ? '1' : '0',
+      strict_format: ticked('requests-strict-format') ? '1' : '0',
+      strict_media: ticked('requests-strict-media') ? '1' : '0',
+      strict_encoding: ticked('requests-strict-encoding') ? '1' : '0',
+      include_old: ticked('requests-include-old') ? '1' : '0',
+      descriptions: ticked('requests-descriptions') ? '1' : '0',
+      bounty_min: $('#requests-bounty-min')?.value || '',
+      bounty_max: $('#requests-bounty-max')?.value || '',
+    });
+    // Repeated keys, one per ticked box.
+    for (const [key, id] of [
+      ['format', 'requests-format'],
+      ['media', 'requests-media'],
+      ['encoding', 'requests-encoding'],
+      ['release_type', 'requests-release-type'],
+      ['category', 'requests-category'],
+    ]) {
+      for (const value of chosen(id)) params.append(key, value);
+    }
+    return params;
+  }
+
+  // One page per call, rather than one call for the lot.
+  //
+  // The page count is a budget the user typed, and a fetch of it used to be a
+  // single request that could not be watched or stopped: ask for forty pages
+  // and the only options were to wait for all forty or reload the page, having
+  // spent forty tracker calls either way. Now each page is its own call, the
+  // bar moves as they land, results appear as they arrive, and Cancel stops
+  // before the next one is paid for.
+  async function requestsFetch({ thenCheck = false } = {}) {
     if (!state.requestsTracker) return toast('No tracker configured', 'bad');
+    if (state.requestsAbort) return;
+
     const pages = Number($('#requests-limit')?.value) || 1;
-    const limit = pages * (state.requestFilters?.page_size || 25);
+    const pageSize = state.requestFilters?.page_size || 25;
+    const params = requestsParams();
     const container = $('#requests-results');
-    container.replaceChildren(
-      spinner(`Fetching ${pages} page${pages === 1 ? '' : 's'} of open requests`));
+
+    const abort = new AbortController();
+    state.requestsAbort = abort;
+    let cancelled = false;
+    abort.signal.addEventListener('abort', () => { cancelled = true; });
+
+    const rows = [];
+    const seen = new Set();
+    let calls = 0;
+    let filtered = 0;
+    let totalPages = 0;
+    let estimate = 0;
+    let ranDry = false;
+
+    container.replaceChildren(spinner(`Reading page 1 of ${pages}`));
+    requestsProgress(0, pages, `Page 1 of ${pages}`);
+
     try {
-      const params = new URLSearchParams({
-        tracker: state.requestsTracker,
-        search: $('#requests-search').value,
-        tags: $('#requests-tags').value,
-        tags_all: $('input[name="requests-tags-mode"]:checked')?.value === 'all' ? '1' : '0',
-        show_filled: ticked('requests-show-filled') ? '1' : '0',
-        strict_format: ticked('requests-strict-format') ? '1' : '0',
-        strict_media: ticked('requests-strict-media') ? '1' : '0',
-        strict_encoding: ticked('requests-strict-encoding') ? '1' : '0',
-        include_old: ticked('requests-include-old') ? '1' : '0',
-        descriptions: ticked('requests-descriptions') ? '1' : '0',
-        bounty_min: $('#requests-bounty-min')?.value || '',
-        bounty_max: $('#requests-bounty-max')?.value || '',
-        limit: String(limit),
-      });
-      // Repeated keys, one per ticked box.
-      for (const [key, id] of [
-        ['format', 'requests-format'],
-        ['media', 'requests-media'],
-        ['encoding', 'requests-encoding'],
-        ['release_type', 'requests-release-type'],
-        ['category', 'requests-category'],
-      ]) {
-        for (const value of chosen(id)) params.append(key, value);
+      for (let page = 1; page <= pages; page++) {
+        if (cancelled) break;
+        requestsProgress(page - 1, pages, `Page ${page} of ${pages}`);
+        const query = new URLSearchParams(params);
+        query.set('limit', String(pageSize));
+        query.set('start_page', String(page));
+
+        let data;
+        try {
+          data = await api(`/api/requests/list?${query}`, { signal: abort.signal });
+        } catch (e) {
+          if (cancelled || e.name === 'AbortError') break;
+          throw e;
+        }
+
+        calls += data.calls || 0;
+        filtered += data.filtered || 0;
+        totalPages = data.pages || totalPages;
+        estimate = data.total_estimate || estimate;
+        for (const row of data.requests || []) {
+          if (seen.has(row.id)) continue;
+          seen.add(row.id);
+          rows.push(row);
+        }
+
+        // Show what has landed rather than making the whole thing wait.
+        state.requestRows = rows;
+        state.selectedRequests = new Set(rows.map((r) => r.id));
+        renderRequestRows();
+        requestsProgress(page, pages, `Page ${page} of ${pages} — ${rows.length} so far`);
+
+        // The tracker has no more to give: stop rather than paying for pages
+        // of nothing. An empty page that only dropped filled rows is not the
+        // end, so both have to be zero.
+        if (!(data.requests || []).length && !data.filtered) { ranDry = true; break; }
+        if (totalPages && page >= totalPages) { ranDry = true; break; }
       }
-      const { requests, calls, complete, filtered } = await api(`/api/requests/list?${params}`);
-      state.requestRows = requests;
-      state.selectedRequests = new Set(requests.map((r) => r.id));
-      renderRequestRows();
-      // Say what was actually spent and whether the tracker ran dry, so a short
-      // list is not mistaken for a failed fetch.
-      //
-      // `filtered` counts rows dropped as already filled. It should be zero now
-      // that show_filled is sent the way the form sends it, so a non-zero count
-      // is worth seeing: it means a tracker returned closed requests anyway.
-      const spent = `${requests.length} request(s) from ${calls} call${calls === 1 ? '' : 's'}`;
-      const dropped = filtered ? ` — ${filtered} already filled, dropped` : '';
-      toast(complete ? spent + dropped : `${spent}${dropped} — that is everything matching`, 'ok');
-      refreshStatus();
     } catch (e) {
+      requestsProgressDone();
       container.replaceChildren(empty(e.message));
+      return;
+    }
+
+    requestsProgressDone();
+    if (!rows.length && cancelled) {
+      container.replaceChildren(empty('Search cancelled.'));
+      refreshStatus();
+      return;
+    }
+
+    // Say how much of the search this actually is. A four-page read of a
+    // search the tracker answers with four hundred pages used to report
+    // "100 requests" and look like the whole result, so a search matching ten
+    // thousand and one matching a hundred were indistinguishable.
+    const read = Math.min(calls, totalPages || calls);
+    const parts = [`${rows.length} request${rows.length === 1 ? '' : 's'}`];
+    if (totalPages > read) {
+      parts.push(`from ${read} of ${totalPages} pages — about ${estimate.toLocaleString()} match in total`);
+    } else if (ranDry || read >= (totalPages || read)) {
+      parts.push('— that is everything matching');
+    }
+    if (filtered) parts.push(`(${filtered} already filled, dropped)`);
+    if (cancelled) parts.push('— cancelled');
+    toast(parts.join(' '), cancelled ? '' : 'ok');
+    refreshStatus();
+
+    if (!cancelled && rows.length && (thenCheck || ticked('requests-autocheck'))) {
+      await requestsCheck(rows.map((r) => r.id));
     }
   }
 
@@ -2601,7 +2720,8 @@
     const body = $('#found-body');
     body.replaceChildren(spinner('Loading'));
     try {
-      const { found, blacklisted, held, held_count: heldCount, rule } = await api('/api/found');
+      const { found, blacklisted, held, held_count: heldCount, rule,
+              held_unproven: unproven = 0, held_lossy: lossy = 0 } = await api('/api/found');
       state.found = found;
       state.foundHeld = held || [];
       state.foundRule = rule || '';
@@ -2614,8 +2734,15 @@
       const heldRow = $('#found-held-row');
       heldRow.hidden = !heldCount;
       if (heldCount) {
-        $('#found-held').textContent =
-          `${heldCount} held back by your queue rules — letting through ${state.foundRule}.`;
+        // Three different reasons, and only one of them is a setting. Saying
+        // "your queue rules" for all of them sends someone to Settings to
+        // widen a rule that was never the reason.
+        const byRule = heldCount - unproven - lossy;
+        const parts = [];
+        if (byRule > 0) parts.push(`${byRule} by your queue rules — letting through ${state.foundRule}`);
+        if (lossy > 0) parts.push(`${lossy} because Deezer has no lossless source and no request accepts lossy`);
+        if (unproven > 0) parts.push(`${unproven} not checked against Deezer yet — re-check to see if they are all FLAC`);
+        $('#found-held').textContent = `${heldCount} held back: ${parts.join('; ')}.`;
         $('#found-held-toggle').textContent = state.showHeld ? 'Hide them' : 'Show them';
       }
 
@@ -4682,7 +4809,11 @@ They will not be listed again, even if a later scan finds them.`)) {
     // Re-checks whatever is ticked in the results, which is the only place a
     // subset makes sense.
     $('#missing-check').addEventListener('click', () => missingCheck());
-    $('#requests-fetch').addEventListener('click', requestsFetch);
+    $('#requests-fetch').addEventListener('click', () => requestsFetch());
+    $('#requests-fetch-check').addEventListener('click', () => requestsFetch({ thenCheck: true }));
+    // Stops before the next page is paid for, rather than after all of them.
+    // The check that may follow has its own Stop button, next to its log.
+    $('#requests-cancel').addEventListener('click', () => state.requestsAbort?.abort());
     $('#requests-check-pasted').addEventListener('click', () => {
       const ids = idsFrom($('#requests-ids').value);
       if (!ids.length) return toast('Paste at least one request ID or URL', 'bad');

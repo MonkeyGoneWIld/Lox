@@ -183,11 +183,25 @@
                IDs behind the ones they share, so this cannot be a fixed list. -->
           <div class="filters" id="requests-filters"></div>
 
-          <div class="row">
+          <div class="row" id="requests-actions-row">
             <button class="primary" id="requests-fetch">Search requests</button>
+            <!-- Searching and then checking is two clicks for one intention.
+                 The button does both; the box beside it makes the plain search
+                 do both, for anyone who always wants that. -->
+            <button id="requests-fetch-check">Search and check</button>
+            <label class="check" title="Check every result against Deezer as soon as the search finishes">
+              <input type="checkbox" id="requests-autocheck">
+              Check matches automatically
+            </label>
+            <button class="danger" id="requests-cancel" hidden>Cancel</button>
             <span class="hint" id="requests-cost"></span>
           </div>
-          <p class="hint">Checking each request costs one more call on top of the fetch.</p>
+
+          <!-- Shown only while a search or a check is running. -->
+          <div class="reqprogress" id="requests-progress" hidden>
+            <div class="bar"><div class="bar-fill" id="requests-progress-bar" style="width:0%"></div></div>
+            <span class="hint" id="requests-progress-label"></span>
+          </div>
 
           <!-- Checking is an action on a list, so it lives with the list rather
                than above an empty box. The button that starts it sits under the

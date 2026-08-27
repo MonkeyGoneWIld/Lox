@@ -14,7 +14,7 @@ from typing import Any
 
 import msgspec
 
-from lox import cfg
+from lox import cfg, debug
 from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import build_search_queries, evaluate_group
 from lox.checker.request_filters import for_tracker
@@ -136,6 +136,13 @@ class AlbumCheck(msgspec.Struct):
     title: str
     artist: str
     verdicts: list[TrackerVerdict] = msgspec.field(default_factory=list)
+    # What Deezer will actually hand over. "No tracker has it" is only half of
+    # "worth uploading"; this is the other half, and it used to go unasked on
+    # this path -- so an album checked from Search or Browse joined the queue
+    # without anyone knowing whether there was a lossless release behind it.
+    all_flac: bool | None = None
+    flac_count: int | None = None
+    deezer_tracks: int | None = None
 
     @property
     def missing_from(self) -> list[str]:
@@ -157,6 +164,9 @@ class AlbumCheck(msgspec.Struct):
             "missing_from": self.missing_from,
             "found_on": self.found_on,
             "uploadable_to": self.missing_from,
+            "all_flac": self.all_flac,
+            "flac_count": self.flac_count,
+            "deezer_tracks": self.deezer_tracks,
         }
 
 
@@ -480,6 +490,13 @@ class MissingScanner:
                     "found_on": result.found_on,
                     "missing_from": result.missing_from,
                     "errors": result.errors,
+                    # A candidate only gets this far by being all FLAC -- the
+                    # filter above drops the rest as skipped_no_flac -- but the
+                    # queue should not have to know that to trust the row. Say
+                    # it, so a row is readable on its own.
+                    "all_flac": bool((candidate.availability or {}).get("all_flac")),
+                    "flac_count": (candidate.availability or {}).get("flac_count"),
+                    "deezer_tracks": (candidate.availability or {}).get("total"),
                 },
             )
             # A request that this same release would fill lives in its own
@@ -642,6 +659,20 @@ class MissingScanner:
             artist=(info.get("artist") or {}).get("name") or "",
         )
 
+        # Before any tracker call: what can Deezer give us? A release that is
+        # not all FLAC is not an upload unless a request says lossy will do, so
+        # the answer belongs on the record whatever the trackers say. It costs
+        # no tracker budget, and a failure here is not fatal -- the check is
+        # still worth running, the row just stays unproven.
+        try:
+            availability = await self.gw.availability(album_id)
+        except DeezerGWError as e:
+            debug.log("availability check for %s failed: %s", album_id, e, level=30)
+        else:
+            check.all_flac = availability.all_flac
+            check.flac_count = availability.flac_count
+            check.deezer_tracks = availability.total
+
         for code in trackers:
             if code not in self.gateway.configured_trackers():
                 check.verdicts.append(TrackerVerdict(tracker=code, status="unconfigured", error="not configured"))
@@ -690,6 +721,11 @@ class MissingScanner:
                 "found_on": check.found_on,
                 "missing_from": check.missing_from,
                 "source": "album check",
+                # Read by the queue, which will not list a release Deezer
+                # cannot supply losslessly.
+                "all_flac": check.all_flac,
+                "flac_count": check.flac_count,
+                "deezer_tracks": check.deezer_tracks,
                 # The verdicts too, not just the summary. Re-opening the album
                 # should show the groups it found and what it rejected without
                 # spending the budget again to learn the same thing.

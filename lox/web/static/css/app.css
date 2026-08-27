@@ -1008,13 +1008,35 @@ select {
 .reqform {
   display: flex;
   flex-direction: column;
-  gap: 18px;
   margin: 14px 0 18px;
   max-width: 1120px;
 }
 
-.reqrow { display: grid; grid-template-columns: 136px 1fr; gap: 16px; align-items: start; }
-.reqlabel { font-size: 13px; font-weight: 600; padding-top: 4px; }
+/* Each row is a band with a rule under it, rather than rows floating in one
+   field of whitespace. Eighteen pixels of gap was not enough to tell where
+   "Release types" ended and "Formats" began -- fifty checkboxes in a column of
+   air read as one list, and the labels down the left were the only thing
+   suggesting otherwise. A line does that job at a glance and costs no height.
+
+   The last row has no rule, because a rule under the final row is a border
+   around nothing. */
+.reqrow {
+  display: grid;
+  grid-template-columns: 136px 1fr;
+  gap: 16px;
+  align-items: start;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.reqrow:first-child { padding-top: 4px; }
+.reqrow:last-child { border-bottom: 0; }
+
+/* A group of ticks is taller than a text box, so it gets more room around it
+   than a one-line row needs. */
+.reqrow:has(.reqgroup) { padding: 16px 0; }
+
+.reqlabel { font-size: 13px; font-weight: 600; padding-top: 4px; color: var(--text-dim); }
 .reqfield { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
 
 /* Text boxes are as wide as the thing you type in them, not as wide as the
@@ -1035,9 +1057,32 @@ select {
 }
 .reqhint { margin: 0; font-size: 11.5px; }
 
-.reqgroup { display: flex; flex-direction: column; gap: 8px; width: 100%; }
-/* All and "Only specified" sit above the ticks they govern, as on the site. */
-.reqgroup-head { display: flex; align-items: center; gap: 18px; }
+/* The search's own bar, under the buttons that start it. Its .bar comes from
+   the download list, so a page of requests being read looks like anything else
+   in the app that takes a while. */
+.reqprogress {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 10px 0 4px;
+  max-width: 1120px;
+}
+
+.reqprogress .bar { flex: 1; margin-top: 0; }
+.reqprogress .hint { white-space: nowrap; }
+
+.reqgroup { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+/* All and "Only specified" sit above the ticks they govern, as on the site,
+   and are separated from them so the group reads as a heading and a list
+   rather than one run of boxes where the first two mean something different. */
+.reqgroup-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+}
+
 .reqgroup-head .check { font-weight: 600; }
 .reqchecks { display: flex; flex-wrap: wrap; gap: 8px 18px; }
 .reqchecks .check { font-size: 12.5px; }

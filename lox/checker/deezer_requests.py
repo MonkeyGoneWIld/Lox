@@ -286,6 +286,7 @@ class DeezerRequestChecker:
         search: str = "",
         *,
         limit: int = 25,
+        start_page: int = 1,
         **filters: Any,
     ) -> dict[str, Any]:
         """Page through requests until ``limit`` of them are gathered.
@@ -299,12 +300,19 @@ class DeezerRequestChecker:
             tracker: Tracker code.
             search: Search string.
             limit: How many requests to gather.
+            start_page: Which page to begin at, 1-based. Asking for one page at
+                a time is how the browser drives a search it can show progress
+                for and stop halfway through: a cancelled search then costs
+                only the pages already read, where one long call would have
+                spent every page's budget before anyone could stop it.
             **filters: Selections by label, translated per tracker.
 
         Returns:
             ``requests``, the number of ``calls`` spent, ``filtered`` -- how many
-            already-filled rows were dropped -- and ``complete``, which is False
-            when the tracker ran out of results before the limit.
+            already-filled rows were dropped -- ``complete``, which is False
+            when the tracker ran out of results before the limit, and how much
+            of the whole search was read: ``pages_read`` of ``pages``, with
+            ``total_estimate`` rows matching in total.
 
         Raises:
             TrackerBudgetExceeded: If the budget runs out mid-collection.
@@ -313,7 +321,7 @@ class DeezerRequestChecker:
         seen: set[str] = set()
         calls = 0
         filtered = 0
-        page = 1
+        page = max(1, start_page)
         total_pages = 0
 
         # The limit is a page count in disguise: the UI asks for pages, because
@@ -361,6 +369,16 @@ class DeezerRequestChecker:
             "filtered": filtered,
             "complete": len(gathered) >= limit,
             "pages": total_pages,
+            # How much of the search was actually looked at. A four-page fetch
+            # against a search the tracker answers with four hundred pages
+            # returned a hundred rows and said "100 requests from 4 calls",
+            # which reads as the whole result -- so a search that matched ten
+            # thousand requests and a search that matched a hundred looked
+            # identical. Gazelle reports pages, not a row count, so the total
+            # is an estimate and is described as one.
+            "pages_read": min(calls, total_pages) if total_pages else calls,
+            "page_size": PAGE_SIZE,
+            "total_estimate": total_pages * PAGE_SIZE if total_pages else 0,
         }
 
     @staticmethod
@@ -455,6 +473,14 @@ class DeezerRequestChecker:
                         "confidence": match.confidence,
                         "already_on_tracker": match.already_on_tracker,
                         "tracker_group_url": match.tracker_group_url,
+                        # What Deezer has, and what this request will take.
+                        # The queue needs both to answer the only question
+                        # that matters for a source that is not all FLAC: did
+                        # anyone actually ask for lossy?
+                        "all_flac": match.all_flac,
+                        "deezer_tracks": match.deezer_tracks,
+                        "request_formats": match.formats,
+                        "request_encodings": match.bitrates,
                     },
                 )
                 results.append(match)

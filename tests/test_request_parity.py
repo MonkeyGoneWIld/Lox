@@ -186,21 +186,56 @@ def main() -> int:
     check("OPS calls it Encoding",
           group("OPS", "encodings")["label"] == "Encoding", "")
 
-    # RED has no All over its categories and starts them clear, because clear
-    # is how you ask RED for all of them. OPS has one and starts them ticked.
+    # RED has no All over its categories; OPS has one. That is about the
+    # control, not about what starts ticked, which is the block below.
     red_cats, ops_cats = group("RED", "categories"), group("OPS", "categories")
-    check("RED's categories have no All and start clear",
-          not red_cats["all"] and not red_cats["default"], "")
-    check("OPS's categories have an All and start ticked",
-          ops_cats["all"] and ops_cats["default"], "")
+    check("RED's categories have no All", not red_cats["all"], "")
+    check("OPS's categories have one", ops_cats["all"], "")
 
-    # An unnarrowed search is a search for everything, which is how both forms
-    # arrive -- every box already ticked.
+    # --- the form opens on the search people actually run -----------------
+    # Every box ticked is not a useful default: it asks for cassette bootlegs
+    # in DSD alongside everything else, and had to be undone by hand on every
+    # visit. These are the selections the trackers' own users run.
     for tracker in ("RED", "OPS"):
-        others = [r for r in rows(tracker) if r["kind"] == "group" and r["key"] != "categories"]
-        check(f"{tracker}'s other groups all start ticked",
-              others and all(r["all"] and r["default"] for r in others),
-              str([r["label"] for r in others]))
+        check(f"{tracker} starts on music alone",
+              group(tracker, "categories")["checked"] == ["Music"],
+              str(group(tracker, "categories")["checked"]))
+        check(f"{tracker} starts on WEB alone",
+              group(tracker, "media")["checked"] == ["WEB"],
+              str(group(tracker, "media")["checked"]))
+        check(f"{tracker} starts on the two formats Deezer can produce",
+              group(tracker, "formats")["checked"] == ["MP3", "FLAC"],
+              str(group(tracker, "formats")["checked"]))
+        # Release type is the one group where everything really is wanted.
+        release = group(tracker, "release_types")
+        check(f"{tracker} starts on every release type",
+              release["checked"] == release["options"], str(len(release["checked"])))
+
+    check("RED starts on the three encodings worth filling",
+          group("RED", "encodings")["checked"] == ["V0 (VBR)", "320", "Lossless"],
+          str(group("RED", "encodings")["checked"]))
+    check("OPS starts on its four",
+          group("OPS", "encodings")["checked"] == ["Lossless", "24bit Lossless", "V0 (VBR)", "320"],
+          str(group("OPS", "encodings")["checked"]))
+
+    # A default naming something the tracker does not offer must not tick a box
+    # that is not there, and must not crash.
+    for tracker in ("RED", "OPS"):
+        for item in rows(tracker):
+            if item["kind"] != "group":
+                continue
+            check(f"{tracker}/{item['label']}: every ticked box is one the group has",
+                  set(item["checked"]) <= set(item["options"]),
+                  str(sorted(set(item["checked"]) - set(item["options"]))))
+
+    # Toggles have defaults too. RED opens with "include old" on, because a
+    # request nobody has touched in a year is still a request.
+    def toggle(tracker: str, key: str) -> dict:
+        return next(r for r in rows(tracker) if r.get("key") == key)
+
+    check("RED opens with include-old on", toggle("RED", "include_old")["default"], "")
+    check("neither opens with filled requests included",
+          not toggle("RED", "show_filled")["default"] and not toggle("OPS", "show_filled")["default"], "")
 
     # OPS asks for the bounty before the categories; RED never asks.
     check("OPS puts the bounty where its form puts it",

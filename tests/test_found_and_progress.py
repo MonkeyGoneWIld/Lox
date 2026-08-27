@@ -85,10 +85,14 @@ async def main() -> int:
     runner = await create_app_async()
     store = runner.app["store"]
 
-    store.put("albums", "111", {"title": "Kept", "artist": "A", "missing_from": ["RED"]})
-    store.put("albums", "222", {"title": "Uploaded", "artist": "B", "missing_from": ["RED"]})
-    store.put("albums", "333", {"title": "Dismissed", "artist": "C", "missing_from": ["RED"]})
-    store.put("albums", "444", {"title": "Blacklisted", "artist": "D", "missing_from": ["RED"]})
+    store.put("albums", "111", {"title": "Kept", "artist": "A", "missing_from": ["RED"],
+                                "all_flac": True})
+    store.put("albums", "222", {"title": "Uploaded", "artist": "B", "missing_from": ["RED"],
+                                "all_flac": True})
+    store.put("albums", "333", {"title": "Dismissed", "artist": "C", "missing_from": ["RED"],
+                                "all_flac": True})
+    store.put("albums", "444", {"title": "Blacklisted", "artist": "D", "missing_from": ["RED"],
+                                "all_flac": True})
     store.flush()
 
     from lox.web.api import _mark_uploaded  # noqa: PLC0415
@@ -102,7 +106,7 @@ async def main() -> int:
           not store.get("albums", "111").get("uploaded_at"), str(store.get("albums", "111")))
 
     store.put("albums", "555", {"title": "Sammaouny", "artist": "Mohamed Hamaki",
-                                "missing_from": ["RED"]}, flush=True)
+                                "missing_from": ["RED"], "all_flac": True}, flush=True)
     _mark_uploaded(store, "", "Mohamed Hamaki - Sammaouny (2026) [WEB FLAC]", ["RED"])
     check("but a folder that names the release does stamp it",
           store.get("albums", "555").get("uploaded_at"), str(store.get("albums", "555")))
@@ -170,6 +174,7 @@ async def main() -> int:
             "status": "fillable", "tracker": "OPS", "deezer_id": "998",
             "album": "Still Missing", "artist": "Someone",
             "found_on": ["RED"], "missing_from": ["OPS"], "already_on_tracker": False,
+            "all_flac": True,
         }, flush=True)
         rows = (await call("/api/found"))["found"]
         still = next((r for r in rows if r["album_id"] == "998"), None)
@@ -195,7 +200,8 @@ async def main() -> int:
         check("and the blacklist is counted", after["blacklisted"] == 1, str(after["blacklisted"]))
 
         # A rescan puts a removed release back; a blacklisted one stays off.
-        store.put("albums", "333", {"title": "Dismissed", "artist": "C", "missing_from": ["RED"]}, flush=True)
+        store.put("albums", "333", {"title": "Dismissed", "artist": "C", "missing_from": ["RED"],
+                                    "all_flac": True}, flush=True)
         listed = {row["id"] for row in (await call("/api/found"))["found"]}
         check("a rescan can bring a removed release back", "333" in listed, str(sorted(listed)))
         check("but not a blacklisted one", "444" not in listed, str(sorted(listed)))

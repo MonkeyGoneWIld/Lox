@@ -488,10 +488,47 @@ def main() -> int:
                                       ':not([type="submit"])'), "")
 
     # Every group ran into the next one, so fifteen release types and six
-    # formats read as one undifferentiated field of ticks.
-    check("rows are spaced apart from each other", "gap: 18px" in rule(css, ".reqform"), "")
-    check("and a group's ticks are spaced from its All",
-          "gap: 8px" in rule(css, ".reqgroup"), "")
+    # formats read as one undifferentiated field of ticks. Whitespace alone was
+    # not enough to say where one setting ended and the next began, so each row
+    # is a band with a rule under it.
+    reqrow = rule(css, ".reqrow")
+    check("each setting is separated from the next by more than air",
+          "border-bottom" in reqrow and "padding" in reqrow, reqrow.strip()[:70])
+    check("except the last, which would be a border around nothing",
+          "border-bottom: 0" in rule(css, ".reqrow:last-child"), "")
+    check("a group of ticks gets more room than a one-line row",
+          "padding: 16px 0" in rule(css, ".reqrow:has(.reqgroup)"), "")
+    check("and a group's All is set off from the ticks it governs",
+          "border-bottom" in rule(css, ".reqgroup-head"), "")
+
+    # --- the form opens on a real search, not on every box ticked ---------
+    check("the page ticks what the tracker says to tick",
+          "item.checked || []" in js, "")
+    check("rather than everything", "checked: item.default" not in js, "")
+    check("and a group's All reflects whether that is all of them",
+          "options.every((name) => on.has(name))" in js, "")
+
+    # --- a search can be watched and stopped ------------------------------
+    # It used to be one request for every page at once: ask for forty and the
+    # only options were to wait for forty tracker calls or reload the page,
+    # having paid for them either way.
+    check("pages are fetched one at a time", "start_page" in js, "")
+    check("with a bar that moves as they land", "function requestsProgress" in js, "")
+    check("and a Cancel that stops before the next page is paid for",
+          "requestsAbort" in js and "abort()" in js, "")
+    check("the Cancel button exists in the page", 'id="requests-cancel"' in shell, "")
+    check("and the bar with it", 'id="requests-progress"' in shell, "")
+
+    # --- searching and checking in one go ---------------------------------
+    check("there is a button that searches and then checks",
+          'id="requests-fetch-check"' in shell, "")
+    check("and an option to always do that", 'id="requests-autocheck"' in shell, "")
+
+    # --- the running-cost commentary is gone ------------------------------
+    check("the standing 'checking costs one more call' line is gone",
+          "costs one more call on top" not in shell, "")
+    check("and the cost line only speaks when the budget is short",
+          "Costs up to" not in js, "")
 
     check("every group of ticks can have its own All",
           "function checkGroup" in js and "'All'" in js, "")

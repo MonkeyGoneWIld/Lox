@@ -29,6 +29,11 @@ PAGE_SIZE = 25
 size parameter, so this is what one tracker call buys."""
 
 
+#: Stands for "every option in this group", so a default set does not have to
+#: repeat seventeen release types and go stale the day a tracker adds one.
+ALL: tuple[str, ...] = ("*",)
+
+
 #: The seven categories, in the order both forms list them. Same labels, same
 #: order, different numbering: RED starts at 1 and OPS at 0.
 CATEGORIES: tuple[str, ...] = (
@@ -71,6 +76,16 @@ class TrackerFilters(NamedTuple):
     #: Whether the categories start ticked. OPS ticks them; RED leaves them
     #: clear, which on RED means the same thing.
     categories_default: bool = True
+    #: Which boxes are already ticked when the page opens, per group. This is
+    #: the search almost everyone actually runs -- music, on the web, in a
+    #: format Deezer can produce -- so it is what the form arrives set to
+    #: rather than something to be reconstructed by hand every visit. ``ALL``
+    #: means every option in that group; a group left out of the mapping also
+    #: starts fully ticked.
+    defaults: dict[str, tuple[str, ...]] = {}
+    #: Toggles that start on. RED's "include old" does, because a request
+    #: nobody has touched in a year is still a request.
+    toggle_defaults: tuple[str, ...] = ()
     supports_bounty: bool = False
     supports_include_old: bool = False
     supports_descriptions: bool = False
@@ -99,6 +114,14 @@ RED = TrackerFilters(
     group_order=("release_types", "formats", "encodings", "media"),
     categories_all=False,
     categories_default=False,
+    defaults={
+        "categories": ("Music",),
+        "release_types": ALL,
+        "formats": ("MP3", "FLAC"),
+        "encodings": ("V0 (VBR)", "320", "Lossless"),
+        "media": ("WEB",),
+    },
+    toggle_defaults=("include_old",),
     supports_include_old=True,
     supports_descriptions=True,
 )
@@ -123,6 +146,13 @@ OPS = TrackerFilters(
     category_style="listed",
     encodings_label="Encoding",
     group_order=("release_types", "media", "formats", "encodings"),
+    defaults={
+        "categories": ("Music",),
+        "release_types": ALL,
+        "media": ("WEB",),
+        "formats": ("MP3", "FLAC"),
+        "encodings": ("Lossless", "24bit Lossless", "V0 (VBR)", "320"),
+    },
     supports_bounty=True,
 )
 
@@ -135,6 +165,30 @@ when guessing wrong silently searches for the wrong thing."""
 def for_tracker(tracker: str) -> TrackerFilters | None:
     """The filter vocabulary for a tracker, or None if it is not mapped."""
     return BY_TRACKER.get(tracker.upper())
+
+
+def _checked(spec: TrackerFilters, key: str, options: list[str], fallback: bool) -> list[str]:
+    """Which of a group's boxes start ticked.
+
+    Args:
+        spec: The tracker's vocabulary.
+        key: The group, e.g. ``"formats"``.
+        options: Every option the group offers.
+        fallback: What to do when the tracker states no default for this group
+            -- tick everything, or nothing.
+
+    Returns:
+        The labels to tick, in the group's own order.
+    """
+    wanted = spec.defaults.get(key)
+    if wanted is None:
+        return list(options) if fallback else []
+    if wanted == ALL:
+        return list(options)
+    # Intersected with what the group actually offers, in the group's order, so
+    # a default naming something a tracker dropped is ignored rather than
+    # ticking a box that is not there.
+    return [option for option in options if option in set(wanted)]
 
 
 def schema(tracker: str) -> dict[str, Any]:
@@ -157,8 +211,11 @@ def schema(tracker: str) -> dict[str, Any]:
                 f"{tracker}'s filter IDs have not been verified against its own search page, so only the "
                 f"filters that need no IDs are offered. The rest would risk searching for the wrong thing."
             ),
-            "form": [{"kind": "search"}, {"kind": "tags"},
-                     {"kind": "toggle", "key": "show_filled", "label": "Include filled"}],
+            "form": [
+                {"kind": "search"},
+                {"kind": "tags"},
+                {"kind": "toggle", "key": "show_filled", "label": "Include filled", "default": False},
+            ],
             "categories": [],
             "formats": [],
             "media": [],
@@ -183,10 +240,20 @@ def schema(tracker: str) -> dict[str, Any]:
     form: list[dict[str, Any]] = [
         {"kind": "search"},
         {"kind": "tags"},
-        {"kind": "toggle", "key": "show_filled", "label": "Include filled"},
+        {
+            "kind": "toggle",
+            "key": "show_filled",
+            "label": "Include filled",
+            "default": "show_filled" in spec.toggle_defaults,
+        },
     ]
     if spec.supports_include_old:
-        form.append({"kind": "toggle", "key": "include_old", "label": "Include old"})
+        form.append({
+            "kind": "toggle",
+            "key": "include_old",
+            "label": "Include old",
+            "default": "include_old" in spec.toggle_defaults,
+        })
     # OPS asks for the bounty range before the categories; RED has no bounty.
     if spec.supports_bounty:
         form.append({"kind": "bounty", "label": "Bounty offered (GiB)"})
@@ -196,7 +263,7 @@ def schema(tracker: str) -> dict[str, Any]:
         "label": "Categories",
         "options": list(spec.categories),
         "all": spec.categories_all,
-        "default": spec.categories_default,
+        "checked": _checked(spec, "categories", list(spec.categories), spec.categories_default),
         "strict": "",
     })
     for key in spec.group_order:
@@ -207,9 +274,7 @@ def schema(tracker: str) -> dict[str, Any]:
             "label": label,
             "options": options,
             "all": True,
-            # Every box starts ticked, which is how both forms arrive: a search
-            # nobody has narrowed is a search for everything.
-            "default": True,
+            "checked": _checked(spec, key, options, True),
             "strict": strict,
         })
 

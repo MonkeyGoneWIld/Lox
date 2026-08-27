@@ -51,8 +51,20 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"{'PASS' if ok else 'FAIL'}  {name}{'  ' + detail if detail else ''}")
 
 
-def row(missing=(), found=(), sources=("scan",)):
-    return {"missing_from": list(missing), "found_on": list(found), "sources": list(sources)}
+def row(missing=(), found=(), sources=("scan",), all_flac=True):
+    """A queue row.
+
+    ``all_flac`` defaults to True because these checks are about the admission
+    rules, not about what Deezer can supply -- the lossless gate is its own
+    test. A row without it is held before any rule is reached, which is the
+    point of the gate and would make every case here look the same.
+    """
+    return {
+        "missing_from": list(missing),
+        "found_on": list(found),
+        "sources": list(sources),
+        "all_flac": all_flac,
+    }
 
 
 def main_predicate() -> None:
@@ -145,12 +157,15 @@ async def main_endpoint() -> None:
     runner = await create_app_async()
     store = runner.app["store"]
     # The same release, found by a scan AND matched to a request: one row.
-    store.put("albums", "1", {"title": "Twice", "artist": "A", "missing_from": ["OPS"], "found_on": ["RED"]})
+    store.put("albums", "1", {"title": "Twice", "artist": "A", "missing_from": ["OPS"], "found_on": ["RED"],
+                              "all_flac": True})
     store.put("requests", "r1", {"deezer_id": "1", "album": "Twice", "artist": "A", "tracker": "OPS",
                                  "missing_from": ["OPS"], "found_on": ["RED"],
                                  "request_url": "https://example.invalid/r1"})
-    store.put("albums", "2", {"title": "Alone", "artist": "B", "missing_from": ["RED", "OPS"], "found_on": []})
-    store.put("albums", "3", {"title": "Everywhere", "artist": "C", "missing_from": [], "found_on": ["RED", "OPS"]})
+    store.put("albums", "2", {"title": "Alone", "artist": "B", "missing_from": ["RED", "OPS"], "found_on": [],
+                              "all_flac": True})
+    store.put("albums", "3", {"title": "Everywhere", "artist": "C", "missing_from": [], "found_on": ["RED", "OPS"],
+                              "all_flac": True})
     store.flush()
 
     session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
