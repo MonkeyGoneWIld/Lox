@@ -54,6 +54,10 @@
     requestsAbort: null,
     requestTab: 'find',
     scanTab: 'run',
+    // A channel page inside Browse, and a place on the settings page. Both are
+    // somewhere you can be, so both are somewhere with an address.
+    exploreChannel: '',
+    settingsSection: '',
     // Which detail page is open, so the address can say so and Back can leave.
     openAlbumId: null,
     openArtistId: null,
@@ -398,9 +402,18 @@
   // ------------------------------------------------------------------
   // Addresses
   // ------------------------------------------------------------------
-  // The app never touched the address bar. Every screen was the same URL, so
-  // Back and Forward did nothing, a reload always landed on Search, and a
-  // page could not be linked to or bookmarked.
+  // The address bar is where the app is, not a note it writes afterwards.
+  // Every move goes through go(): it puts the address up and then draws
+  // whatever that address names, and nothing else paints a screen.
+  //
+  // The two used to be separate -- a click changed the screen and then, where
+  // somebody had got round to it, mentioned itself to history -- and the
+  // places nobody had got round to were the ones people actually use. A
+  // search, a Browse tab, a genre, a channel, a request, the excluded rows in
+  // the queue and a place on the settings page all carried the address of
+  // whichever screen you had arrived from. Back skipped every one of them at
+  // once, a reload threw them away, and none of them could be bookmarked or
+  // sent to anybody.
   //
   // The view names are internal and half of them are wrong from outside --
   // "missing" is the Scan tab, "found" is the Queue -- so the path is what the
@@ -417,82 +430,350 @@
     settings: '/settings',
   };
 
-  const PATH_VIEWS = Object.fromEntries(
-    Object.entries(VIEW_PATHS).map(([view, path]) => [path, view]),
-  );
-
-  // A second tab is part of where you are, so it is part of the address.
-  const TAB_PATHS = {
-    '/requests/history': { view: 'requests', tab: 'history' },
-    '/scan/history': { view: 'missing', tab: 'history' },
+  // Browse is three lists, not one. Which of them you are reading is part of
+  // where you are, and it was lost on every reload.
+  const BROWSE_PATHS = {
+    channels: '/browse/channels',
+    charts: '/browse/charts',
+    releases: '/browse/releases',
   };
 
-  /** Where the app currently is, as a path. */
-  function currentPath() {
-    if (state.openAlbumId) return `/album/${state.openAlbumId}`;
-    if (state.openArtistId) return `/artist/${state.openArtistId}`;
-    if (state.view === 'requests' && state.requestTab === 'history') return '/requests/history';
-    if (state.view === 'missing' && state.scanTab === 'history') return '/scan/history';
-    return VIEW_PATHS[state.view] || '/search';
+  const SEARCH_TYPES = ['all', 'album', 'track', 'artist'];
+
+  // The query keys the routes own. Anything else in the address belongs to
+  // somebody else -- ?token= above all, which is how a bookmark authenticates
+  // -- so it is carried through every move rather than dropped.
+  const ROUTE_KEYS = ['q', 'type', 'genre', 'tracker', 'held'];
+
+  /**
+   * An address: a path, this route's own parameters, and whatever else the
+   * current address is carrying.
+   *
+   * An empty value drops its key rather than writing `?genre=`, and the keys
+   * are written in ROUTE_KEYS order rather than the caller's, so a screen has
+   * exactly one address. Two ways of saying the same thing would otherwise
+   * differ by the order of the query and become two history entries, one of
+   * which Back would step through for no reason.
+   *
+   * @param {string} path - The path part.
+   * @param {Object} [params] - The route's own query parameters. A key that
+   *   is not one of ROUTE_KEYS is not the route's to set, and is ignored.
+   * @returns {string} The address to hand to go().
+   */
+  function addr(path, params = {}) {
+    const query = new URLSearchParams(location.search);
+    ROUTE_KEYS.forEach((key) => query.delete(key));
+    for (const key of ROUTE_KEYS) {
+      const value = params[key];
+      if (value !== null && value !== undefined && value !== '') query.set(key, String(value));
+    }
+    const rest = query.toString();
+    return rest ? `${path}?${rest}` : path;
+  }
+
+  /** The address on screen: path and query together, which is what Back sees. */
+  const here = () => location.pathname + location.search;
+
+  /** The kind filter as the address writes it. `all` is the absence of one. */
+  const typeParam = () => (state.searchType === 'all' ? '' : state.searchType);
+
+  /** The genre as the address writes it. `0` is Deezer's own "every genre". */
+  const genreParam = () => (state.exploreGenre === '0' ? '' : state.exploreGenre);
+
+  /**
+   * Go somewhere: put the address up, then draw it.
+   *
+   * @param {string} target - Where to go, from addr().
+   * @param {boolean} [options.replace] - Overwrite the current entry rather
+   *   than adding one. For the first paint and for corrections, neither of
+   *   which is somewhere Back should return to.
+   */
+  function go(target, { replace = false } = {}) {
+    if (target === here() && !replace) return;
+    if (replace) history.replaceState({ url: target }, '', target);
+    else history.pushState({ url: target }, '', target);
+    renderRoute(target);
+  }
+
+  // The address whose page is on screen, and the one before it. A detail page
+  // covers the pane it opened from and keeps the nodes; that entry has to
+  // remember which address those nodes belong to, or Back cannot pair the two
+  // up again.
+  let showingUrl = null;
+  let leavingUrl = null;
+  // And what that page was called. Read here rather than where the pane is
+  // stacked, which happens after the new screen has already renamed the tab:
+  // Back out of a release came home to a page of search results titled
+  // "Search".
+  let leavingTitle = null;
+
+  /** An address split into its path and its parsed query. */
+  function splitAddr(target) {
+    const cut = target.indexOf('?');
+    if (cut < 0) return [target, new URLSearchParams()];
+    return [target.slice(0, cut), new URLSearchParams(target.slice(cut + 1))];
   }
 
   /**
-   * Put a path in the address bar without reloading.
+   * Draw whatever an address names.
    *
-   * The query string is carried over: a ?token= link is how the dev harness
-   * and a bookmark both authenticate, and dropping it on the first click
-   * would sign the page out.
+   * Never touches history: go() and the browser's own buttons are the only
+   * things that do, which is what keeps the bar and the screen agreeing.
    *
-   * @param {string} path - The new path.
-   * @param {boolean} [replace] - Overwrite the current entry rather than
-   *   adding one, for the first paint and for corrections.
+   * @param {string} target - The address to draw.
    */
-  function setPath(path, replace = false) {
-    const url = path + location.search;
-    if (location.pathname === path && !replace) return;
-    if (replace) history.replaceState({ path }, '', url);
-    else history.pushState({ path }, '', url);
+  function renderRoute(target) {
+    leavingUrl = showingUrl;
+    leavingTitle = document.title;
+    showingUrl = target;
+    const [path, query] = splitAddr(target);
+    const param = (key) => query.get(key) || '';
+
+    // The box and the kind filter are part of the address whether the results
+    // are fetched again or handed back by restorePane below.
+    if (path === '/search') syncSearchControls(param('q'), param('type'));
+
+    // Coming back to a page whose nodes are still in hand: put them back
+    // rather than fetching them a second time. Brings the scroll position and
+    // the ticks with them, and costs no API call.
+    if (restorePane(target)) return;
+
+    const album = path.match(/^\/album\/(.+)$/);
+    if (album) { openAlbum(decodeURIComponent(album[1])); return; }
+    const artist = path.match(/^\/artist\/(.+)$/);
+    if (artist) { openArtist(decodeURIComponent(artist[1])); return; }
+    const channel = path.match(/^\/browse\/channel\/(.+)$/);
+    if (channel) { showBrowse('channels', '', decodeURIComponent(channel[1])); return; }
+    // Two segments, so /requests/history stays a tab and never a request.
+    const request = path.match(/^\/requests\/([^/]+)\/([^/]+)$/);
+    if (request) { openRequest(decodeURIComponent(request[1]), decodeURIComponent(request[2])); return; }
+    const settings = path.match(/^\/settings\/([^/]+)$/);
+    if (settings) { showSettings(decodeURIComponent(settings[1])); return; }
+
+    switch (path) {
+      case '/search': showSearch(param('q')); return;
+      case '/browse':
+      case '/browse/channels': showBrowse('channels', '', ''); return;
+      case '/browse/charts': showBrowse('charts', param('genre'), ''); return;
+      case '/browse/releases': showBrowse('releases', param('genre'), ''); return;
+      case '/scan': showScan('run'); return;
+      case '/scan/history': showScan('history'); return;
+      case '/requests': showRequests('find', param('tracker')); return;
+      case '/requests/history': showRequests('history', param('tracker')); return;
+      case '/queue': showQueue(param('held') === '1'); return;
+      case '/downloading': setView('downloads'); return;
+      case '/uploading': setView('uploads'); return;
+      case '/settings': showSettings(''); return;
+      default: break;
+    }
+    // An address the app has no way to. Correct it rather than leaving a blank
+    // frame, replacing the entry so Back does not lead straight back to it.
+    go(addr('/search'), { replace: true });
   }
+
+  /**
+   * The address a nav item goes to.
+   *
+   * Not simply the screen's path: the tab you last had open on Requests or
+   * Scan, the genre you were browsing and the search you ran are all part of
+   * where that screen is, so pressing its name in the rail returns you to it
+   * as you left it rather than to its empty first page.
+   *
+   * @param {string} view - The internal view name from the rail.
+   * @returns {string} Where that item goes.
+   */
+  function navAddr(view) {
+    if (view === 'search') {
+      return addr('/search', { q: $('#search-input')?.value.trim() || '', type: typeParam() });
+    }
+    if (view === 'explore') {
+      if (state.exploreChannel) return addr(`/browse/channel/${encodeURIComponent(state.exploreChannel)}`);
+      return addr(BROWSE_PATHS[state.exploreTab] || '/browse/channels',
+                  { genre: state.exploreTab === 'channels' ? '' : genreParam() });
+    }
+    if (view === 'missing') return addr(state.scanTab === 'history' ? '/scan/history' : '/scan');
+    if (view === 'requests') {
+      return state.requestTab === 'history'
+        ? addr('/requests/history')
+        : addr('/requests', { tracker: state.requestsTracker || '' });
+    }
+    if (view === 'found') return addr('/queue', { held: state.showHeld ? '1' : '' });
+    if (view === 'settings') {
+      return addr(state.settingsSection ? `/settings/${state.settingsSection}` : '/settings');
+    }
+    return addr(VIEW_PATHS[view] || '/search');
+  }
+
+  // Opening a release or an artist is going to its page, so it goes through
+  // the address rather than straight to the function that draws it. These are
+  // also real hrefs, so the status bar names where a link goes and a
+  // middle-click opens it in a tab, which a `href="#"` could never do.
+  const albumHref = (id) => addr(`/album/${encodeURIComponent(id)}`);
+  const artistHref = (id) => addr(`/artist/${encodeURIComponent(id)}`);
+  const goAlbum = (id) => go(albumHref(id));
+  const goArtist = (id) => go(artistHref(id));
 
   /**
    * Name the tab after whatever is on screen.
    *
-   * Kept out of setPath, which runs before the view has changed on the way in
-   * -- the first paint of a deep link set the title from the view the app had
-   * not left yet, so opening /requests/history said "Search".
+   * Kept out of the address layer, which runs before the view has changed on
+   * the way in -- the first paint of a deep link set the title from the view
+   * the app had not left yet, so opening /requests/history said "Search".
    *
-   * @param {string} [name] - An override, for a detail page that knows what it
-   *   is showing.
+   * @param {string} [name] - An override, for a page that knows what it is
+   *   showing.
    */
   function setTitle(name) {
     document.title = name ? `lox — ${name}` : `lox — ${navLabel(state.view)}`;
   }
 
-  /** Go wherever a path points, without touching history. */
-  async function routeTo(path) {
-    const album = path.match(/^\/album\/([^/]+)$/);
-    if (album) return openAlbum(album[1], { push: false });
-    const artist = path.match(/^\/artist\/([^/]+)$/);
-    if (artist) return openArtist(artist[1], { push: false });
+  // ------------------------------------------------------------------
+  // The screens, one per address
+  // ------------------------------------------------------------------
+  // Each of these draws a screen from an address and nothing else: no history,
+  // and no assumption about where the reader came from. That is what makes a
+  // reload, a bookmark and Back the same thing rather than three code paths
+  // with three sets of bugs.
 
-    const tabbed = TAB_PATHS[path];
-    if (tabbed) {
-      setView(tabbed.view, { push: false });
-      if (tabbed.view === 'requests') showRequestTab('history', { push: false });
-      else showScanTab('history', { push: false });
-      return undefined;
-    }
-
-    const view = PATH_VIEWS[path];
-    if (!view) return setView('search', { push: false });
-    setView(view, { push: false });
-    // A bare /requests or /scan means the first tab, whatever was open before.
-    if (view === 'requests') showRequestTab('find', { push: false });
-    if (view === 'missing') showScanTab('run', { push: false });
-    return undefined;
+  /**
+   * Put the search box and the kind filter where the address says.
+   *
+   * @param {string} query - The text searched for.
+   * @param {string} type - all, album, track or artist.
+   */
+  function syncSearchControls(query, type) {
+    const wanted = SEARCH_TYPES.includes(type) ? type : 'all';
+    // Narrowing to one kind is a different list, so it is not the batch you
+    // picked from the last one.
+    if (state.searchType !== wanted) clearPicks();
+    state.searchType = wanted;
+    const box = $('#search-input');
+    if (box && box.value !== query) box.value = query;
+    $$('#search-type button').forEach((b) => b.classList.toggle('active', b.dataset.type === wanted));
   }
 
-  function setView(view, { push = true } = {}) {
+  /**
+   * The Search screen, showing whatever the address asked for.
+   *
+   * The query is in the address, so results survive a reload, can be sent to
+   * somebody, and Back out of a release returns to them. Pressing Search used
+   * to change the page and nothing else, so Back from a search left the app
+   * and a reload lost what you had typed.
+   *
+   * @param {string} query - The text to search for, or "" for the empty page.
+   */
+  async function showSearch(query) {
+    setView('search');
+    // A search is a root: there is nothing behind it to go back to.
+    state.paneStack.length = 0;
+    setTitle(query ? `“${query}”` : undefined);
+    if (!query) { searchPane('grid').replaceChildren(); return; }
+    await runSearch(query);
+  }
+
+  /**
+   * The Browse screen: which of the three lists, which genre, and the channel
+   * if one is open.
+   *
+   * @param {string} tab - channels, charts or releases.
+   * @param {string} genre - A Deezer genre id, or "" for all of them.
+   * @param {string} channel - A channel slug, when a channel page is open.
+   */
+  function showBrowse(tab, genre, channel) {
+    const wanted = BROWSE_PATHS[tab] ? tab : 'channels';
+    const wantedGenre = genre || '0';
+    const wantedChannel = channel || '';
+    // A batch belongs to the list it was picked from, and each of these is a
+    // different list.
+    if (state.exploreTab !== wanted || state.exploreGenre !== wantedGenre
+        || state.exploreChannel !== wantedChannel) clearPicks();
+    state.exploreTab = wanted;
+    state.exploreGenre = wantedGenre;
+    state.exploreChannel = wantedChannel;
+    $$('#explore-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.explore === wanted));
+    setView('explore');
+    if (wantedChannel) setTitle(wantedChannel);
+  }
+
+  /**
+   * The Scan screen, on one of its two tabs.
+   *
+   * @param {string} tab - run or history.
+   */
+  function showScan(tab) {
+    const wanted = tab === 'history' ? 'history' : 'run';
+    state.scanTab = wanted;
+    setView('missing');
+    showScanTab(wanted);
+  }
+
+  /**
+   * The Requests screen: which tab, and whose requests.
+   *
+   * The tracker is in the address because the whole form under it belongs to
+   * that tracker -- the two sites do not offer the same filters -- so a page
+   * without it in the address is not the page you bookmarked.
+   *
+   * @param {string} tab - find or history.
+   * @param {string} tracker - A tracker code, or "" to keep the current one.
+   */
+  function showRequests(tab, tracker) {
+    const wanted = tab === 'history' ? 'history' : 'find';
+    if (tracker && tracker !== state.requestsTracker) {
+      state.requestsTracker = tracker;
+      // The counts on screen belonged to the other tracker's search.
+      requestsSummary({ shown: null });
+    }
+    // Only the ticks move: rebuilding all three pickers from here would fight
+    // with the correction renderTrackerPickers makes when the status arrives.
+    $$('#requests-tracker button').forEach(
+      (b) => b.classList.toggle('active', b.dataset.tracker === state.requestsTracker));
+    setView('requests');
+    showRequestTab(wanted);
+  }
+
+  /**
+   * The Queue, with or without the rows the queue rules kept out.
+   *
+   * @param {boolean} held - Whether the excluded rows are shown.
+   */
+  function showQueue(held) {
+    const showing = state.view === 'found';
+    state.showHeld = held;
+    const toggle = $('#found-held-toggle');
+    if (toggle) toggle.textContent = held ? 'Hide excluded' : 'Show excluded';
+    // Already here: re-draw rather than re-fetch, so showing the excluded rows
+    // and hiding them again does not clear what you had ticked.
+    if (showing) { renderFound(); setTitle(); return; }
+    setView('found');
+  }
+
+  /**
+   * The Settings page, at the part the address names.
+   *
+   * @param {string} section - A category slug, a section id, or "" for the top.
+   */
+  function showSettings(section) {
+    state.settingsSection = section || '';
+    // Already here: scroll, and do not re-fetch. Rebuilding the page would
+    // throw away every edit that has not been saved yet.
+    if (state.view === 'settings' && state.settings) {
+      setTitle();
+      revealSettingsSection(true);
+      return;
+    }
+    setView('settings');
+  }
+
+  /**
+   * Show one of the top-level screens.
+   *
+   * The address is go()'s business; this only swaps what is on screen and
+   * starts whatever that screen loads.
+   *
+   * @param {string} view - The internal view name.
+   */
+  function setView(view) {
     // A batch belongs to the list it was picked from. Leaving the list --
     // to the Queue, to Downloading, to anywhere -- leaves you holding
     // releases you can no longer see, and a count that matches nothing on
@@ -512,7 +793,6 @@
     // Leaving a detail page for a list is leaving the detail page.
     state.openAlbumId = null;
     state.openArtistId = null;
-    if (push) setPath(VIEW_PATHS[view] || '/search');
     setTitle();
   }
 
@@ -588,7 +868,7 @@
     banner.replaceChildren(
       el('strong', {}, list.length === 1 ? 'Configuration problem' : `${list.length} configuration problems`),
       el('ul', {}, ...list.map((p) => el('li', {}, p.message))),
-      el('button', { class: 'link', onclick: () => setView('settings') }, 'Open settings'),
+      el('button', { class: 'link', onclick: () => go(addr('/settings')) }, 'Open settings'),
     );
   }
 
@@ -631,21 +911,29 @@
       ),
     );
 
-    if (!state.requestsTracker && state.trackers.length) state.requestsTracker = state.trackers[0].code;
+    // The tracker can arrive from the address, which is written before the
+    // status says which trackers this install has. One that is not configured
+    // is corrected here, and the address is corrected with it rather than left
+    // naming a tracker that is not the one on screen.
+    if (state.trackers.length && !state.trackers.some((t) => t.code === state.requestsTracker)) {
+      state.requestsTracker = state.trackers[0].code;
+      if (location.pathname === '/requests') {
+        go(addr('/requests', { tracker: state.requestsTracker }), { replace: true });
+      } else if (state.view === 'requests') {
+        loadRequestFilters();
+      }
+    }
     $('#requests-tracker').replaceChildren(
       ...state.trackers.map((t) =>
         el(
           'button',
           {
             type: 'button',
+            'data-tracker': t.code,
             class: state.requestsTracker === t.code ? 'active' : '',
-            onclick: () => {
-              state.requestsTracker = t.code;
-              renderTrackerPickers();
-              loadRequestFilters();
-              // The counts belonged to the other tracker's search.
-              requestsSummary({ shown: null });
-            },
+            // A different tracker is a different form, a different budget and
+            // a different list, so it is a different address.
+            onclick: () => go(addr('/requests', { tracker: t.code })),
           },
           t.code,
         ),
@@ -701,8 +989,8 @@
             pickClicked(id, item, !state.picked.has(id), e.shiftKey);
             return;
           }
-          if (item.type === 'artist') openArtist(item.id);
-          else if (albumId) openAlbum(albumId);
+          if (item.type === 'artist') goArtist(item.id);
+          else if (albumId) goAlbum(albumId);
         },
       },
       el(
@@ -766,8 +1054,8 @@
             {
               class: 'card-sub card-link',
               title: item.artist,
-              href: '#',
-              onclick: (e) => { e.preventDefault(); e.stopPropagation(); openArtist(item.artist_id); },
+              href: artistHref(item.artist_id),
+              onclick: (e) => { e.preventDefault(); e.stopPropagation(); goArtist(item.artist_id); },
             },
             item.artist,
           )
@@ -922,7 +1210,7 @@
       toast(`Queued ${queued.length} download${queued.length === 1 ? '' : 's'}` +
             (failed.length ? `, ${failed.length} failed` : ''), failed.length ? 'bad' : 'ok');
       clearPicks();
-      setView('downloads');
+      go(addr('/downloading'));
     } catch (e) {
       toast(e.message, 'bad');
     }
@@ -940,7 +1228,7 @@
     const trackers = [...state.uploadTrackers];
     if (!trackers.length) return toast('Pick a tracker to upload to first', 'bad');
     clearPicks();
-    setView('downloads');
+    go(addr('/downloading'));
     toast(`Downloading ${entries.length} together. Uploads start as each one lands.`);
 
     const started = await Promise.all(entries.map(async ({ id, item }) => ({
@@ -957,7 +1245,7 @@
         toast(`${label}: ${job?.error || 'download did not finish'}`, 'bad');
         continue;
       }
-      setView('uploads');
+      go(addr('/uploading'));
       await startUpload(job.folder, trackers, id);
     }
   }
@@ -970,7 +1258,7 @@
       .filter(Boolean);
     if (!urls.length) return toast('Nothing to check', 'bad');
 
-    setView('missing');
+    go(addr('/scan'));
     const box = $('#missing-sources');
     // Only what was just picked. Appending to whatever was left in the box
     // meant pressing Check on four albums could spend budget on forty from a
@@ -1008,6 +1296,11 @@
   // whatever the search pane happened to hold and leave you on the wrong tab --
   // or, if you had never searched, push nothing at all and leave no way back.
   function pushPane(label, from) {
+    // Nothing was on screen before this one: a deep link, or the first paint.
+    // There is no pane worth keeping and nowhere inside the app for Back to
+    // go -- and an entry claiming this very address would be restored, empty,
+    // the next time somebody came back to it.
+    if (!leavingUrl) return;
     const pane = $('#search-results');
     state.paneStack.push({
       cls: pane.className,
@@ -1017,21 +1310,55 @@
       // "Results" would point at a search the user never ran.
       label: from && from !== 'search' ? viewLabel(from) : label || 'Back',
       view: from || state.view,
+      // The address these nodes belong to, and the tab name that went with
+      // them. Back is a history entry, so the way back to a pane has to be one
+      // too -- otherwise the crumb and the browser's own button disagree about
+      // where back is, which is the bug that made Back skip whole detours.
+      url: leavingUrl,
+      title: leavingTitle,
     });
     if (state.paneStack.length > 12) state.paneStack.shift();
   }
 
-  // Restore the pane at `index`, dropping everything after it. Popping the last
-  // entry is the plain Back; index 0 is the crumb at the far left.
+  /**
+   * Put back the pane an address was left at, if its nodes are still held.
+   *
+   * Searches from the top down because one Back can cross several entries at
+   * once: a crumb three deep is history.go(-3), and the browser reports the
+   * landing address, not the steps.
+   *
+   * @param {string} target - The address being returned to.
+   * @returns {boolean} False when nothing was kept for it -- after a reload,
+   *   or going forward into a page that has since been dropped -- and the
+   *   route should draw it again.
+   */
+  function restorePane(target) {
+    for (let i = state.paneStack.length - 1; i >= 0; i -= 1) {
+      const entry = state.paneStack[i];
+      if (entry.url !== target) continue;
+      state.paneStack.length = i;
+      if (entry.view && entry.view !== state.view) setView(entry.view);
+      const pane = $('#search-results');
+      pane.className = entry.cls;
+      pane.replaceChildren(...entry.nodes);
+      window.scrollTo(0, entry.scroll);
+      if (entry.title) document.title = entry.title;
+      else setTitle();
+      return true;
+    }
+    return false;
+  }
+
+  // Go back to the crumb at `index`. The last one is the plain Back; index 0 is
+  // the crumb at the far left.
+  //
+  // These are history entries, so this is the browser's own Back rather than a
+  // second way of moving. Restoring the nodes here and leaving history alone
+  // was the whole bug: the address bar went on naming a page you were no
+  // longer looking at, and the next Back stepped *forward* into it.
   function popPaneTo(index) {
     if (index < 0 || index >= state.paneStack.length) return;
-    const target = state.paneStack[index];
-    state.paneStack.length = index;
-    if (target.view && target.view !== state.view) setView(target.view);
-    const pane = $('#search-results');
-    pane.className = target.cls;
-    pane.replaceChildren(...target.nodes);
-    window.scrollTo(0, target.scroll);
+    history.go(index - state.paneStack.length);
   }
 
   const popPane = () => popPaneTo(state.paneStack.length - 1);
@@ -1085,15 +1412,17 @@
 
   const SECTION_LABEL = { album: 'Albums', track: 'Tracks', artist: 'Artists' };
 
-  async function runSearch(event) {
-    event?.preventDefault();
-    const query = $('#search-input').value.trim();
-    if (!query) return;
+  /**
+   * Fetch and draw one search. Called only by showSearch, which is called only
+   * by the router -- the query comes from the address, never from the box, so
+   * the results on screen and the address that names them cannot drift apart.
+   *
+   * @param {string} query - What to search Deezer for.
+   */
+  async function runSearch(query) {
     // Unfiltered results stack as sections, each holding its own grid; a single
     // kind is just a grid.
     const single = state.searchType !== 'all';
-    // A new search is a new root, so there is nothing behind it any more.
-    state.paneStack.length = 0;
     const results = searchPane(single ? 'grid' : 'search-sections');
     results.replaceChildren(spinner('Searching Deezer'));
     try {
@@ -1148,11 +1477,14 @@
     }
   }
 
+  // Narrowing to one kind is a different page of the same search, so it is an
+  // address of its own: it survives a reload, and Back returns to the mixed
+  // list you narrowed from rather than out of the app.
   function selectSearchType(type) {
-    clearPicks();
-    state.searchType = type;
-    $$('#search-type button').forEach((b) => b.classList.toggle('active', b.dataset.type === type));
-    runSearch();
+    go(addr('/search', {
+      q: $('#search-input').value.trim(),
+      type: type === 'all' ? '' : type,
+    }));
   }
 
   // ---------------------------------------------------------------- explore
@@ -1160,11 +1492,17 @@
   async function loadExplore() {
     const body = $('#explore-body');
     const filters = $('#explore-filters');
+    // A channel is a page inside Browse, not a state the Channels grid happens
+    // to be in, so the router hands it here the same way it hands over a tab.
+    if (state.exploreChannel) {
+      clearGenreFilter(filters);
+      return loadChannel(state.exploreChannel);
+    }
     body.replaceChildren(spinner('Loading'));
 
     try {
       if (state.exploreTab === 'channels') {
-        filters.replaceChildren();
+        clearGenreFilter(filters);
         const { channels } = await api('/api/explore/channels');
         if (!channels.length) {
           body.replaceChildren(empty('No channels returned. Deezer channels need a valid ARL.'));
@@ -1175,7 +1513,7 @@
           ...channels.map((c) =>
             el(
               'div',
-              { class: 'card', onclick: () => openChannel(c.slug) },
+              { class: 'card', onclick: () => go(addr(`/browse/channel/${encodeURIComponent(c.slug)}`)) },
               el('div', {
                 class: 'card-art',
                 style: c.image ? `background-image:url('${c.image}')` : `background:${c.colour || 'var(--bg-input)'}`,
@@ -1215,6 +1553,15 @@
     }
   }
 
+  // Emptying the bar has to take the "already built" flag with it. Leaving
+  // Charts for Channels wiped the chips, and coming back found the flag still
+  // set, returned early, and drew no chips at all -- so the genre filter
+  // disappeared for the rest of the session.
+  function clearGenreFilter(container) {
+    container.replaceChildren();
+    delete container.dataset.loaded;
+  }
+
   async function renderGenreFilter(container) {
     if (container.dataset.loaded) {
       $$('.chip', container).forEach((c) => c.classList.toggle('active', c.dataset.genre === state.exploreGenre));
@@ -1229,11 +1576,11 @@
           {
             class: `chip ${state.exploreGenre === g.id ? 'active' : ''}`,
             'data-genre': g.id,
-            onclick: () => {
-              state.exploreGenre = g.id;
-              clearPicks();
-              loadExplore();
-            },
+            // Which genre you are reading is where you are, so it is in the
+            // address: a chart worth coming back to can be bookmarked, and
+            // Back returns to the genre before it.
+            onclick: () => go(addr(BROWSE_PATHS[state.exploreTab] || '/browse/charts',
+                                   { genre: g.id === '0' ? '' : g.id })),
           },
           g.title,
         ),
@@ -1241,13 +1588,16 @@
     );
   }
 
-  async function openChannel(slug) {
+  /** Draw one channel. Reached only through /browse/channel/<slug>. */
+  async function loadChannel(slug) {
     const body = $('#explore-body');
     body.replaceChildren(spinner(`Loading ${slug}`));
     try {
       const channel = await api(`/api/explore/channel/${encodeURIComponent(slug)}`);
+      if (state.exploreChannel === slug) setTitle(channel.title || slug);
       body.replaceChildren(
-        el('div', { class: 'row toolbar' }, el('button', { class: 'ghost', onclick: loadExplore }, '← Channels')),
+        el('div', { class: 'row toolbar' },
+           el('button', { class: 'ghost', onclick: () => go(addr('/browse/channels')) }, '← Channels')),
         el('h2', { class: 'section-title' }, channel.title),
       );
       for (const section of channel.sections) {
@@ -1279,13 +1629,12 @@
     }
   }
 
-  async function openArtist(artistId, { push = true } = {}) {
+  async function openArtist(artistId) {
     // Read before the switch: an artist opened from Explore or Found has to
     // come back to Explore or Found, not to the search pane it borrowed.
     const from = state.view;
-    setView('search', { push: false });
+    setView('search');
     state.openArtistId = String(artistId);
-    if (push) setPath(`/artist/${artistId}`);
     pushPane(paneLabel(), from);
     // Its own sections, each with an inner grid, so the pane itself is a plain
     // block here.
@@ -1338,7 +1687,7 @@
   function sendToMissing(url) {
     const box = $('#missing-sources');
     box.value = box.value ? `${box.value.trim()}\n${url}` : url;
-    setView('missing');
+    go(addr('/scan'));
     toast('Added to the Scan tab. Nothing has touched a tracker yet.');
   }
 
@@ -1347,11 +1696,10 @@
   // A page, not a drawer. A release is the thing you are deciding about, and
   // deciding needs the tracklist, the credits and the tracker verdict side by
   // side rather than a 380px column you scroll through a slot at a time.
-  async function openAlbum(albumId, { push = true } = {}) {
+  async function openAlbum(albumId) {
     const from = state.view;
-    setView('search', { push: false });
+    setView('search');
     state.openAlbumId = String(albumId);
-    if (push) setPath(`/album/${albumId}`);
     pushPane(paneLabel(), from);
     const pane = searchPane('album-page');
     pane.replaceChildren(spinner('Loading album'));
@@ -1374,7 +1722,7 @@
 
       const artistLink = (id, name) =>
         id
-          ? el('a', { href: '#', onclick: (e) => { e.preventDefault(); openArtist(id); } }, name)
+          ? el('a', { href: artistHref(id), onclick: (e) => { e.preventDefault(); goArtist(id); } }, name)
           : el('span', {}, name);
 
       const featured = (album.contributors || []).filter((c) => c.id !== album.artist_id);
@@ -1688,13 +2036,13 @@
     const existing = folders.find((f) => f.name.toLowerCase().startsWith(needle.slice(0, 40)));
 
     if (existing) {
-      setView('uploads');
+      go(addr('/uploading'));
       startUpload(existing.path, trackers);
       return;
     }
 
     await download(album.id);
-    setView('downloads');
+    go(addr('/downloading'));
     toast(`Downloading first. When it finishes, upload it from Uploading — ${trackers.join(' and ')} are preselected.`);
   }
 
@@ -1810,7 +2158,7 @@
     if (!queued) return;
     if (!quiet) {
       toast('Downloading. The upload starts by itself when it finishes.');
-      setView('downloads');
+      go(addr('/downloading'));
     }
 
     const label = `${item?.artist || ''} - ${item?.title || ''}`.trim() || String(albumId);
@@ -1818,7 +2166,7 @@
     if (!job || job.status !== 'done' || !job.folder) {
       return toast(`${label}: ${job?.error || 'download did not finish'}`, 'bad');
     }
-    setView('uploads');
+    go(addr('/uploading'));
     await startUpload(job.folder, trackers, albumId);
   }
 
@@ -2176,7 +2524,10 @@
             el(
               'td',
               {},
-              el('a', { href: '#', onclick: (e) => { e.preventDefault(); openAlbum(c.album_id); } }, `${c.artist} — ${c.title}`),
+              el('a', {
+                href: albumHref(c.album_id),
+                onclick: (e) => { e.preventDefault(); goAlbum(c.album_id); },
+              }, `${c.artist} — ${c.title}`),
             ),
             el('td', {}, c.year || ''),
             el('td', {}, String(c.tracks)),
@@ -2869,7 +3220,11 @@
                 class: 'rowlink',
                 href: r.url,
                 title: 'Open the request beside the Deezer release',
-                onclick: (e) => { e.preventDefault(); openRequest(r); },
+                onclick: (e) => {
+                  e.preventDefault();
+                  go(addr(`/requests/${encodeURIComponent(state.requestsTracker || '')}`
+                          + `/${encodeURIComponent(r.id)}`));
+                },
               }, `${r.artist} — ${r.title}`)),
               el('td', {}, r.year || ''),
               el('td', {}, r.bounty || ''),
@@ -3050,9 +3405,8 @@
   // Scanning: its filters, and what it has already looked up
   // ------------------------------------------------------------------
 
-  function showScanTab(name, { push = true } = {}) {
+  function showScanTab(name) {
     state.scanTab = name;
-    if (push) setPath(name === 'history' ? '/scan/history' : '/scan');
     $('#scan-tab-run').hidden = name !== 'run';
     $('#scan-tab-history').hidden = name !== 'history';
     $$('#scan-tabs button').forEach((b) => {
@@ -3187,8 +3541,8 @@
           value: (r) => `${r.artist || ''} ${r.title || ''}`.trim(),
           filter: 'text',
           cell: (r) => el('a', {
-            href: '#',
-            onclick: (e) => { e.preventDefault(); openAlbum(r.album_id); },
+            href: albumHref(r.album_id),
+            onclick: (e) => { e.preventDefault(); goAlbum(r.album_id); },
           }, `${r.artist || '?'} — ${r.title || r.album_id}`),
         },
         {
@@ -3276,9 +3630,8 @@
     error: ['Check failed', 'bad'],
   };
 
-  function showRequestTab(name, { push = true } = {}) {
+  function showRequestTab(name) {
     state.requestTab = name;
-    if (push) setPath(name === 'history' ? '/requests/history' : '/requests');
     $('#requests-tab-find').hidden = name !== 'find';
     $('#requests-tab-history').hidden = name !== 'history';
     $$('#requests-tabs button').forEach((b) => {
@@ -3554,8 +3907,11 @@
       ' ',
       // Opens both sides rather than throwing you at Deezer: deciding whether
       // this fills that request means reading them together.
-      el('button', { class: 'link', onclick: () => openRequest({ id: match.request_id, url: match.request_url }) },
-         match.deezer_title || 'Compare'),
+      el('button', {
+        class: 'link',
+        onclick: () => go(addr(`/requests/${encodeURIComponent(match.tracker || state.requestsTracker || '')}`
+                               + `/${encodeURIComponent(match.request_id)}`)),
+      }, match.deezer_title || 'Compare'),
       ' ',
       el('button', { class: 'ghost', onclick: () => download(match.deezer_id) }, 'Download'),
     );
@@ -3571,28 +3927,43 @@
   // request is fetched and drawn instead -- the same record the tracker builds
   // its page from, description and comments included -- and the link out is
   // still there for the parts only the live page has, like voting.
-  async function openRequest(row) {
-    const match = state.requestMatches.get(String(row.id));
+  /**
+   * One request beside the release that might fill it.
+   *
+   * Takes a tracker and an id rather than a row, because that is all an
+   * address carries: the page has to draw itself for somebody arriving on a
+   * link, with no list behind it and nothing in memory. Anything already
+   * known about the request is a shortcut to a nicer first paint, not a
+   * requirement.
+   *
+   * @param {string} tracker - Which tracker holds it.
+   * @param {string} id - The request id on that tracker.
+   */
+  async function openRequest(tracker, id) {
+    const match = state.requestMatches.get(String(id));
+    const row = state.requestRows.find((r) => String(r.id) === String(id)) || {};
     const url = row.url || match?.request_url || '';
-    const tracker = match?.tracker || state.requestsTracker || '';
+    const code = tracker || match?.tracker || state.requestsTracker || '';
     const from = state.view;
 
     // Borrowing the search pane to draw in, not going to Search: the address
-    // should keep saying Requests, which is where the reader still is.
-    setView('search', { push: false });
+    // says Requests, which is where the reader still is.
+    setView('search');
     pushPane(paneLabel(), from);
     const pane = searchPane('split-page');
+    const named = `${row.artist || match?.artist || ''} — ${row.title || match?.album || `Request ${id}`}`;
+    setTitle(named.replace(/^\s*—\s*/, ''));
 
     const left = el('div', { class: 'split-side' });
     const right = el('div', { class: 'split-side' });
     pane.replaceChildren(
-      breadcrumbs(`${row.artist || match?.artist || ''} — ${row.title || match?.album || 'Request'}`),
+      breadcrumbs(named),
       el('div', { class: 'split' }, left, right),
     );
 
     left.replaceChildren(
       el('div', { class: 'row split-head' },
-        el('h3', { class: 'section-title' }, `Request on ${tracker || 'the tracker'}`),
+        el('h3', { class: 'section-title' }, `Request on ${code || 'the tracker'}`),
         url ? el('a', { class: 'filebtn', href: url, target: '_blank', rel: 'noopener noreferrer' },
                  'Open in a tab ↗') : null),
       spinner('Loading the request'),
@@ -3616,13 +3987,21 @@
     })();
 
     const head = left.firstChild;
-    if (!tracker || !row.id) {
+    if (!code || !id) {
       left.replaceChildren(head, empty('This request has no tracker or id to look up.'));
     } else {
       try {
         const detail = await api(
-          `/api/requests/detail?tracker=${encodeURIComponent(tracker)}&id=${encodeURIComponent(row.id)}`);
+          `/api/requests/detail?tracker=${encodeURIComponent(code)}&id=${encodeURIComponent(id)}`);
         left.replaceChildren(head, requestPanel(detail));
+        // Somebody who arrived on the link had nothing to name the page with
+        // until now. The tracker's own record has it, so use it.
+        const title = [detail.artist, detail.title].filter(Boolean).join(' — ');
+        if (title) {
+          const crumb = $('.crumb.current', pane);
+          if (crumb) crumb.textContent = title;
+          setTitle(title);
+        }
       } catch (e) {
         left.replaceChildren(head, empty(e.message));
       }
@@ -3742,7 +4121,7 @@
   function albumPanel(album) {
     const availability = album.availability;
     const artistLink = (id, name) =>
-      id ? el('a', { href: '#', onclick: (e) => { e.preventDefault(); openArtist(id); } }, name)
+      id ? el('a', { href: artistHref(id), onclick: (e) => { e.preventDefault(); goArtist(id); } }, name)
          : el('span', {}, name);
     const facts = [
       album.nb_tracks ? `${album.nb_tracks} tracks` : null,
@@ -3889,8 +4268,8 @@
           value: (f) => `${f.artist || ''} ${f.title || ''}`.trim(),
           filter: 'text',
           cell: (f) => el('a', {
-            href: '#',
-            onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
+            href: albumHref(f.album_id),
+            onclick: (e) => { e.preventDefault(); goAlbum(f.album_id); },
           }, `${f.artist || ''} — ${f.title || ''}`),
         },
         {
@@ -4003,8 +4382,8 @@
             value: (f) => `${f.artist || ''} ${f.title || ''}`.trim(),
             filter: 'text',
             cell: (f) => el('a', {
-              href: '#',
-              onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
+              href: albumHref(f.album_id),
+              onclick: (e) => { e.preventDefault(); goAlbum(f.album_id); },
             }, `${f.artist || ''} — ${f.title || ''}`),
           },
           {
@@ -5428,6 +5807,62 @@ They will not be listed again, even if a later scan finds them.`)) {
     return [...groups.entries()];
   }
 
+  /**
+   * A settings heading that is also its own address.
+   *
+   * The page is one long scroll, so a section is a place on it, and a place
+   * you cannot name is one you cannot bookmark, link to, or be returned to on
+   * a reload. The heading is the link because it is already the thing you
+   * point at when you tell somebody where a setting lives.
+   *
+   * @param {string} tag - h2 or h3.
+   * @param {string} name - What this part is called in an address.
+   * @param {string} text - What it is called on screen.
+   * @param {string} [cls] - A class for the heading itself.
+   */
+  function settingsHeading(tag, name, text, cls = '') {
+    const target = addr(`/settings/${name}`);
+    return el(tag, { class: cls || null, id: `settings-${name}` },
+      el('a', {
+        class: 'anchor',
+        href: target,
+        onclick: (event) => { event.preventDefault(); go(target); },
+      }, text));
+  }
+
+  // The parts of the page that are not schema sections. They have their own
+  // ids for other reasons, so the address names are mapped rather than
+  // guessed -- and "users" rather than "accounts", which is already the name
+  // of the category holding the tracker credentials.
+  const SETTINGS_ELSEWHERE = { 'debug-log': '#debug-panel', users: '#accounts-panel' };
+
+  /**
+   * Bring the addressed part of the settings page into view.
+   *
+   * Landing halfway down a long page with nothing marked leaves you hunting
+   * for the section you asked for, so it is flashed once.
+   *
+   * @param {boolean} [glide] - Scroll smoothly. Only for a heading pressed on
+   *   a page that is already on screen and has stopped moving. Arriving is a
+   *   jump: three of these panels fill themselves in afterwards, and each one
+   *   replaces the node a smooth scroll is animating towards, which cancels
+   *   it -- so landing on /settings/users stayed at the top of the page.
+   */
+  function revealSettingsSection(glide = false) {
+    const name = state.settingsSection;
+    if (!name) return;
+    const named = $(`#settings-${name}`);
+    // The save bar's own controls are #settings-save and #settings-dirty, so
+    // the id alone is not enough: a place on this page is a heading.
+    const heading = named && /^H[1-6]$/.test(named.tagName) ? named : null;
+    const target = heading || $(SETTINGS_ELSEWHERE[name] || '#none');
+    if (!target) return;
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    target.scrollIntoView({ behavior: glide && !still ? 'smooth' : 'auto', block: 'start' });
+    target.classList.add('addressed');
+    setTimeout(() => target.classList.remove('addressed'), 1800);
+  }
+
   function renderSettings() {
     const { sections, values, secrets_set: secretsSet, bootstrap, config_path: configPath } = state.settings;
     const body = $('#settings-body');
@@ -5445,7 +5880,7 @@ They will not be listed again, even if a later scan finds them.`)) {
         'Changes apply immediately, no restart. Tests use what is on screen, so a credential can be checked before it is saved.',
       ),
       ...categoriesOf(sections).flatMap(([name, group]) => [
-        el('h2', { class: 'settings-category', id: `settings-${slug(name)}` }, name),
+        settingsHeading('h2', slug(name), name, 'settings-category'),
         ...group.map((section) =>
           el(
             'section',
@@ -5453,7 +5888,7 @@ They will not be listed again, even if a later scan finds them.`)) {
             el(
               'div',
               { class: 'row settings-head' },
-              el('h3', {}, section.title),
+              settingsHeading('h3', section.id, section.title),
               section.test
                 ? el(
                     'button',
@@ -5475,7 +5910,7 @@ They will not be listed again, even if a later scan finds them.`)) {
       el(
         'section',
         { class: 'panel' },
-        el('h2', {}, 'Set in config.toml'),
+        settingsHeading('h2', 'config-file', 'Set in config.toml'),
         el(
           'p',
           { class: 'hint' },
@@ -5483,11 +5918,12 @@ They will not be listed again, even if a later scan finds them.`)) {
         ),
         el('ul', { class: 'bootstrap-list' }, ...bootstrap.map((k) => el('li', {}, el('code', {}, k)))),
       ),
-      el('section', { class: 'panel', id: 'debug-panel' }, el('h2', {}, 'Debug log'), spinner('Loading')),
+      el('section', { class: 'panel', id: 'debug-panel' },
+         settingsHeading('h2', 'debug-log', 'Debug log'), spinner('Loading')),
       el(
         'section',
         { class: 'panel' },
-        el('h2', {}, 'Appearance'),
+        settingsHeading('h2', 'appearance', 'Appearance'),
         el(
           'div',
           { class: 'row' },
@@ -5500,7 +5936,7 @@ They will not be listed again, even if a later scan finds them.`)) {
           ),
         ),
         el('p', { class: 'hint' }, 'Auto follows your operating system. The sidebar icon flips between dark and light.'),
-        el('h2', {}, 'Scan history'),
+        settingsHeading('h2', 'scan-history', 'Scan history'),
         el(
           'div',
           { class: 'row' },
@@ -5509,9 +5945,12 @@ They will not be listed again, even if a later scan finds them.`)) {
         ),
         el('p', { class: 'hint' }, 'Clearing history makes the next scan re-check everything, costing tracker budget again.'),
       ),
-      el('section', { class: 'panel', id: 'accounts-panel' }, el('h2', {}, 'Accounts'), spinner('Loading')),
+      el('section', { class: 'panel', id: 'accounts-panel' },
+         settingsHeading('h2', 'users', 'Accounts'), spinner('Loading')),
     );
     loadAccounts();
+    // Whatever the address named, once there is a page to scroll through.
+    revealSettingsSection();
   }
 
   // Who can sign in. Changing a password ends every session it had, including
@@ -5524,7 +5963,7 @@ They will not be listed again, even if a later scan finds them.`)) {
     try {
       data = await api('/api/accounts');
     } catch (e) {
-      panel.replaceChildren(el('h2', {}, 'Accounts'), empty(e.message));
+      panel.replaceChildren(settingsHeading('h2', 'users', 'Accounts'), empty(e.message));
       return;
     }
 
@@ -5537,7 +5976,7 @@ They will not be listed again, even if a later scan finds them.`)) {
     const newPass = field('acct-pass', `Password (at least ${data.min_password})`, 'password');
 
     panel.replaceChildren(
-      el('h2', {}, 'Accounts'),
+      settingsHeading('h2', 'users', 'Accounts'),
       el('p', { class: 'hint' },
          data.you
            ? `Signed in as ${data.you}. Changing a password signs out every other browser using it.`
@@ -5575,6 +6014,9 @@ They will not be listed again, even if a later scan finds them.`)) {
       el('div', { class: 'row accounts-row' },
          el('button', { onclick: signOut }, 'Sign out of this browser')),
     );
+    // Same as the debug log: this panel lands after the page around it, so an
+    // address naming it has to be honoured once it is here.
+    if (state.settingsSection === 'users') revealSettingsSection();
   }
 
   async function accountAction(button, path, body, done) {
@@ -5599,7 +6041,7 @@ They will not be listed again, even if a later scan finds them.`)) {
         el(
           'div',
           { class: 'row' },
-          el('h2', {}, 'Debug log'),
+          settingsHeading('h2', 'debug-log', 'Debug log'),
           el('span', { class: `tag ${data.enabled ? 'ok' : 'dim'}` }, data.enabled ? 'debug on' : 'debug off'),
           el('button', { onclick: loadDebug }, 'Refresh'),
           el('button', { onclick: clearDebug }, 'Clear'),
@@ -5622,8 +6064,11 @@ They will not be listed again, even if a later scan finds them.`)) {
         ),
         el('pre', { class: 'console' }, data.log.join('\n') || '(nothing logged yet)'),
       );
+      // This panel arrives after the page is drawn, so an address naming it
+      // had nothing to scroll to when the rest of the page was ready.
+      if (state.settingsSection === 'debug-log') revealSettingsSection();
     } catch (e) {
-      panel.replaceChildren(el('h2', {}, 'Debug log'), empty(e.message));
+      panel.replaceChildren(settingsHeading('h2', 'debug-log', 'Debug log'), empty(e.message));
     }
   }
 
@@ -5958,34 +6403,38 @@ They will not be listed again, even if a later scan finds them.`)) {
     applyTheme();
     $('#theme-toggle')?.addEventListener('click', toggleTheme);
 
-    $$('.nav-item').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
-    // The nav is buttons, not links, so give each one the address it goes to.
-    // It is what a screen reader reads out and what the status bar shows.
     $$('.nav-item').forEach((b) => {
+      // The nav is buttons, not links, so give each one the address it goes
+      // to. It is what a screen reader reads out and what the status bar
+      // shows.
       const path = VIEW_PATHS[b.dataset.view];
       if (path) b.setAttribute('data-path', path);
+      b.addEventListener('click', () => go(navAddr(b.dataset.view)));
     });
-    $('#search-form').addEventListener('submit', runSearch);
+    // Searching is going somewhere, so it is a navigation like any other: the
+    // results have an address, they survive a reload, and Back leaves them for
+    // whatever you were looking at before rather than for the app's front door.
+    $('#search-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      go(addr('/search', { q: $('#search-input').value.trim(), type: typeParam() }));
+    });
     $$('#search-type button').forEach((b) =>
       b.addEventListener('click', () => selectSearchType(b.dataset.type)),
     );
     $$('#explore-tabs button').forEach((b) =>
-      b.addEventListener('click', () => {
-        state.exploreTab = b.dataset.explore;
-        $$('#explore-tabs button').forEach((x) => x.classList.toggle('active', x === b));
-        // A batch belongs to the list it was picked from. Carrying it into
-        // another tab leaves you holding releases you can no longer see, and
-        // the count in the bar stops matching anything on screen.
-        clearPicks();
-        loadExplore();
-      }),
+      b.addEventListener('click', () => go(addr(BROWSE_PATHS[b.dataset.explore] || '/browse/channels', {
+        // Channels has no genre filter, so carrying one there would put a
+        // parameter in the address that nothing on screen answers to.
+        genre: b.dataset.explore === 'channels' ? '' : genreParam(),
+      }))),
     );
     $('#missing-scan').addEventListener('click', missingScan);
     // Re-checks whatever is ticked in the results, which is the only place a
     // subset makes sense.
     $('#missing-check').addEventListener('click', () => missingCheck());
     $$('#scan-tabs button').forEach((b) => {
-      b.addEventListener('click', () => showScanTab(b.dataset.scantab));
+      b.addEventListener('click', () =>
+        go(addr(b.dataset.scantab === 'history' ? '/scan/history' : '/scan')));
     });
     $('#scanhistory-rerun').addEventListener('click', scanHistoryRerun);
     $('#scanhistory-forget').addEventListener('click', scanHistoryForget);
@@ -5997,7 +6446,9 @@ They will not be listed again, even if a later scan finds them.`)) {
     });
 
     $$('#requests-tabs button').forEach((b) => {
-      b.addEventListener('click', () => showRequestTab(b.dataset.reqtab));
+      b.addEventListener('click', () => go(b.dataset.reqtab === 'history'
+        ? addr('/requests/history')
+        : addr('/requests', { tracker: state.requestsTracker || '' })));
     });
     $('#history-rerun').addEventListener('click', historyRerun);
     // The filters live in the columns now, so clearing them is clearing the
@@ -6049,11 +6500,11 @@ They will not be listed again, even if a later scan finds them.`)) {
 
     // Filtering is local: it never refetches, so it stays instant on a long
     // queue and costs no tracker budget.
-    $('#found-held-toggle').addEventListener('click', () => {
-      state.showHeld = !state.showHeld;
-      $('#found-held-toggle').textContent = state.showHeld ? 'Hide excluded' : 'Show excluded';
-      renderFound();
-    });
+    // Showing the excluded rows changes what the list is, so it is part of
+    // where you are: a queue read with them shown survives a reload, and the
+    // toggle is something Back can undo.
+    $('#found-held-toggle').addEventListener('click', () =>
+      go(addr('/queue', { held: state.showHeld ? '' : '1' })));
     $('#folders-refresh').addEventListener('click', loadFolders);
     $('#upload-dry-run').addEventListener('change', (e) =>
       setUploadFlag('upload.dry_run', e.target, 'Dry run'));
@@ -6062,16 +6513,16 @@ They will not be listed again, even if a later scan finds them.`)) {
     refreshStatus();
     setInterval(refreshStatus, 15000);
 
-    // Back and Forward move through the app rather than out of it.
-    window.addEventListener('popstate', () => routeTo(location.pathname));
+    // Back and Forward move through the app rather than out of it. The
+    // address is already the browser's by the time this fires, so it is only
+    // ever drawn, never pushed.
+    window.addEventListener('popstate', () => renderRoute(here()));
 
     // Open on whatever the address says. Reloading anywhere used to land on
-    // Search, because nothing had ever read the path. The first entry is
+    // Search, because nothing had ever read the address. The first entry is
     // replaced rather than pushed, so Back from the page you opened on leaves
     // the app instead of stepping through a duplicate of it.
-    const landing = location.pathname === '/' ? '/search' : location.pathname;
-    setPath(landing, true);
-    routeTo(landing);
+    go(location.pathname === '/' ? addr('/search') : here(), { replace: true });
   }
 
   document.addEventListener('DOMContentLoaded', init);

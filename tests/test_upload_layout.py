@@ -17,6 +17,7 @@ What they cover:
   * no card paints the colour of a form field, which reads as a sunken well
   * a section heading is the control that filters to it, not a button beside it
   * the queue's filter narrows what the buttons act on, and says what it hid
+  * every screen has an address, and so does every place inside one
 """
 
 import os
@@ -427,7 +428,12 @@ def main() -> int:
     check("and shift still takes the run from the card body",
           "pickClicked(id, item, !state.picked.has(id), e.shiftKey)" in js, "")
     check("with nothing picked it still opens the release",
-          "else if (albumId) openAlbum(albumId);" in js, "")
+          "else if (albumId) goAlbum(albumId);" in js, "")
+    # Which is going to its page, so it goes through the address. Calling the
+    # drawing function straight left the release on screen under an address
+    # that still named the list behind it.
+    check("and going there is an address, not a redraw",
+          "const goAlbum = (id) => go(albumHref(id));" in js, "")
 
     # --- the artist page is a discography, so it gets a select-all ----
     check("the artist page needs no select-all of its own either",
@@ -490,14 +496,16 @@ def main() -> int:
           "document.querySelectorAll(`.card[data-album=" in js, "")
 
     # --- leaving the list drops the batch -----------------------------
-    view = js[js.index("function setView(view, {"):]
+    view = js[js.index("function setView(view) {"):]
     view = view[: view.index(chr(10) + "  }" + chr(10))]
     check("changing view drops the batch", "clearPicks();" in view, "")
     check("only when the view actually changes", "state.view !== view" in view, "")
+    # These two are addresses now, so the batch is dropped where the address is
+    # read rather than in the click handler that no longer exists.
     check("changing the search type drops it",
-          "clearPicks();" in js[js.index("function selectSearchType"):][:200], "")
+          "clearPicks();" in js[js.index("function syncSearchControls"):][:600], "")
     check("and so does a genre filter",
-          "clearPicks();" in js[js.index("state.exploreGenre = g.id;"):][:120], "")
+          "clearPicks();" in js[js.index("function showBrowse"):][:900], "")
 
     # --- the request form is the tracker's form -----------------------
     # It was four columns of scrolling boxes, which turned fifteen release
@@ -684,16 +692,65 @@ def main() -> int:
     check("a second tab is part of the address too",
           "'/requests/history'" in js and "'/scan/history'" in js, "")
     check("and so is an album or an artist",
-          "`/album/${albumId}`" in js and "`/artist/${artistId}`" in js, "")
-    check("the address is read on the way in", "routeTo(landing)" in js, "")
+          "case '/search'" in js and "/^\\/album\\/(.+)$/" in js
+          and "/^\\/artist\\/(.+)$/" in js, "")
+    check("the address is read on the way in",
+          "go(location.pathname === '/' ? addr('/search') : here()" in js, "")
     check("Back and Forward move through the app",
           "addEventListener('popstate'" in js, "")
     check("the first entry is replaced, so Back leaves rather than repeating",
-          "setPath(landing, true)" in js, "")
+          "{ replace: true }" in js, "")
     check("the query string survives a navigation, or a ?token= link signs out",
-          "path + location.search" in js, "")
+          "const query = new URLSearchParams(location.search);" in js
+          and "ROUTE_KEYS.forEach((key) => query.delete(key));" in js, "")
     check("and the tab is named after what is on screen",
           "function setTitle" in js, "")
+
+    # --- and so does everything inside a screen ---------------------------
+    # The gap people hit: the screens had addresses, the places inside them did
+    # not. A search, a Browse tab, a genre, a channel, a request, the excluded
+    # rows and a place in Settings all reported the address of wherever you had
+    # arrived from, so Back skipped the lot and a reload threw it away.
+    check("a search is in the address",
+          "addr('/search', { q: $('#search-input').value.trim(), type: typeParam() })" in js, "")
+    check("with the kind it was narrowed to",
+          "const SEARCH_TYPES = ['all', 'album', 'track', 'artist'];" in js, "")
+    check("and the box is filled from the address, not the other way round",
+          "function syncSearchControls" in js and "box.value = query" in js, "")
+    check("each Browse list has its own address",
+          "const BROWSE_PATHS" in js and "charts: '/browse/charts'" in js, "")
+    check("the genre is in it", "genre: g.id === '0' ? '' : g.id" in js, "")
+    check("a channel is a page, not a state of the grid",
+          "/browse/channel/${encodeURIComponent(c.slug)}" in js, "")
+    check("the tracker whose requests are listed is in the address",
+          "addr('/requests', { tracker: t.code })" in js, "")
+    check("one request has its own address, openable cold",
+          "async function openRequest(tracker, id)" in js, "")
+    check("showing the excluded rows is somewhere you can be",
+          "addr('/queue', { held: state.showHeld ? '' : '1' })" in js, "")
+    check("and so is a section of the settings page",
+          "function settingsHeading" in js and "`/settings/${name}`" in js, "")
+    check("which is scrolled to on arrival",
+          "function revealSettingsSection" in js and "scrollIntoView" in js, "")
+
+    # --- Back means one thing ---------------------------------------------
+    # The crumbs restored a pane and left history alone, so the address bar
+    # went on naming a page you were no longer looking at and the next Back
+    # stepped forward into it.
+    check("a crumb is a history entry, not a second way of moving",
+          "history.go(index - state.paneStack.length)" in js, "")
+    check("a stacked pane remembers the address it belongs to",
+          "url: leavingUrl," in js, "")
+    check("and coming back to it costs no second fetch",
+          "function restorePane" in js, "")
+    check("nothing is stacked behind a page opened cold",
+          "if (!leavingUrl) return;" in js, "")
+
+    # --- the genre chips came back after a trip to Channels ---------------
+    # Emptying the bar left the "already built" flag set, so returning to
+    # Charts drew no chips at all for the rest of the session.
+    check("emptying the genre bar clears the flag with it",
+          "function clearGenreFilter" in js and "delete container.dataset.loaded;" in js, "")
 
     # --- what the second tab is called ------------------------------------
     check("the lookup history has a name that says what it is",

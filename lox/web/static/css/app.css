@@ -906,6 +906,39 @@ select {
   scroll-margin-top: 104px;
 }
 
+/* Every heading on this page is its own address, so every one of them is a
+   link -- but it is a heading first, and a page of blue underlined section
+   titles reads as a menu of things to press rather than as a page. It looks
+   like the heading it is until the pointer is on it. */
+.settings-category .anchor,
+.settings-section h3 .anchor,
+#settings-body h2 .anchor {
+  color: inherit;
+  text-decoration: none;
+}
+.settings-category .anchor:hover,
+.settings-section h3 .anchor:hover,
+#settings-body h2 .anchor:hover { text-decoration: underline; }
+
+/* The sticky save bar sits over the top of the page, so a heading scrolled to
+   the very top lands underneath it. */
+.settings-section h3,
+#settings-body h2 { scroll-margin-top: 104px; }
+
+/* Where the address just took you, for as long as it takes to see it. Landing
+   halfway down a long page with nothing marked leaves you hunting for the
+   section you asked for. */
+.addressed { animation: addressed 1.8s ease-out; border-radius: var(--radius); }
+@keyframes addressed {
+  0%, 30% { background: var(--accent-edge); box-shadow: 0 0 0 6px var(--accent-edge); }
+  100% { background: transparent; box-shadow: 0 0 0 6px transparent; }
+}
+
+/* Somebody who asked not to be moved about is not moved about. */
+@media (prefers-reduced-motion: reduce) {
+  .addressed { animation-duration: 0.01ms; }
+}
+
 /* A credential that stands on its own gets its own test beside its label. */
 .setting-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .setting-head > label { flex: 1; min-width: 0; }
