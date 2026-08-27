@@ -2794,6 +2794,13 @@
     button.textContent = count ? `Check ${count} again` : 'Check again';
   }
 
+  /** A stored epoch time as a plain date, or "" when there is not one. */
+  function checkedOn(stamp) {
+    const seconds = Number(stamp);
+    if (!seconds) return '';
+    return new Date(seconds * 1000).toISOString().slice(0, 10);
+  }
+
   function renderHistoryRows(data) {
     const host = $('#history-results');
     if (!state.history.length) {
@@ -2813,7 +2820,12 @@
         },
       })),
       el('th', {}, 'REQUEST'), el('th', {}, 'OUTCOME'), el('th', {}, 'DEEZER'),
-      el('th', {}, 'YEAR'), el('th', {}, 'BOUNTY'), el('th', {}, 'CHECKED'));
+      el('th', {}, 'YEAR'), el('th', {}, 'BOUNTY'),
+      // Two different ages, and the page only ever showed one of them. A
+      // request open for two years and one posted yesterday are not the same
+      // proposition, and neither is one looked up this morning and one looked
+      // up in March.
+      el('th', {}, 'OPENED'), el('th', {}, 'LAST LOOKUP'));
 
     host.replaceChildren(el('table', { class: 'table' },
       el('thead', {}, head),
@@ -2843,9 +2855,16 @@
             : el('span', { class: 'hint' }, '—')),
           el('td', {}, String(row.year || '')),
           el('td', {}, row.bounty || ''),
-          el('td', {},
+          el('td', { class: 'nowrap' },
+            el('div', {}, row.created_age ? `${row.created_age} ago` : '—'),
+            row.created ? el('span', { class: 'hint' }, row.created.slice(0, 10)) : null),
+          el('td', { class: 'nowrap' },
             el('div', {}, days === null ? 'unknown' : days < 1 ? 'today' : `${Math.round(days)}d ago`),
-            stale ? el('span', { class: 'hint' }, 'due a re-check') : null));
+            // The date stays whether or not the row is due again: the flag
+            // used to take its place, so the rows most worth placing exactly
+            // were the ones that stopped saying when.
+            el('span', { class: 'hint' },
+               [checkedOn(row.checked_at), stale ? 'due a re-check' : ''].filter(Boolean).join(' · '))));
       }))));
   }
 

@@ -21,7 +21,7 @@ from aiohttp import web
 
 from lox import cfg, debug, settings
 from lox.checker import queue_rules, recheck
-from lox.checker.deezer_requests import DeezerRequestChecker
+from lox.checker.deezer_requests import DeezerRequestChecker, age_of
 from lox.checker.gateway import TrackerGateway
 from lox.checker.missing import Candidate, MissingScanner
 from lox.checker.request_detail import request_detail
@@ -1491,7 +1491,12 @@ async def api_requests_history(request: web.Request) -> web.Response:
             "year": entry.get("year") or "",
             "bounty": entry.get("bounty") or "",
             "bounty_bytes": _bounty_bytes(entry.get("bounty")),
+            # When the request was posted on the tracker, and how long ago
+            # that was. A request open for two years and one opened yesterday
+            # are different propositions, and the page had no way to tell them
+            # apart -- it only ever said when *we* last looked at it.
             "created": entry.get("created") or "",
+            "created_age": age_of(entry.get("created")),
             "request_url": entry.get("request_url") or "",
             "deezer_id": entry.get("deezer_id") or "",
             "deezer_url": entry.get("deezer_url") or "",

@@ -604,6 +604,17 @@ def main() -> int:
     check("and the old fixed list is gone",
           "within:30" not in js and "before:90" not in js, "")
 
+    # Two different ages, and the table only ever showed one. A request open
+    # for two years and one posted yesterday are not the same proposition.
+    check("the history says when the request was opened",
+          "'OPENED'" in js and "created_age" in js, "")
+    check("as well as when it was last looked up",
+          "'LAST LOOKUP'" in js, "")
+    check("each with the date behind the relative time",
+          "function checkedOn" in js, "")
+    check("and the date is not dropped when a row is due again",
+          "].filter(Boolean).join" in js and "checkedOn(row.checked_at), stale" in js, "")
+
     # --- what the second tab is called ------------------------------------
     check("the lookup history has a name that says what it is",
           "Lookup History" in shell, "")

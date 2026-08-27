@@ -1107,6 +1107,9 @@ select {
 .held-why li { margin-bottom: 4px; }
 .held-actions { margin-bottom: 10px; }
 
+/* Dates do not read well broken over two lines. */
+.table td.nowrap { white-space: nowrap; }
+
 /* What a run passed over. Sits under the log it belongs to, and goes when it
    is acted on. */
 .skipped-note { margin-top: 12px; border-left: 3px solid var(--accent); }
