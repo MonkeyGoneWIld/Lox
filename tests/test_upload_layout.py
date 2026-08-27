@@ -18,6 +18,7 @@ What they cover:
   * a section heading is the control that filters to it, not a button beside it
   * the queue's filter narrows what the buttons act on, and says what it hid
   * every screen has an address, and so does every place inside one
+  * the scan tab reads top to bottom, and a saved search is just a link
 """
 
 import os
@@ -386,7 +387,8 @@ def main() -> int:
     bulk = js[js.index("async function bulkCheck"):]
     end_marker = chr(10) + "  }" + chr(10)
     bulk = bulk[: bulk.index(end_marker)]
-    check("pressing Check trackers checks the trackers", "await missingScan()" in bulk, "")
+    check("pressing Check trackers checks the trackers",
+          "await missingScan({ manual: true })" in bulk, "")
     check("on what you picked, not on whatever was left in the box",
           "box.value = urls.join" in bulk, "")
 
@@ -769,6 +771,93 @@ def main() -> int:
           "withAll" in js, "")
     check("and a group can start ticked or clear",
           "checked = true" in js or "checked," in js, "")
+
+    # --- the scan tab, in the order the work happens ----------------------
+    # The filters decide what a scan will even look at, and they were at the
+    # bottom -- read after pressing Scan is read too late.
+    panels = [shell.index(f">{h}</h2>") for h in
+              ("Scan filters", "Scan Deezer against your trackers", "Saved searches")]
+    check("the scan filters come before the box that scans",
+          panels == sorted(panels), str(panels))
+
+    # Four short answers -- a count, two dates and an age. They were four
+    # full-width bands with a rule under each, borrowed from the request form,
+    # which spends a screen-wide line on a single number.
+    check("the filters are their own compact grid",
+          'class="scanfilters" id="scan-filters"' in shell, "")
+    check("not the request form's stack of bands",
+          'class="reqform" id="scan-filters"' not in shell, "")
+    check("laid out across the width, wrapping when there is no room",
+          "repeat(auto-fit, minmax(196px, 1fr))" in rule(css, ".scanfilters"),
+          rule(css, ".scanfilters").strip()[:80])
+    check("and a field is its label, its control and its note",
+          "function scanField" in js, "")
+
+    # One decision, one control. The tickbox said the same thing as the
+    # recheck window sitting above it, and the two could disagree.
+    check("the redundant 'skip albums already looked up' tickbox is gone",
+          "missing-skip-known" not in shell and "missing-skip-known" not in js, "")
+    check("so the recheck window is the only thing that decides it",
+          "skip_known" not in js, "")
+
+    # --- a saved search is a link ------------------------------------------
+    # It took a name you invented, a kind from a dropdown of six, and an id you
+    # had to dig out of a URL. All three describe the link already in the box.
+    check("saving is a button on the box that scans",
+          'id="missing-save"' in shell, "")
+    check("rather than a second form asking for a name, a kind and an id",
+          all(x not in shell for x in ("watchlist-form", "watchlist-name",
+                                       "watchlist-kind", "watchlist-target")), "")
+    check("the links are read once, for scanning and for saving alike",
+          "function sourceLines" in js, "")
+    check("and Deezer is what names them",
+          "'/api/watchlists', { method: 'POST', body: { urls } }" in js, "")
+    check("the box says an artist link works too",
+          "an artist" in shell, "")
+
+    # Running them was one at a time, and each run overwrote the box the last
+    # one filled, so "check everything I follow" kept only the last answer.
+    check("several saved searches scan together",
+          'id="watchlist-scan"' in shell and "function scanWatchlists" in js, "")
+    check("or all of them at once",
+          'id="watchlist-scan-all"' in shell and "scanWatchlists([])" in js, "")
+    check("their links land in the box, so what is about to be scanned is on screen",
+          "$('#missing-sources').value = payload.sources.join" in js, "")
+    check("a name Deezer chose can be changed",
+          "function renameField" in js and "method: 'PATCH'" in js, "")
+    # The count is already on the line, in "2 of 3 selected". Saying it twice
+    # made the button change width every time a box was ticked.
+    check("the button does not repeat the count beside it",
+          "`Scan ${n} selected`" not in js, "")
+
+    # --- the filters have somewhere to start from -------------------------
+    check("a date is picked off a calendar, not typed in a format",
+          "type: 'date'" in js, "")
+    check("and the browser is told which scheme to draw it in",
+          "color-scheme: dark" in css and "color-scheme: light" in css, "")
+    check("a blank date shows the rolling default rather than nothing",
+          "_effective" in js and "_default" in js, "")
+    check("with the way back to it once one is set",
+          "filter-reset" in js and "`default is ${fallback}`" in js, "")
+
+    # --- picked by hand is not swept up -----------------------------------
+    # The filters are about what to sweep. Somebody who ticked a release and
+    # pressed Check trackers has already made that decision.
+    check("checking picked releases says they were picked",
+          "await missingScan({ manual: true })" in js, "")
+    check("and the scan button does not",
+          "() => missingScan()" in js, "")
+    check("which the collect call carries",
+          "body: { sources, manual }" in js, "")
+
+    # --- the box does not hand back the last scan -------------------------
+    check("a reload starts with an empty box",
+          "$('#missing-sources').value = '';" in js, "")
+    check("and the browser is asked not to restore it either",
+          'id="missing-sources" rows="3" autocomplete="off"' in shell, "")
+    check("and the rows are columns, not a ragged flex line",
+          "grid-template-columns: auto minmax(0, 1fr) auto auto" in rule(css, ".watchrow"),
+          rule(css, ".watchrow").strip()[:80])
 
     # The page used to decide the order, the labels and the defaults itself,
     # and got all three wrong for one tracker or the other. The tracker

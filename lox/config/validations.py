@@ -403,8 +403,19 @@ class Checker(BaseStruct):
     failure_threshold: Annotated[int, msgspec.Meta(ge=1)] = 3
     cooldown_seconds: Annotated[int, msgspec.Meta(ge=0)] = 300
 
-    # Album filters, applied before any tracker is contacted.
-    min_tracks: Annotated[int, msgspec.Meta(ge=0)] = 0
+    # Album filters, applied before any tracker is contacted, and only to a
+    # scan -- an album picked by hand from Search or Browse is not swept up by
+    # them.
+    #
+    # Five, because the thing a sweep of a channel module is mostly made of is
+    # singles and two-track promos, and each one costs the same tracker calls
+    # as an album. Zero checked everything and was a budget rather than a
+    # filter.
+    min_tracks: Annotated[int, msgspec.Meta(ge=0)] = 5
+    # Blank means the rolling default -- 1 January of last year, and two days
+    # out -- rather than no limit. Both are relative to today, so neither can
+    # be written down once and stay right; see
+    # lox.checker.missing.default_min_date. A date set by hand wins and stays.
     min_date: str | None = None
     max_date: str | None = None
 
@@ -428,11 +439,12 @@ class Checker(BaseStruct):
     # 0 means never re-check a request that has an answer.
     request_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 30
 
-    # The same for albums a scan has looked up. A scan re-ran every album it
-    # had ever seen, because the old skip matched only a handful of statuses
-    # and "checked against every tracker" was not one of them. 0 means an
-    # answer never goes stale.
-    album_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 30
+    # The same for albums a scan has looked up, and the ceiling over every
+    # reason a scan has for asking again. Only one album answer is kept at all
+    # -- present on every tracker -- and a year is how long that stays worth
+    # trusting before it is worth confirming. 0 means an answer never goes
+    # stale.
+    album_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 365
 
     # Where scan state is kept. Defaults to <download_directory>/.lox-checker.
     state_dir: str | None = None

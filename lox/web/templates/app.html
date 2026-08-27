@@ -136,49 +136,55 @@
         </div>
 
         <div id="scan-tab-run">
+        <!-- First, because they decide what a scan will even look at, and
+             because reading them after pressing Scan is reading them too late.
+             They apply to scanning and to nothing else, so they live here
+             rather than on the settings page, where they would read as rules
+             the whole app obeys.
+
+             Four short answers, so four fields side by side. They were four
+             full-width bands with a rule under each, which is the layout the
+             request form needs for its fifty checkboxes and which turned four
+             numbers into a screenful. -->
         <div class="panel">
-          <h2>Saved searches</h2>
-          <p class="hint">Re-runnable Deezer queries. Running one is free &mdash; it feeds albums into the collect step below.</p>
-          <div id="watchlists"></div>
-          <form class="row" id="watchlist-form">
-            <input type="text" id="watchlist-name" placeholder="Name, e.g. New house releases">
-            <select id="watchlist-kind">
-              <option value="new_releases">New releases (genre)</option>
-              <option value="chart">Chart (genre)</option>
-              <option value="search">Album search</option>
-              <option value="artist">Artist discography</option>
-              <option value="playlist">Playlist</option>
-              <option value="module">Channel module</option>
-            </select>
-            <input type="text" id="watchlist-target" placeholder="Genre ID, search text, or entity ID">
-            <button type="submit">Save search</button>
-          </form>
+          <h2>Scan filters</h2>
+          <p class="hint">Applied while a scan expands its sources, before any tracker is contacted.
+            They do not affect requests, searches or anything you check by hand.</p>
+          <div class="scanfilters" id="scan-filters"></div>
         </div>
 
         <div class="panel">
           <h2>Scan Deezer against your trackers</h2>
-          <p class="hint">Paste playlist URLs, channel module URLs or album URLs, one per line. Expanding them
-            is free; checking each album against a tracker is not.</p>
-          <textarea id="missing-sources" rows="4" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-..."></textarea>
+          <p class="hint">Paste Deezer links &mdash; a playlist, a channel module, an artist, an album &mdash;
+            one per line. Expanding them is free; checking each album against a tracker is not.</p>
+          <!-- autocomplete=off so a reload does not hand back the list the
+               last scan ran, sitting in the box looking like the next thing
+               you were about to do. -->
+          <textarea id="missing-sources" rows="3" autocomplete="off" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-...&#10;https://www.deezer.com/artist/27"></textarea>
           <div class="row">
             <div class="segmented" id="missing-trackers"></div>
-            <label class="check"><input type="checkbox" id="missing-skip-known" checked> Skip albums already looked up</label>
             <button class="primary" id="missing-scan">Scan</button>
+            <!-- Saving is the same links, kept. It was a second form below
+                 this one asking for a name, a kind and an id -- three
+                 questions about the link already in the box. -->
+            <button id="missing-save">Save for later</button>
           </div>
           <p class="hint" id="missing-cost"></p>
           <div class="joblog" id="missing-collect-log" hidden></div>
           <div class="joblog" id="missing-check-log" hidden></div>
         </div>
 
-        <!-- These narrow what a scan looks at, before any tracker is
-             contacted. They apply to scanning and to nothing else, so they
-             live here rather than on the settings page, where they read as
-             rules the whole app obeys. -->
         <div class="panel">
-          <h2>Scan filters</h2>
-          <p class="hint">Applied while a scan expands its sources, before any tracker is contacted.
-            They do not affect requests, searches or anything you check by hand.</p>
-          <div class="reqform" id="scan-filters"></div>
+          <h2>Saved searches</h2>
+          <p class="hint">Links you kept. Deezer names them; rename any of them if its name is unhelpful.
+            Scanning several at once is one scan over all of them.</p>
+          <div class="row">
+            <button class="primary" id="watchlist-scan" disabled>Scan selected</button>
+            <button id="watchlist-scan-all">Scan all</button>
+            <button class="danger" id="watchlist-delete" disabled>Delete</button>
+            <span class="hint" id="watchlist-count"></span>
+          </div>
+          <div id="watchlists"></div>
         </div>
 
         <div class="panel" id="missing-candidates-panel" hidden>

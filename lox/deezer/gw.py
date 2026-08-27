@@ -546,12 +546,19 @@ class DeezerGW:
 
 ALBUM_URL_RE = re.compile(r"deezer\.com/(?:[a-z]{2}/)?album/(\d+)", re.IGNORECASE)
 PLAYLIST_URL_RE = re.compile(r"deezer\.com/(?:[a-z]{2}/)?playlist/(\d+)", re.IGNORECASE)
+ARTIST_URL_RE = re.compile(r"deezer\.com/(?:[a-z]{2}/)?artist/(\d+)", re.IGNORECASE)
 MODULE_URL_RE = re.compile(r"channels/module/([0-9a-fA-F-]+)", re.IGNORECASE)
 
 
 def parse_album_id(url: str) -> str | None:
     """Extract an album ID from a Deezer URL, or None."""
     match = ALBUM_URL_RE.search(url)
+    return match[1] if match else None
+
+
+def parse_artist_id(url: str) -> str | None:
+    """Extract an artist ID from a Deezer URL, or None."""
+    match = ARTIST_URL_RE.search(url)
     return match[1] if match else None
 
 

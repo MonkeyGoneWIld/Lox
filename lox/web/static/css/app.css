@@ -841,8 +841,86 @@ button.link {
 .hitlist .hit { display: flex; flex-direction: column; gap: 1px; padding: 6px 0 6px 9px; border-left: 2px solid var(--border); margin-bottom: 5px; }
 .hitlist .hit.matched { border-left-color: var(--ok); }
 
-.watchrow { border-bottom: 1px solid var(--border); padding: 8px 0; }
+/* One saved search per line, in columns, so the names read down the page and
+   the buttons sit under each other rather than wherever the name before them
+   happened to end. The row was a flex line of five things of five different
+   widths, which is a list you have to read left to right to find anything in.
+
+   The when-column drops out before the name does: which module this is
+   matters more than when it was last scanned. */
+.watchrow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 0;
+}
 .watchrow:last-of-type { border-bottom: 0; }
+.watch-what { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.watch-what strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-when { white-space: nowrap; }
+.watch-acts { display: flex; align-items: center; gap: 8px; }
+.watch-acts button, .watch-acts .linkbtn { padding: 5px 10px; font-size: 12px; }
+
+/* Renaming happens in the row, not in a dialogue over the top of it: the name
+   you are changing is worth having on screen while you change it. */
+.watch-rename { display: flex; align-items: center; gap: 8px; grid-column: 2 / -1; }
+.watch-rename input { flex: 1; min-width: 0; }
+
+@media (max-width: 760px) {
+  .watchrow { grid-template-columns: auto minmax(0, 1fr); }
+  .watch-when { grid-column: 2; }
+  .watch-acts { grid-column: 2; }
+}
+
+/* The scan's filters. Four short answers -- a count, two dates and an age --
+   so four fields across, wrapping when there is no room for four.
+
+   They were four full-width bands with a rule under each, borrowed from the
+   request form. That layout earns its width on a group of fifty checkboxes;
+   spent on a single number it puts one short answer per screen-wide line, and
+   the four of them filled the top of the page. */
+.scanfilters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 16px 24px;
+  margin-top: 14px;
+  max-width: 1120px;
+}
+
+.scanfield { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.scanfield .reqlabel { padding: 0; }
+.scancontrol { display: flex; align-items: center; gap: 8px; }
+.scancontrol select { width: auto; }
+
+/* Wide enough for a date and no wider. The base rule stretches every input to
+   its container, which on a grid cell is the whole column. */
+.scanfield input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
+  width: 100%;
+  max-width: 160px;
+}
+
+/* A date is picked off a calendar, not typed in a format you have to be told.
+   The browser draws that calendar and its little icon itself, in whichever
+   scheme it thinks the page is -- which on a dark page with no colour-scheme
+   declared is a black icon on a black field, and a white popup.
+
+   Scoped to these inputs rather than set on :root: the app paints its own
+   controls, so the only things that need the browser told are the ones it
+   still draws. */
+input[type="date"] { color-scheme: dark; }
+:root[data-theme="light"] input[type="date"] { color-scheme: light; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) input[type="date"] { color-scheme: light; }
+}
+input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; opacity: 0.65; }
+input[type="date"]:hover::-webkit-calendar-picker-indicator { opacity: 1; }
+
+/* The way back to a rolling default, in the space the note would have used.
+   Only shown when there is a date of your own to go back from. */
+.filter-reset { padding: 0; font-size: 11.5px; color: var(--text-dim); }
+.filter-reset:hover { color: var(--accent); }
 
 .filebtn { border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 16px; background: var(--bg-input); }
 .filebtn:hover { border-color: var(--accent); }
@@ -853,8 +931,6 @@ select {
   border-radius: var(--radius);
   padding: 9px 12px;
 }
-
-#watchlist-form input[type="text"] { flex: 1; min-width: 150px; }
 
 .spinner {
   width: 15px;

@@ -130,44 +130,73 @@ def policy_checks() -> None:
 
 
 def album_checks() -> None:
-    """A scan does not pay twice for an album it has already looked up.
+    """One album answer is worth keeping, and it is not "we looked".
 
-    ``should_skip`` compared the stored status against FINAL_STATUSES, which
-    lists ``exists_red`` and ``exists_ops`` but not ``exists_ops_red`` -- the
-    status a scan writes when an album is on both trackers, which is the
-    common case. Nor any ``missing_*``. So the albums a scan had already
-    answered were the ones it looked up again on every run.
+    Every status a scan wrote used to count as settled, so an album was looked
+    up once and then never again. That is right for exactly one of them --
+    present on every tracker, which is nothing to upload under any rule -- and
+    wrong for all the rest, in ways people hit:
+
+    * a release missing from a tracker is one somebody else can upload before
+      you do, and nothing ever noticed; the queue kept offering it.
+    * an album a filter stopped was stopped for good. Widen the filter, scan
+      the same module again, and the albums it was about stayed skipped.
+    * an album checked against RED while OPS was out of budget counted as
+      finished, and OPS was never asked.
+
+    Which trackers said what is the whole of the decision, so it is read off
+    the stored ``found_on`` and ``missing_from`` rather than guessed from the
+    shape of a status string.
     """
     from lox.checker import recheck
 
     now = time.time()
     day = 86400
+    both = ["RED", "OPS"]
 
-    for status in ("exists_red", "exists_ops_red", "missing_red", "missing_ops_red",
-                   "skipped_no_flac", "skipped_unreleased", "skipped_filter"):
-        check(f"a scan that returned {status} has answered",
-              recheck.album_answered(status), status)
-    for status in ("tracker_failed", "deezer_info_failed", "flac_check_failed", ""):
-        check(f"but {status or '(nothing)'} has not", not recheck.album_answered(status), status)
+    def album(found=(), missing=(), status="", age_days=1.0):
+        return {"status": status, "found_on": list(found), "missing_from": list(missing),
+                "checked_at": now - age_days * day}
 
-    fresh = {"status": "exists_ops_red", "checked_at": now - day}
-    ok, why = recheck.album_verdict(fresh, 30, now)
+    # --- the one that is finished ------------------------------------------
+    ok, why = recheck.album_verdict(album(found=both, status="exists_ops_red"), 365, now, both)
     check("an album on every tracker is not looked up again", not ok, why)
-    check("and the reason says when and what", "exists_ops_red" in why, why)
+    check("and the reason names them and says when",
+          "RED" in why and "OPS" in why and "day" in why, why)
 
-    stale = {"status": "missing_red", "checked_at": now - 90 * day}
-    check("one past the window is", recheck.album_verdict(stale, 30, now)[0], "")
-
+    # --- and everything that is not ----------------------------------------
+    ok, why = recheck.album_verdict(album(found=["RED"], missing=["OPS"], status="exists_red"), 365, now, both)
+    check("one missing from a tracker is looked up again", ok, why)
+    ok, why = recheck.album_verdict(album(missing=both, status="missing_ops_red"), 365, now, both)
+    check("and so is one missing from all of them", ok, why)
+    ok, why = recheck.album_verdict({"status": "skipped_filter", "checked_at": now}, 365, now, both)
+    check("an album a filter stopped is reconsidered, so widening one brings it back", ok, why)
+    ok, why = recheck.album_verdict({"status": "skipped_no_flac", "checked_at": now}, 365, now, both)
+    check("and so is one Deezer could not supply at the time", ok, why)
+    ok, why = recheck.album_verdict(album(found=["RED"], status="exists_red"), 365, now, both)
+    check("a tracker that was never asked is still a question", ok, why)
     check("a failed lookup is always retried",
-          recheck.album_verdict({"status": "tracker_failed", "checked_at": now}, 30, now)[0], "")
-    check("an album never seen is looked up", recheck.album_verdict(None, 30, now)[0], "")
-    check("and with the window off, an answer is trusted forever",
-          not recheck.album_verdict({"status": "exists_red", "checked_at": now - 900 * day}, 0, now)[0], "")
+          recheck.album_verdict({"status": "tracker_failed", "checked_at": now}, 365, now, both)[0], "")
+    check("an album never seen is looked up", recheck.album_verdict(None, 365, now, both)[0], "")
+
+    # --- the window is the ceiling over all of it --------------------------
+    settled_but_old = album(found=both, status="exists_ops_red", age_days=400)
+    check("past the window even the settled answer is asked again",
+          recheck.album_verdict(settled_but_old, 365, now, both)[0], "")
+    check("and with the window off it is trusted for good",
+          not recheck.album_verdict(settled_but_old, 0, now, both)[0], "")
+
+    # --- records written before the lists existed --------------------------
+    check("an older 'on both trackers' record is still understood",
+          not recheck.album_verdict({"status": "exists_both", "checked_at": now - day}, 365, now, both)[0], "")
+    check("and an older 'missing from RED' one is read as missing",
+          recheck.album_verdict({"status": "missing_red", "checked_at": now - day}, 365, now, both)[0], "")
+    found, missing = recheck.tracker_sets({"status": "exists_ops_red"})
+    check("a status names the trackers it was built from",
+          found == {"OPS", "RED"} and not missing, f"{found} {missing}")
 
     # The request spelling must not leak into the album reading and vice versa.
-    check("a request status is not an album answer",
-          not recheck.album_answered("fillable"), "")
-    check("and an album status is not a request answer",
+    check("an album status is not a request answer",
           recheck.verdict({"status": "missing_red", "checked_at": now}, 30, now)[0], "")
 
 
@@ -276,8 +305,18 @@ async def endpoint_checks() -> None:
     check("and the window a scan will trust it for",
           isinstance(scan["recheck_after_days"], int), "")
     check("plus the filters a scan applies, so the page can show them",
-          set(scan["filters"]) == {"min_tracks", "min_date", "max_date"},
+          {"min_tracks", "min_date", "max_date"} <= set(scan["filters"]),
           str(sorted(scan["filters"])))
+    # Both dates default to something relative to today, so a blank one is not
+    # "no limit" and the page cannot work out what a scan will do from the
+    # stored value alone.
+    check("and what a blank one currently means",
+          scan["filters"]["min_date_effective"] and scan["filters"]["max_date_effective"],
+          str(scan["filters"]))
+    check("which is last January, and two days out",
+          scan["filters"]["min_date_default"].endswith("-01-01")
+          and scan["filters"]["max_date_default"] > scan["filters"]["min_date_default"],
+          str(scan["filters"]))
 
     await client.close()
 

@@ -23,7 +23,13 @@ from lox import cfg, debug, settings
 from lox.checker import queue_rules, recheck
 from lox.checker.deezer_requests import DeezerRequestChecker, age_of
 from lox.checker.gateway import TrackerGateway
-from lox.checker.missing import Candidate, MissingScanner
+from lox.checker.missing import (
+    Candidate,
+    MissingScanner,
+    default_max_date,
+    default_min_date,
+    effective_filters,
+)
 from lox.checker.request_detail import request_detail
 from lox.checker.request_filters import schema as filter_schema
 from lox.checker.store import CheckerStore
@@ -491,11 +497,9 @@ async def api_config(request: web.Request) -> web.Response:
             "checker": {
                 "tracker_budget": checker.tracker_budget,
                 "tracker_budget_window": checker.tracker_budget_window,
-                "min_tracks": checker.min_tracks,
-                "min_date": checker.min_date,
-                "max_date": checker.max_date,
                 "min_confidence": checker.min_confidence,
-                "album_recheck_after_days": getattr(checker, "album_recheck_after_days", 30),
+                "album_recheck_after_days": getattr(checker, "album_recheck_after_days", 365),
+                **_scan_filters(),
             },
             "arl_set": bool(request.app["gw"].arl),
             "discogs_set": bool(cfg.metadata.discogs_token),
@@ -1247,13 +1251,65 @@ async def api_watchlists(request: web.Request) -> web.Response:
 
 @routes.post("/api/watchlists")
 async def api_watchlist_create(request: web.Request) -> web.Response:
-    """Save a new Deezer search."""
+    """Save Deezer links as re-runnable searches. Deezer only, no budget spent.
+
+    Takes the links and nothing else. What each one is, what it is called and
+    how big it is are all things Deezer knows, so they are asked for rather
+    than typed: naming a search, choosing its kind from a dropdown and finding
+    an id were three questions about the link already on the clipboard.
+
+    Every link is reported on individually, so one bad line in a pasted list
+    does not throw away the good ones with it.
+    """
     body = await request.json()
-    kind = body.get("kind")
-    if kind not in ("new_releases", "chart", "search", "artist", "playlist", "module"):
-        return error("kind must be one of new_releases, chart, search, artist, playlist, module")
+    links = [str(u).strip() for u in (body.get("urls") or ([body["url"]] if body.get("url") else []))]
+    links = [u for u in links if u]
+    if not links:
+        return error("url or urls is required")
+
     manager: WatchlistManager = request.app["watchlists"]
-    watch = manager.create(body.get("name", ""), kind, body.get("target", "0"), int(body.get("limit", 50)))
+    saved, failed = [], []
+    for link in links:
+        try:
+            watch, already = await manager.save_link(link)
+        except DeezerGWError as e:
+            failed.append({"url": link, "error": str(e)})
+            continue
+        saved.append({**watch.as_dict(), "already_saved": already})
+    return json_response({"saved": saved, "failed": failed})
+
+
+@routes.post("/api/watchlists/sources")
+async def api_watchlist_sources(request: web.Request) -> web.Response:
+    """The scan sources behind a set of saved searches. No tracker budget spent.
+
+    Registered before the ``{watch_id}`` routes below so "sources" is read as
+    the word rather than as somebody's saved search.
+
+    An empty ``ids`` means all of them, which is what "Scan all" asks for.
+    """
+    body = await request.json()
+    manager: WatchlistManager = request.app["watchlists"]
+    ids = [str(i) for i in (body.get("ids") or [])] or [w.id for w in manager.saved()]
+    sources, problems = await manager.scan_sources(ids)
+    return json_response({"sources": sources, "problems": problems})
+
+
+@routes.patch("/api/watchlists/{watch_id}")
+async def api_watchlist_rename(request: web.Request) -> web.Response:
+    """Rename a saved search.
+
+    Deezer's name for a channel module is whatever it was called that week, and
+    a playlist carries whatever its owner typed. Being stuck with either is the
+    reason this exists.
+    """
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return error("name is required")
+    watch = request.app["watchlists"].rename(request.match_info["watch_id"], name)
+    if not watch:
+        return error("no such watchlist", status=404)
     return json_response(watch.as_dict())
 
 
@@ -1261,19 +1317,6 @@ async def api_watchlist_create(request: web.Request) -> web.Response:
 async def api_watchlist_delete(request: web.Request) -> web.Response:
     """Delete a saved search."""
     return json_response({"deleted": request.app["watchlists"].delete(request.match_info["watch_id"])})
-
-
-@routes.post("/api/watchlists/{watch_id}/run")
-async def api_watchlist_run(request: web.Request) -> web.Response:
-    """Run a saved search. Deezer only, no tracker budget spent."""
-    manager: WatchlistManager = request.app["watchlists"]
-    try:
-        albums = await manager.run(request.match_info["watch_id"])
-    except KeyError:
-        return error("no such watchlist", status=404)
-    except DeezerGWError as e:
-        return error(str(e), status=502)
-    return json_response({"results": albums})
 
 
 # ----------------------------------------------------------------------
@@ -1335,18 +1378,25 @@ async def api_downloads_clear(request: web.Request) -> web.Response:
 
 @routes.post("/api/missing/collect")
 async def api_missing_collect(request: web.Request) -> web.Response:
-    """Expand playlists and modules into filtered candidates. No tracker calls."""
+    """Expand Deezer links into filtered candidates. No tracker calls."""
     body = await request.json()
     sources = [s for s in (body.get("sources") or []) if s.strip()]
     if not sources:
         return error("sources is required")
-    skip_known = bool(body.get("skip_known", True))
+    # Picked by hand from Search or Browse rather than swept up by a scan, so
+    # the scan's own narrowing does not apply: somebody who ticked a release
+    # and pressed Check trackers has already decided it is worth the calls.
+    manual = bool(body.get("manual"))
 
     scanner: MissingScanner = request.app["scanner"]
     jobs: JobRegistry = request.app["jobs"]
 
     async def run(job) -> None:
-        candidates = await scanner.collect(sources, progress=job.emit, skip_known=skip_known)
+        # Whether an album already answered is looked up again is the recheck
+        # window's business, and nothing else's. There used to be a tickbox
+        # here saying the same thing in fewer words, which meant one decision
+        # had two controls and they could disagree.
+        candidates = await scanner.collect(sources, progress=job.emit, manual=manual)
         job.results.extend(c.as_dict() for c in candidates)
 
     job = jobs.spawn("missing_collect", f"Collecting from {len(sources)} source(s)", run)
@@ -1518,13 +1568,28 @@ async def api_scan_history(request: web.Request) -> web.Response:
         "albums": rows[:HISTORY_LIMIT],
         "total": len(rows),
         "shown": min(len(rows), HISTORY_LIMIT),
-        "recheck_after_days": int(getattr(cfg.checker, "album_recheck_after_days", 30) or 0),
-        "filters": {
-            "min_tracks": cfg.checker.min_tracks,
-            "min_date": cfg.checker.min_date or "",
-            "max_date": cfg.checker.max_date or "",
-        },
+        "recheck_after_days": int(getattr(cfg.checker, "album_recheck_after_days", 365) or 0),
+        "filters": _scan_filters(),
     })
+
+
+def _scan_filters() -> dict[str, Any]:
+    """The scan filters as the page needs them: what is set, and what is meant.
+
+    Both dates default to something relative to today, so a blank one is not
+    "no limit" -- it is a value the page has to be told, or it cannot show what
+    a scan is about to do.
+    """
+    effective = effective_filters()
+    return {
+        "min_tracks": cfg.checker.min_tracks,
+        "min_date": cfg.checker.min_date or "",
+        "max_date": cfg.checker.max_date or "",
+        "min_date_default": default_min_date(),
+        "max_date_default": default_max_date(),
+        "min_date_effective": effective["min_date"],
+        "max_date_effective": effective["max_date"],
+    }
 
 
 #: What a stored album status means, in one phrase. The status itself carries

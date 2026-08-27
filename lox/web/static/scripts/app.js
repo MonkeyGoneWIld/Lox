@@ -46,6 +46,11 @@
     uploadTrackers: new Set(),
     albumCheck: null,
     watchlists: [],
+    // Which saved searches are ticked, so several can be scanned as one job.
+    watchSelected: new Set(),
+    // The one being renamed, so a re-render does not close the box you are
+    // typing in.
+    watchEditing: null,
     linking: false,
     requestRows: [],
     selectedRequests: new Set(),
@@ -1265,11 +1270,16 @@
     // scan you set up an hour ago.
     box.value = urls.join('\n');
     clearPicks();
+    // Picked one at a time, so the scan's filters do not apply to them: they
+    // exist to stop a sweep of a channel module spending budget on four
+    // hundred singles, and you have already made that decision by ticking a
+    // release and pressing the button.
+    //
     // And then actually check them. This used to stop here, having moved you
     // to another tab and pasted some URLs, with the button you had already
     // pressed -- "Check trackers" -- waiting to be pressed again under a
     // different name.
-    await missingScan();
+    await missingScan({ manual: true });
   }
 
   function renderGrid(container, items, emptyMessage) {
@@ -2053,62 +2063,169 @@
     try {
       const { watchlists } = await api('/api/watchlists');
       state.watchlists = watchlists;
-      if (!watchlists.length) {
-        container.replaceChildren(el('p', { class: 'hint' }, 'No saved searches yet.'));
-        return;
-      }
-      container.replaceChildren(
-        ...watchlists.map((w) =>
-          el(
-            'div',
-            { class: 'row watchrow' },
-            el('strong', {}, w.name),
-            el('span', { class: 'tag dim' }, w.kind_label),
-            el('span', { class: 'card-sub' }, w.target),
-            w.last_run ? el('span', { class: 'card-sub' }, `${w.last_count} last run`) : null,
-            el('button', { onclick: () => runWatchlist(w) }, 'Run'),
-            el('button', { class: 'ghost', onclick: () => deleteWatchlist(w.id) }, 'Delete'),
-          ),
-        ),
-      );
+      // A search deleted elsewhere should not stay ticked and counted.
+      const alive = new Set(watchlists.map((w) => w.id));
+      state.watchSelected.forEach((id) => alive.has(id) || state.watchSelected.delete(id));
+      renderWatchlists();
     } catch (e) {
       container.replaceChildren(empty(e.message));
+      watchlistPick();
     }
   }
 
-  async function saveWatchlist(event) {
-    event.preventDefault();
-    const name = $('#watchlist-name').value.trim();
-    const kind = $('#watchlist-kind').value;
-    const target = $('#watchlist-target').value.trim() || '0';
+  /** How many are ticked, and what that lets you press. */
+  function watchlistPick() {
+    const n = state.watchSelected.size;
+    const total = state.watchlists.length;
+    $('#watchlist-scan').disabled = n === 0;
+    $('#watchlist-delete').disabled = n === 0;
+    $('#watchlist-scan-all').disabled = total === 0;
+    $('#watchlist-count').textContent = total
+      ? `${n} of ${total} selected`
+      : '';
+  }
+
+  function renderWatchlists() {
+    const container = $('#watchlists');
+    if (!state.watchlists.length) {
+      container.replaceChildren(el('p', { class: 'hint' },
+        'Nothing saved yet. Paste a link above and press Save for later.'));
+      watchlistPick();
+      return;
+    }
+
+    container.replaceChildren(...state.watchlists.map((w) => watchRow(w)));
+    watchlistPick();
+  }
+
+  /** One saved search: what it is, how big, when it was last scanned. */
+  function watchRow(w) {
+    const tick = el('input', {
+      type: 'checkbox',
+      checked: state.watchSelected.has(w.id),
+      'aria-label': `Select ${w.name}`,
+      onchange: (e) => {
+        if (e.target.checked) state.watchSelected.add(w.id);
+        else state.watchSelected.delete(w.id);
+        watchlistPick();
+      },
+    });
+
+    if (state.watchEditing === w.id) return el('div', { class: 'watchrow' }, tick, renameField(w));
+
+    return el(
+      'div',
+      { class: 'watchrow' },
+      tick,
+      el('div', { class: 'watch-what' },
+        el('strong', {}, w.name),
+        el('span', { class: 'card-sub' },
+           [w.kind_label, w.holds].filter(Boolean).join(' · '))),
+      el('div', { class: 'card-sub watch-when' },
+         w.last_run ? `scanned ${ago(w.last_run)}` : 'never scanned'),
+      el('div', { class: 'watch-acts' },
+        w.url
+          ? el('a', { class: 'linkbtn', href: w.url, target: '_blank', rel: 'noreferrer' },
+               'Open ↗')
+          : null,
+        el('button', { class: 'ghost', onclick: () => { state.watchEditing = w.id; renderWatchlists(); } },
+           'Rename'),
+        el('button', { class: 'ghost', onclick: () => deleteWatchlists([w.id]) }, 'Delete')),
+    );
+  }
+
+  /** The rename box, in place of the name it is replacing. */
+  function renameField(w) {
+    const box = el('input', {
+      type: 'text',
+      value: w.name,
+      'aria-label': 'Name',
+      onkeydown: (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+        if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+      },
+    });
+    const cancel = () => { state.watchEditing = null; renderWatchlists(); };
+    const save = async () => {
+      const name = box.value.trim();
+      if (!name) return cancel();
+      try {
+        await api(`/api/watchlists/${w.id}`, { method: 'PATCH', body: { name } });
+      } catch (err) {
+        return toast(err.message, 'bad');
+      }
+      state.watchEditing = null;
+      return loadWatchlists();
+    };
+    // Focused after it is in the document, which is the next frame.
+    setTimeout(() => { box.focus(); box.select(); }, 0);
+    return el('div', { class: 'watch-rename' },
+      box,
+      el('button', { class: 'primary', onclick: save }, 'Save'),
+      el('button', { class: 'ghost', onclick: cancel }, 'Cancel'));
+  }
+
+  /**
+   * Save whatever links are in the scan box.
+   *
+   * The same box that scans them, because they are the same links: a search
+   * you want to keep is one you were about to run. Deezer is asked what each
+   * one is, so there is no name to invent and no id to go and find.
+   */
+  async function saveSources() {
+    const urls = sourceLines();
+    if (!urls.length) return toast('Paste a Deezer link first', 'bad');
+
+    const button = $('#missing-save');
+    button.disabled = true;
     try {
-      await api('/api/watchlists', { method: 'POST', body: { name, kind, target } });
-      $('#watchlist-name').value = '';
-      $('#watchlist-target').value = '';
-      loadWatchlists();
-      toast('Saved', 'ok');
+      const { saved, failed } = await api('/api/watchlists', { method: 'POST', body: { urls } });
+      const added = saved.filter((w) => !w.already_saved);
+      // Named rather than counted when there is one, because the name is the
+      // thing being confirmed -- it came from Deezer, not from you.
+      if (added.length === 1) toast(`Saved “${added[0].name}”`, 'ok');
+      else if (added.length) toast(`Saved ${added.length} searches`, 'ok');
+      if (saved.length > added.length) {
+        toast(`${saved.length - added.length} already saved`, '');
+      }
+      failed.forEach((f) => toast(`${f.url}: ${f.error}`, 'bad'));
+      if (added.length) loadWatchlists();
     } catch (e) {
       toast(e.message, 'bad');
+    } finally {
+      button.disabled = false;
     }
   }
 
-  async function deleteWatchlist(id) {
-    await api(`/api/watchlists/${id}`, { method: 'DELETE' });
+  async function deleteWatchlists(ids) {
+    const names = state.watchlists.filter((w) => ids.includes(w.id)).map((w) => w.name);
+    const what = names.length === 1 ? `“${names[0]}”` : `${names.length} saved searches`;
+    if (!confirm(`Delete ${what}?\n\nThis only forgets the link. Nothing already scanned is affected.`)) return;
+    await Promise.all(ids.map((id) => api(`/api/watchlists/${id}`, { method: 'DELETE' })));
+    ids.forEach((id) => state.watchSelected.delete(id));
     loadWatchlists();
   }
 
-  async function runWatchlist(watch) {
-    toast(`Running "${watch.name}"…`);
+  /**
+   * Scan a set of saved searches as one job.
+   *
+   * Their links go into the box above rather than being scanned invisibly, so
+   * what is about to be looked at is on screen and can be edited before, or
+   * pasted somewhere else after.
+   *
+   * @param {string[]} ids - Which to scan. Empty means every saved search.
+   */
+  async function scanWatchlists(ids) {
+    let payload;
     try {
-      const { results } = await api(`/api/watchlists/${watch.id}/run`, { method: 'POST' });
-      if (!results.length) return toast('No albums returned', 'bad');
-      const box = $('#missing-sources');
-      const urls = results.map((a) => `https://www.deezer.com/album/${a.id}`);
-      box.value = urls.join('\n');
-      toast(`${results.length} album(s) loaded into the collect box. Still no tracker contacted.`, 'ok');
+      payload = await api('/api/watchlists/sources', { method: 'POST', body: { ids } });
     } catch (e) {
-      toast(e.message, 'bad');
+      return toast(e.message, 'bad');
     }
+    payload.problems.forEach((p) => toast(`${p.name || 'A saved search'}: ${p.error}`, 'bad'));
+    if (!payload.sources.length) return toast('Nothing to scan', 'bad');
+    $('#missing-sources').value = payload.sources.join('\n');
+    return missingScan();
   }
 
   // ---------------------------------------------------------------- downloads
@@ -2367,9 +2484,21 @@
   // for you to press the second one -- a question with one sensible answer is
   // not worth asking. Expanding is free and checking is not, so the cost is
   // still stated, and both halves can be stopped while they run.
-  async function missingScan() {
-    const sources = $('#missing-sources').value.split('\n').map((s) => s.trim()).filter(Boolean);
-    if (!sources.length) return toast('Add at least one URL', 'bad');
+  /** The links in the scan box, one per line, blanks dropped. */
+  function sourceLines() {
+    return $('#missing-sources').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  }
+
+  /**
+   * Expand the links in the box, then check what comes out.
+   *
+   * @param {boolean} [options.manual] - These were picked one at a time from
+   *   Search or Browse, so the scan's own filters and its "already looked up"
+   *   skip do not apply to them.
+   */
+  async function missingScan({ manual = false } = {}) {
+    const sources = sourceLines();
+    if (!sources.length) return toast('Paste at least one Deezer link', 'bad');
 
     const log = $('#missing-collect-log');
     log.hidden = false;
@@ -2378,9 +2507,13 @@
     state.candidates = [];
 
     try {
+      // Whether an album already looked up is looked at again is the recheck
+      // window's business, up in the filters. The tickbox that used to sit
+      // beside this button said the same thing in fewer words, so one decision
+      // had two controls and they could contradict each other.
       const { job_id } = await api('/api/missing/collect', {
         method: 'POST',
-        body: { sources, skip_known: $('#missing-skip-known').checked },
+        body: { sources, manual },
       });
       // Beside the log rather than inside it: the log is written with
       // textContent, which would wipe a child button on the next tick.
@@ -3428,49 +3561,94 @@
         body: { changes: { [`checker.${key}`]: String(value) } },
       });
     } catch (e) {
-      toast(e.message, 'bad');
+      return toast(e.message, 'bad');
     }
+    // Read back rather than assumed: clearing a date puts the rolling default
+    // in the box, and the note under it has to change with it.
+    return loadScanFilters();
   }
 
   // The filters a scan applies before contacting a tracker. They govern
   // scanning and nothing else -- the request checker, the album page and the
   // search results never consult them -- so they sit with the scan rather
   // than on the settings page, where they read as rules the whole app obeys.
-  function renderScanFilters(filters, window_) {
-    const host = $('#scan-filters');
-    const textRow = (key, label, placeholder, hint) => formRow(label,
+  /**
+   * One filter: its name, the control, and the note under it.
+   *
+   * Not the banded row the request form uses. That layout earns its width on a
+   * group of fifty checkboxes; spent on a single number it puts one short
+   * answer per screen-wide line, and four of them filled the top of the page
+   * with rules and whitespace.
+   *
+   * @param {string} label - What the filter is.
+   * @param {Node[]} controls - The control, or the pair a duration takes.
+   * @param {string} hint - What a blank or a zero means.
+   */
+  function scanField(label, controls, hint) {
+    return el('div', { class: 'scanfield' },
+      el('div', { class: 'reqlabel' }, label),
+      el('div', { class: 'scancontrol' }, ...controls),
+      hint ? el('span', { class: 'hint reqhint' }, hint) : null);
+  }
+
+  /**
+   * One date filter.
+   *
+   * A real date input, so the answer is picked off a calendar rather than
+   * typed in a format you have to be told. Both of these default to something
+   * relative to today -- last January, and two days out -- so the box shows
+   * that date whether or not one has been set, and the note underneath says
+   * which of the two you are looking at and offers the way back.
+   *
+   * @param {Object} filters - The filter payload from the server.
+   * @param {string} key - min_date or max_date.
+   * @param {string} label - What it is called on screen.
+   */
+  function dateFilter(filters, key, label) {
+    const set = filters[key] || '';
+    const fallback = filters[`${key}_default`] || '';
+    return scanField(label, [
       el('input', {
         id: `scan-${key}`,
-        type: 'text',
-        class: 'reqsmall',
-        placeholder,
-        value: filters[key] || '',
+        type: 'date',
+        value: set || filters[`${key}_effective`] || fallback,
         onchange: (e) => saveScanFilter(key, e.target.value.trim()),
       }),
-      el('span', { class: 'hint reqhint' }, hint));
+    ], set
+      ? el('button', {
+          type: 'button',
+          class: 'linkbtn filter-reset',
+          title: `Go back to ${fallback}, which moves with the calendar`,
+          onclick: () => saveScanFilter(key, ''),
+        }, `default is ${fallback}`)
+      : 'the default, and it rolls forward');
+  }
+
+  function renderScanFilters(filters, window_) {
+    const host = $('#scan-filters');
+    if (!host) return;
 
     host.replaceChildren(
-      formRow('Ignore albums with fewer tracks than',
+      scanField('Fewer tracks than', [
         el('input', {
           id: 'scan-min-tracks',
           type: 'number',
-          class: 'reqsmall',
           min: '0',
           step: '1',
-          value: String(filters.min_tracks || 0),
+          value: String(filters.min_tracks ?? 0),
           onchange: (e) => saveScanFilter('min_tracks', e.target.value || '0'),
         }),
-        el('span', { class: 'hint reqhint' }, '0 checks every album')),
-      textRow('min_date', 'Ignore releases before', '2025-01-01', 'YYYY-MM-DD, or blank'),
-      textRow('max_date', 'Ignore releases after', '2026-12-31', 'YYYY-MM-DD, or blank'),
-      formRow('Look up again if checked more than',
-        ...durationControl({
-          id: 'scan-recheck',
-          days: window_,
-          never: true,
-          onChange: (days) => saveScanFilter('album_recheck_after_days', days),
-        }),
-        el('span', { class: 'hint reqhint' }, 'ago')),
+      ], '0 checks every album'),
+      dateFilter(filters, 'min_date', 'Released before'),
+      dateFilter(filters, 'max_date', 'Released after'),
+      // The ceiling over every reason a scan has for asking again. "never"
+      // keeps an answer for good.
+      scanField('Looked up more than', durationControl({
+        id: 'scan-recheck',
+        days: window_,
+        never: true,
+        onChange: (days) => saveScanFilter('album_recheck_after_days', days),
+      }), 'ago \u2014 anything older is looked up again'),
     );
   }
 
@@ -3495,14 +3673,9 @@
     try {
       const config = await api('/api/config');
       const checker = config.checker || {};
-      renderScanFilters(
-        {
-          min_tracks: checker.min_tracks,
-          min_date: checker.min_date || '',
-          max_date: checker.max_date || '',
-        },
-        checker.album_recheck_after_days ?? 30,
-      );
+      // Passed through whole: the server sends what is set, what the default
+      // currently is, and which of the two a scan will use.
+      renderScanFilters(checker, checker.album_recheck_after_days ?? 365);
     } catch (e) {
       $('#scan-filters').replaceChildren(empty(e.message));
     }
@@ -6428,7 +6601,12 @@ They will not be listed again, even if a later scan finds them.`)) {
         genre: b.dataset.explore === 'channels' ? '' : genreParam(),
       }))),
     );
-    $('#missing-scan').addEventListener('click', missingScan);
+    $('#missing-scan').addEventListener('click', () => missingScan());
+    // A reload used to bring back whatever was in the box when you left, which
+    // for anyone who had just run a scan was that scan's list -- sitting there
+    // looking like the next thing they were about to do. The browser restores
+    // it; this is what does not.
+    $('#missing-sources').value = '';
     // Re-checks whatever is ticked in the results, which is the only place a
     // subset makes sense.
     $('#missing-check').addEventListener('click', () => missingCheck());
@@ -6484,7 +6662,13 @@ They will not be listed again, even if a later scan finds them.`)) {
       toast(`Checking ${ids.length} request(s) from ${file.name}`, 'ok');
       requestsCheck(ids, { placeholders: true });
     });
-    $('#watchlist-form').addEventListener('submit', saveWatchlist);
+    // Saving is the same links the Scan button reads, so it hangs off the
+    // same box rather than a form of its own underneath it.
+    $('#missing-save').addEventListener('click', saveSources);
+    $('#watchlist-scan').addEventListener('click', () => scanWatchlists([...state.watchSelected]));
+    // Everything saved, in one scan. An empty list means all of them.
+    $('#watchlist-scan-all').addEventListener('click', () => scanWatchlists([]));
+    $('#watchlist-delete').addEventListener('click', () => deleteWatchlists([...state.watchSelected]));
     $('#downloads-clear').addEventListener('click', async () => {
       await api('/api/downloads/clear', { method: 'POST' });
       pollDownloads(true);

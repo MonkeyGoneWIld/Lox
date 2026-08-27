@@ -28,23 +28,45 @@ from typing import Any
 #: settled until the recheck window is up.
 SETTLED = frozenset({"filled", "fillable", "skipped"})
 
-#: The same idea for albums. A scan writes ``exists_red``, ``missing_ops_red``,
-#: ``skipped_no_flac`` and so on; every one of them is an answer. The prefixes
-#: are matched rather than listed because the tracker half of the name is built
-#: from whichever trackers were configured.
-ALBUM_SETTLED_PREFIXES = ("exists_", "missing_", "skipped_")
+#: The one album answer nothing can move: present on every tracker that was
+#: asked. There is no upload in it, no rule admits it, and the only way that
+#: changes is somebody deleting a torrent.
+#:
+#: Everything else a scan writes is a state that can still change, and treating
+#: the lot as settled is what made the Scan tab feel stuck. ``skipped_filter``
+#: means a filter stopped it -- change the filter and it should come back, but
+#: it never did. ``missing_ops`` means there is something to upload -- the
+#: queue rule can widen onto it, somebody else can beat you to it, and neither
+#: was ever noticed. A prefix match cannot tell those apart, because the
+#: prefix does not carry which trackers said what; the stored ``found_on`` and
+#: ``missing_from`` lists do.
+def tracker_sets(entry: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """Which trackers had it and which did not, from a stored album record.
 
-
-def album_answered(status: str) -> bool:
-    """Whether a scan already reached a verdict on this album.
+    Falls back to reading the status when the lists are absent, which is how
+    records written before those lists existed are still understood.
 
     Args:
-        status: The stored album status.
+        entry: A stored album record.
 
     Returns:
-        True when a later scan would only be paying to learn the same thing.
+        ``(found_on, missing_from)`` as upper-case tracker codes.
     """
-    return any(status.startswith(prefix) for prefix in ALBUM_SETTLED_PREFIXES)
+    found = {str(t).upper() for t in entry.get("found_on") or ()}
+    missing = {str(t).upper() for t in entry.get("missing_from") or ()}
+    if found or missing:
+        return found, missing
+
+    status = str(entry.get("status") or "")
+    # "exists_both" is the older spelling for "on every tracker asked", and it
+    # names none of them. Read as a full house rather than as nothing.
+    if status == "exists_both":
+        return {"*"}, set()
+    for prefix, into in (("exists_", "found"), ("missing_", "missing")):
+        if status.startswith(prefix):
+            codes = {part.upper() for part in status[len(prefix):].split("_") if part}
+            return (codes, set()) if into == "found" else (set(), codes)
+    return set(), set()
 
 #: Statuses that answered nothing, because something broke on the way. These
 #: are never skipped: the previous run learned nothing to reuse.
@@ -78,19 +100,13 @@ def verdict(
     entry: dict[str, Any] | None,
     recheck_after_days: int,
     now: float | None = None,
-    *,
-    albums: bool = False,
 ) -> tuple[bool, str]:
-    """Whether one record still needs looking up.
+    """Whether one request still needs looking up.
 
     Args:
         entry: The stored record, or None if it has never been checked.
         recheck_after_days: How long an answer is trusted. 0 trusts it forever.
         now: Current epoch seconds, for tests.
-        albums: Read the status as a scan's verdict on an album rather than a
-            check's verdict on a request. The two collections spell their
-            answers differently -- "missing_ops_red" against "fillable" -- and
-            an album's spelling depends on which trackers are configured.
 
     Returns:
         ``(True, "")`` to check it, or ``(False, reason)`` to skip it, where the
@@ -102,8 +118,7 @@ def verdict(
     status = str(entry.get("status") or "")
     if status in RETRY:
         return True, ""
-    answered = album_answered(status) if albums else status in SETTLED
-    if not answered:
+    if status not in SETTLED:
         return True, ""
 
     age = age_days(entry, now)
@@ -119,18 +134,73 @@ def verdict(
     return False, f"already checked {when} ({status})"
 
 
-def album_verdict(entry: dict[str, Any] | None, recheck_after_days: int, now: float | None = None):
-    """:func:`verdict` for an album record.
+def album_verdict(
+    entry: dict[str, Any] | None,
+    recheck_after_days: int,
+    now: float | None = None,
+    trackers: Any = (),
+) -> tuple[bool, str]:
+    """Whether a scan should look this album up again.
+
+    Not :func:`verdict` with a different vocabulary. A request has one answer
+    and it is about the request; an album has an answer per tracker, and which
+    of them said what is the whole of the decision.
+
+    Skipped, and only this: the album is on every tracker there is. Nothing to
+    upload, no rule that could ever want it, and no setting that changes
+    either.
+
+    Looked up again, for reasons that are all the same reason -- the answer
+    can still move:
+
+    * no tracker ever answered. A filter stopped it, or Deezer did. Both are
+      settings or facts that change, and re-deciding costs no tracker call:
+      the filters run before a tracker is contacted.
+    * it is missing from somewhere. That is a release worth uploading, so it
+      is worth knowing whether somebody has beaten you to it -- and if they
+      have, this is what takes it back out of the queue.
+    * a configured tracker was never asked, because it was out of budget when
+      the scan reached it.
+    * the lookup failed.
+
+    The window is the ceiling over all of it: past it, even the settled answer
+    is asked again, which is what "Looked up more than ... ago" is for.
 
     Args:
         entry: The stored album record, or None.
-        recheck_after_days: How long a scan's answer is trusted.
+        recheck_after_days: How long a scan's answer is trusted. 0 forever.
         now: Current epoch seconds, for tests.
+        trackers: The tracker codes configured now, so a tracker that was
+            never asked is not mistaken for one that answered.
 
     Returns:
         ``(True, "")`` to look it up, or ``(False, reason)`` to skip it.
     """
-    return verdict(entry, recheck_after_days, now, albums=True)
+    if not entry:
+        return True, ""
+    if str(entry.get("status") or "") in RETRY:
+        return True, ""
+
+    found, missing = tracker_sets(entry)
+    if not found and not missing:
+        return True, ""
+    if missing:
+        return True, ""
+
+    wanted = {str(t).upper() for t in trackers or ()}
+    # "*" is the older "on every tracker asked", which names none of them and
+    # so cannot be checked against the list of trackers configured now.
+    if "*" not in found and wanted - found:
+        return True, ""
+
+    where = "every tracker" if "*" in found else ", ".join(sorted(found))
+    age = age_days(entry, now)
+    if age is None:
+        return False, f"already on {where}, no date recorded"
+    if recheck_after_days and age >= recheck_after_days:
+        return True, ""
+    when = "today" if age < 1 else f"{int(age)} day{'s' if int(age) != 1 else ''} ago"
+    return False, f"already on {where}, checked {when}"
 
 
 def plan(
