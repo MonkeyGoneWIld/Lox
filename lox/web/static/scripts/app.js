@@ -36,6 +36,7 @@
     foundHeld: [],
     selectedHeld: new Set(),
     heldGroups: [],
+    droppedNote: '',
     foundRule: '',
     showHeld: false,
     // Narrowing what is on screen. Not persisted: it is a way of reading the
@@ -103,6 +104,194 @@
     }
     node.append(...children.flat().filter((c) => c !== null && c !== undefined && c !== false));
     return node;
+  }
+
+  // ------------------------------------------------------------------
+  // Tables
+  // ------------------------------------------------------------------
+  // Every list in the app had its own header row, its own filter controls in
+  // a bar somewhere above it, and its own idea of what "selected" meant. Three
+  // consequences, all of which had been reported: shift-click selected
+  // nothing, because no list tracked where the last click was; filters sat
+  // detached from the columns they filtered, so which control narrowed which
+  // column was guesswork; and the count came from walking the DOM, so a row
+  // whose id was missing added `undefined` to the set and "17 selected" was
+  // one more than the list held.
+  //
+  // Selection here is derived from the row data, never from the checkboxes.
+  // A count that disagrees with the list is then not expressible.
+
+  const tableState = new Map();
+
+  /** The sort and per-column filters for one table, kept across re-renders. */
+  function tableView(name) {
+    if (!tableState.has(name)) {
+      tableState.set(name, { sort: null, dir: 1, filters: {}, lastIndex: null });
+    }
+    return tableState.get(name);
+  }
+
+  /**
+   * A sortable, filterable table with optional row selection.
+   *
+   * @param {object} spec
+   *   `name` keys the retained sort/filter state. `rows` is the data. Each
+   *   column has a `label`, a `cell(row)` renderer, an optional `value(row)`
+   *   for sorting and filtering, and `filter: 'text' | 'choice' | false`.
+   *   `selection` is `{ set, onChange }` to add checkboxes.
+   * @returns {HTMLElement} The table, filters and all.
+   */
+  function dataTable({ name, rows, columns, selection = null, onShown = null,
+                      empty: emptyText = 'Nothing here.' }) {
+    const view = tableView(name);
+
+    // --- filtering, column by column ---------------------------------
+    const valueOf = (column, row) =>
+      column.value ? column.value(row) : '';
+    let shown = rows;
+    for (const column of columns) {
+      const wanted = view.filters[column.label];
+      if (!wanted) continue;
+      shown = shown.filter((row) => {
+        const value = String(valueOf(column, row) ?? '').toLowerCase();
+        return column.filter === 'choice'
+          ? value === String(wanted).toLowerCase()
+          : value.includes(String(wanted).toLowerCase());
+      });
+    }
+
+    // --- sorting -------------------------------------------------------
+    const sorted = [...shown];
+    const sortColumn = columns.find((c) => c.label === view.sort);
+    if (sortColumn) {
+      sorted.sort((a, b) => {
+        const x = valueOf(sortColumn, a);
+        const y = valueOf(sortColumn, b);
+        if (typeof x === 'number' && typeof y === 'number') return (x - y) * view.dir;
+        return String(x ?? '').localeCompare(String(y ?? ''), undefined, { numeric: true }) * view.dir;
+      });
+    }
+
+    // What the table actually drew, after its own column filters. The
+    // buttons above it act on this: selecting everything, then narrowing a
+    // column, then pressing Download would otherwise have downloaded rows
+    // that were no longer on screen.
+    view.shown = sorted;
+    if (onShown) onShown(sorted);
+
+    const rerender = () => {
+      const host = document.querySelector(`[data-table="${name}"]`);
+      if (host) {
+        host.replaceWith(dataTable({ name, rows, columns, selection, onShown, empty: emptyText }));
+      }
+    };
+
+    // --- the header ----------------------------------------------------
+    const header = el('tr', {},
+      selection
+        ? el('th', { class: 'col-pick' }, el('input', {
+            type: 'checkbox',
+            checked: sorted.length > 0 && sorted.every((r) => selection.set.has(r.id)),
+            title: 'Select everything shown',
+            onchange: (e) => {
+              // From the rows on screen, not from the boxes. Selecting what is
+              // filtered out is the other half of the same bug.
+              for (const row of sorted) {
+                if (e.target.checked) selection.set.add(row.id);
+                else selection.set.delete(row.id);
+              }
+              selection.onChange();
+              rerender();
+            },
+          }))
+        : null,
+      ...columns.map((column) => {
+        const active = view.sort === column.label;
+        const head = [
+          el('button', {
+            class: `th-sort${active ? ' active' : ''}`,
+            title: `Sort by ${column.label.toLowerCase()}`,
+            onclick: () => {
+              if (view.sort === column.label) view.dir = -view.dir;
+              else { view.sort = column.label; view.dir = 1; }
+              rerender();
+            },
+          }, column.label, active ? el('span', { class: 'th-arrow' }, view.dir > 0 ? '▲' : '▼') : null),
+        ];
+
+        // The filter lives in the column it filters. It used to sit in a bar
+        // above the table, where nothing said which column it applied to.
+        if (column.filter === 'choice') {
+          const options = [...new Set(rows.map((r) => String(valueOf(column, r) ?? '')).filter(Boolean))].sort();
+          head.push(el('select', {
+            class: 'th-filter',
+            onchange: (e) => { view.filters[column.label] = e.target.value; rerender(); },
+          },
+          el('option', { value: '', selected: !view.filters[column.label] }, 'all'),
+          ...options.map((option) =>
+            el('option', { value: option, selected: view.filters[column.label] === option }, option))));
+        } else if (column.filter) {
+          head.push(el('input', {
+            class: 'th-filter',
+            type: 'search',
+            placeholder: 'filter',
+            value: view.filters[column.label] || '',
+            oninput: (e) => {
+              view.filters[column.label] = e.target.value;
+              clearTimeout(view.timer);
+              // Typing should not rebuild the table on every keystroke.
+              view.timer = setTimeout(rerender, 220);
+            },
+          }));
+        }
+        return el('th', { class: column.class || '' }, ...head);
+      }));
+
+    if (!sorted.length) {
+      return el('div', { 'data-table': name, class: 'datatable' },
+        el('table', { class: 'table' }, el('thead', {}, header)),
+        empty(rows.length ? 'Nothing matches these filters.' : emptyText));
+    }
+
+    // --- the rows ------------------------------------------------------
+    const body = sorted.map((row, index) =>
+      el('tr', {},
+        selection
+          ? el('td', { class: 'col-pick' }, el('input', {
+              type: 'checkbox',
+              checked: selection.set.has(row.id),
+              onclick: (e) => {
+                // Shift extends from the last box that was clicked, which is
+                // what every list of checkboxes has done for thirty years and
+                // what none of these did.
+                if (e.shiftKey && view.lastIndex !== null) {
+                  const [from, to] = [view.lastIndex, index].sort((a, b) => a - b);
+                  for (let i = from; i <= to; i++) {
+                    if (e.target.checked) selection.set.add(sorted[i].id);
+                    else selection.set.delete(sorted[i].id);
+                  }
+                } else if (e.target.checked) {
+                  selection.set.add(row.id);
+                } else {
+                  selection.set.delete(row.id);
+                }
+                view.lastIndex = index;
+                selection.onChange();
+                rerender();
+              },
+            }))
+          : null,
+        ...columns.map((column) => el('td', { class: column.class || '' }, column.cell(row)))));
+
+    return el('div', { 'data-table': name, class: 'datatable' },
+      el('table', { class: 'table' },
+        el('thead', {}, header),
+        el('tbody', {}, ...body)));
+  }
+
+  /** How many of `rows` are selected -- from the data, never the checkboxes. */
+  function countSelected(rows, set) {
+    return rows.reduce((n, row) => n + (set.has(row.id) ? 1 : 0), 0);
   }
 
   const duration = (seconds) => {
@@ -994,6 +1183,11 @@
       const album = await api(`/api/album/${albumId}`);
       state.album = album;
       const availability = album.availability;
+      // Matched on title, because the public track ids and the private ones
+      // do not always agree and the names are what the reader is looking at.
+      const unplayable = new Set(
+        ((availability && availability.unreadable) || []).map((t) => String(t).toLowerCase()),
+      );
       const verdict = availability
         ? availability.uploadable
           ? el('span', { class: 'tag ok' }, 'All FLAC, all streamable')
@@ -1081,13 +1275,20 @@
               ...(album.tracks || []).map((tr) =>
                 el(
                   'tr',
-                  {},
+                  // A release is only as good as the tracks that will actually
+                  // download. Saying "4 of 11" above the list and then showing
+                  // eleven identical rows leaves the reader to work out which
+                  // seven, from a list that gives them nothing to go on.
+                  { class: unplayable.has((tr.title || '').toLowerCase()) ? 'track-missing' : '' },
                   el('td', { class: 'num-col' }, String(tr.number || '')),
                   el(
                     'td',
                     {},
                     el('span', { class: 'track-title' }, tr.title || ''),
                     tr.explicit ? el('span', { class: 'tag dim explicit-tag' }, 'E') : null,
+                    unplayable.has((tr.title || '').toLowerCase())
+                      ? el('span', { class: 'tag bad' }, 'not on Deezer yet')
+                      : null,
                   ),
                   // The private records name the whole cast and carry their
                   // ids, so each credit goes to that artist. The public ones
@@ -3244,7 +3445,8 @@
     body.replaceChildren(spinner('Loading'));
     try {
       const { found, blacklisted, held, held_count: heldCount, rule,
-              held_groups: heldGroups = [] } = await api('/api/found');
+              held_groups: heldGroups = [], settled_count: settledCount = 0,
+              settled_groups: settledGroups = [] } = await api('/api/found');
       state.found = found;
       state.foundHeld = held || [];
       state.foundRule = rule || '';
@@ -3252,11 +3454,22 @@
       $('#found-restore').hidden = !blacklisted;
       $('#found-restore').textContent = `Clear blacklist (${blacklisted})`;
 
-      // What the Settings rules kept out. A count and a way to look, so a
-      // narrowed rule never reads as "the scan found nothing".
-      const heldRow = $('#found-held-row');
-      heldRow.hidden = !heldCount;
       state.heldGroups = heldGroups;
+
+      // Releases dropped for good are not listed -- there is nothing to do
+      // with them -- but the number is still said, so a queue that went quiet
+      // is explained rather than just short.
+      const dropped = settledCount
+        ? `${settledCount} dropped: ${settledGroups.map((g) => `${g.count} ${g.label}`).join('; ')}.`
+        : '';
+      state.droppedNote = dropped;
+
+      // What was kept out, and whether any of it can still be acted on. The
+      // toggle only appears when there is a list behind it.
+      const heldRow = $('#found-held-row');
+      heldRow.hidden = !heldCount && !settledCount;
+      $('#found-held-toggle').hidden = !heldCount;
+      if (!heldCount && settledCount) $('#found-held').textContent = dropped;
       if (heldCount) {
         // Only one of these groups is a setting, and it is usually the small
         // one. Calling all of them "your queue rules" sent people to Settings
@@ -3265,8 +3478,8 @@
           if (g.key === 'rules') return `${g.count} by your queue rules, which let through ${state.foundRule}`;
           return `${g.count} ${g.label}`;
         });
-        $('#found-held').textContent = `${heldCount} not in the queue: ${parts.join('; ')}.`;
-        $('#found-held-toggle').textContent = state.showHeld ? 'Hide them' : 'Show them';
+        $('#found-held').textContent = `${heldCount} excluded: ${parts.join('; ')}. ${dropped}`.trim();
+        $('#found-held-toggle').textContent = state.showHeld ? 'Hide excluded' : 'Show excluded';
       }
 
       fillTrackerFilter();
@@ -3321,6 +3534,13 @@
     });
   }
 
+  /** The count line, from the rows the table is showing. */
+  function updateFoundCount() {
+    const shown = tableView('queue').shown || [];
+    $('#found-count').textContent =
+      `${countSelected(shown, state.selectedFound)} of ${shown.length} selected`;
+  }
+
   function renderFound() {
     const body = $('#found-body');
     railCount('#found-count-rail', state.found.length);
@@ -3331,9 +3551,11 @@
     if (!state.found.length) {
       body.replaceChildren(
         state.foundHeld.length
-          ? empty(`Nothing to upload yet. ${state.foundHeld.length} release(s) were left out — `
-              + 'widen the rules in Settings, or show them above.')
-          : empty('Nothing yet. Run a scan or check some requests.'),
+          ? empty(`The queue is empty. ${state.foundHeld.length} release(s) were excluded — `
+              + 'see the list below, or widen the queue rule in Settings.')
+          : empty(state.droppedNote
+              ? `The queue is empty. ${state.droppedNote}`
+              : 'The queue is empty. Run a scan, or look up some requests.'),
       );
       $('#found-count').textContent = '';
       $('#found-filtered').textContent = '';
@@ -3350,40 +3572,50 @@
       if (state.showHeld) body.append(heldTable());
       return;
     }
-    // Counted against what is on screen, because the buttons act on what is
-    // on screen: selecting all while filtered then downloading a hidden row
-    // would be a nasty surprise.
-    const shownSelected = rows.filter((f) => state.selectedFound.has(f.id)).length;
-    $('#found-count').textContent = `${shownSelected} of ${rows.length} selected`;
-    body.replaceChildren(
-      el(
-        'table',
-        { class: 'table' },
-        el('thead', {}, el('tr', {},
-          el('th', {}, selectAllBox(rows.map((f) => f.id), state.selectedFound, renderFound)),
-          el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'How it got here'),
-          el('th', {}, 'Last checked'))),
-        el('tbody', {}, ...rows.map((f) =>
-          el('tr', {},
-            el('td', {}, el('input', {
-              type: 'checkbox',
-              checked: state.selectedFound.has(f.id),
-              onclick: (e) => pickFound(f.id, e),
-            })),
-            el('td', {}, el('a', {
-              href: '#',
-              onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
-            }, `${f.artist || ''} — ${f.title || ''}`)),
-            // One tag per tracker, saying what the last check found there.
-            // A single "not on RED, OPS" line could not say that a re-check had
-            // since found it on one of them, which is how a release that is on
-            // both sat here looking like it was on neither.
-            el('td', { class: 'found-trackers' }, ...trackerTags(f)),
-            el('td', { class: 'found-sources' }, ...sourceTags(f)),
-            el('td', { class: 'card-sub' }, ago(f.checked_at)),
-          ))),
-      ),
-    );
+    // Counted from the rows, not the checkboxes, and against what is on
+    // screen: the buttons act on what is on screen, so selecting all while
+    // filtered and then downloading a hidden row would be indefensible.
+    body.replaceChildren(dataTable({
+      name: 'queue',
+      rows,
+      selection: { set: state.selectedFound, onChange: updateFoundCount },
+      onShown: (shown) => {
+        $('#found-count').textContent =
+          `${countSelected(shown, state.selectedFound)} of ${shown.length} selected`;
+      },
+      empty: 'Nothing in the queue.',
+      columns: [
+        {
+          label: 'Release',
+          value: (f) => `${f.artist || ''} ${f.title || ''}`.trim(),
+          filter: 'text',
+          cell: (f) => el('a', {
+            href: '#',
+            onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
+          }, `${f.artist || ''} — ${f.title || ''}`),
+        },
+        {
+          label: 'Trackers',
+          class: 'found-trackers',
+          value: trackerSummary,
+          filter: 'choice',
+          cell: (f) => el('span', {}, ...trackerTags(f)),
+        },
+        {
+          label: 'Source',
+          value: (f) => (f.sources || [f.kind]).join(', '),
+          filter: 'choice',
+          cell: (f) => el('span', {}, ...sourceTags(f)),
+        },
+        {
+          label: 'Last checked',
+          value: (f) => f.checked_at || 0,
+          filter: false,
+          class: 'nowrap',
+          cell: (f) => el('span', {}, f.checked_at ? ago(f.checked_at) : '—'),
+        },
+      ],
+    }));
     if (state.showHeld) body.append(heldTable());
   }
 
@@ -3395,28 +3627,31 @@
   // every tracker already has is not being held by anything -- there is
   // nothing to upload. It also had no way to act on a row, so a list of
   // things you did not want was a list you could only look at.
-  function heldPick(id, on) {
-    if (on) state.selectedHeld.add(id); else state.selectedHeld.delete(id);
-    const n = state.selectedHeld.size;
+  function heldPick() {
+    // Counts come from the rows the table is showing, not from the boxes: a
+    // row with no id used to add `undefined` to the set, so "17 selected" was
+    // one more than the list held and clearing left that one behind.
+    const n = countSelected(tableView('held').shown || state.foundHeld, state.selectedHeld);
     $$('.held-action').forEach((b) => { b.disabled = n === 0; });
     const label = $('#held-selected');
     if (label) label.textContent = n ? `${n} selected` : '';
   }
 
   async function heldAct(what) {
-    const ids = [...state.selectedHeld];
+    const shown = tableView('held').shown || state.foundHeld;
+    const ids = shown.filter((r) => state.selectedHeld.has(r.id)).map((r) => r.id);
     if (!ids.length) return;
     try {
       if (what === 'recheck') {
-        const rows = state.foundHeld.filter((f) => ids.includes(f.id));
+        const rows = shown.filter((r) => ids.includes(r.id));
+        state.selectedHeld = new Set();
         await recheckReleases(rows);
-        return;   // the job reloads the list when it finishes
-      } else {
-        await api('/api/found/dismiss', { method: 'POST', body: { ids, blacklist: what === 'blacklist' } });
-        toast(what === 'blacklist'
-          ? `${ids.length} blacklisted — no scan will list them again.`
-          : `${ids.length} removed.`, 'ok');
+        return;
       }
+      await api('/api/found/dismiss', { method: 'POST', body: { ids, blacklist: what === 'blacklist' } });
+      toast(what === 'blacklist'
+        ? `${ids.length} blacklisted. No scan will list them again.`
+        : `${ids.length} removed.`, 'ok');
       state.selectedHeld = new Set();
       await loadFound();
     } catch (e) {
@@ -3425,61 +3660,63 @@
   }
 
   function heldTable() {
-    if (!state.foundHeld.length) return empty('Everything checked so far is in the queue.');
+    if (!state.foundHeld.length) return empty('Every checked release is in the queue.');
 
-    // What each group needs, said once at the top rather than repeated down
-    // the "why" column, and only where something can actually be done.
+    // What each group needs, said once rather than repeated down a column.
     const advice = (state.heldGroups || []).map((g) => {
       if (g.fix === 'recheck') {
-        return el('li', {}, `${g.count} ${g.label} — select them below and re-check.`);
+        return el('li', {}, `${g.count} ${g.label}. Select them and re-check.`);
       }
       if (g.fix === 'settings') {
-        return el('li', {}, `${g.count} by your queue rules — widen the rule in Settings to let them through.`);
+        return el('li', {}, `${g.count} excluded by your queue rules. Widen the rule in Settings to admit them.`);
       }
-      return el('li', {}, `${g.count} ${g.label} — nothing to change; remove them if you do not want them listed.`);
+      return el('li', {}, `${g.count} ${g.label}.`);
     });
 
     return el('div', { class: 'held-block' },
       el('h3', { class: 'section-head-plain' },
-         `Checked, but not in the queue (${state.foundHeld.length})`),
+         `Excluded from the queue (${state.foundHeld.length})`),
       advice.length ? el('ul', { class: 'held-why' }, ...advice) : null,
       el('div', { class: 'row held-actions' },
-        el('button', {
-          class: 'held-action', disabled: true, onclick: () => heldAct('recheck'),
-        }, 'Re-check on trackers'),
-        el('button', {
-          class: 'held-action', disabled: true, onclick: () => heldAct('remove'),
-        }, 'Remove'),
-        el('button', {
-          class: 'held-action danger', disabled: true, onclick: () => heldAct('blacklist'),
-        }, 'Blacklist'),
+        el('button', { class: 'held-action', disabled: true, onclick: () => heldAct('recheck') },
+           'Re-check on trackers'),
+        el('button', { class: 'held-action', disabled: true, onclick: () => heldAct('remove') },
+           'Remove'),
+        el('button', { class: 'held-action danger', disabled: true, onclick: () => heldAct('blacklist') },
+           'Blacklist'),
         el('span', { class: 'hint', id: 'held-selected' })),
-      el('table', { class: 'table' },
-        el('thead', {}, el('tr', {},
-          el('th', {}, el('input', {
-            type: 'checkbox',
-            onchange: (e) => {
-              $$('.held-row input[type="checkbox"]').forEach((box) => {
-                box.checked = e.target.checked;
-                heldPick(box.dataset.id, e.target.checked);
-              });
-            },
-          })),
-          el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'Why it is not in the queue'))),
-        el('tbody', {}, ...state.foundHeld.map((f) =>
-          el('tr', { class: 'held-row' },
-            el('td', {}, el('input', {
-              type: 'checkbox',
-              'data-id': f.id,
-              checked: state.selectedHeld.has(f.id),
-              onchange: (e) => heldPick(f.id, e.target.checked),
-            })),
-            el('td', {}, el('a', {
+      dataTable({
+        name: 'held',
+        rows: state.foundHeld,
+        selection: { set: state.selectedHeld, onChange: heldPick },
+        onShown: heldPick,
+        empty: 'Every checked release is in the queue.',
+        columns: [
+          {
+            label: 'Release',
+            value: (f) => `${f.artist || ''} ${f.title || ''}`.trim(),
+            filter: 'text',
+            cell: (f) => el('a', {
               href: '#',
               onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
-            }, `${f.artist || ''} — ${f.title || ''}`)),
-            el('td', { class: 'found-trackers' }, ...trackerTags(f)),
-            el('td', { class: 'card-sub' }, f.held_reason || ''))))));
+            }, `${f.artist || ''} — ${f.title || ''}`),
+          },
+          {
+            label: 'Trackers',
+            class: 'found-trackers',
+            value: (f) => trackerSummary(f),
+            filter: 'choice',
+            cell: (f) => el('span', {}, ...trackerTags(f)),
+          },
+          {
+            label: 'Exclusion reason',
+            value: (f) => f.held_reason || '',
+            filter: 'choice',
+            class: 'card-sub',
+            cell: (f) => el('span', {}, f.held_reason || ''),
+          },
+        ],
+      }));
   }
 
   // How a release got into the queue. Both can be true at once -- a scan found
@@ -3505,6 +3742,23 @@
 
   // What the last check found, per tracker. Green means there is something to
   // upload there; dim means that one already has it.
+  /**
+   * The tracker state as one comparable string.
+   *
+   * The tags are pills, which sort and filter as markup. This is the same
+   * fact in a form a column can group by, so "everything OPS is missing" is a
+   * choice in the header rather than something to read row by row.
+   *
+   * @param {object} row - A queue row.
+   * @returns {string} e.g. "OPS missing, RED has it".
+   */
+  function trackerSummary(row) {
+    const missing = (row.missing_from || []).map((t) => `${t} missing`);
+    const found = (row.found_on || []).map((t) => `${t} has it`);
+    if (!missing.length && !found.length) return 'not checked on any tracker';
+    return [...missing, ...found].join(', ');
+  }
+
   function trackerTags(row) {
     const missing = row.missing_from || [];
     const found = row.found_on || [];
@@ -3517,9 +3771,12 @@
     ];
   }
 
-  // Filtered rows only: a row you cannot see is a row you did not choose, and
-  // "Download selected" acting on one would be indefensible.
-  const foundSelection = () => filteredFound().filter((f) => state.selectedFound.has(f.id));
+  // Rows on screen only: a row you cannot see is a row you did not choose,
+  // and "Download selected" acting on one would be indefensible. That means
+  // the table's own column filters as well as the search above it, which is
+  // why this asks the table rather than re-deriving the list.
+  const foundSelection = () =>
+    (tableView('queue').shown || filteredFound()).filter((f) => state.selectedFound.has(f.id));
 
   // Off the list, one of two ways.
   //
@@ -5485,7 +5742,7 @@ They will not be listed again, even if a later scan finds them.`)) {
     });
     $('#found-held-toggle').addEventListener('click', () => {
       state.showHeld = !state.showHeld;
-      $('#found-held-toggle').textContent = state.showHeld ? 'Hide them' : 'Show them';
+      $('#found-held-toggle').textContent = state.showHeld ? 'Hide excluded' : 'Show excluded';
       renderFound();
     });
     $('#folders-refresh').addEventListener('click', loadFolders);

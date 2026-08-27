@@ -147,6 +147,13 @@ SECTIONS: tuple[Section, ...] = (
         category="Accounts",
     ),
     Section(
+        "scanning",
+        "What gets checked",
+        "Applied to a release before any tracker is contacted, so anything ruled out here costs nothing. "
+        "These decide which releases are worth looking at, not how often a tracker may be asked.",
+        category="Accounts",
+    ),
+    Section(
         "queue",
         "What reaches the queue",
         "Everything a check found is kept. This decides which of it is worth acting on, and it is applied when "
@@ -246,13 +253,20 @@ FIELDS: tuple[Field, ...] = (
     Field("checker.tracker_switch_delay", "Pause when switching tracker (seconds)", "float", "checker", minimum=0),
     Field("checker.failure_threshold", "Failures before a tracker is benched", "int", "checker", minimum=1),
     Field("checker.cooldown_seconds", "Bench duration (seconds)", "int", "checker", minimum=0),
-    Field("checker.min_tracks", "Ignore albums with fewer tracks than", "int", "checker", "0 disables.", minimum=0),
-    Field("checker.min_date", "Ignore releases before", "text", "checker", "YYYY-MM-DD. Blank disables.",
+
+    # --- What gets checked --------------------------------------------
+    # These filter releases; the ones above bound how hard a tracker is hit.
+    # Filed together under "Tracker budget" they read as rate limiting, and an
+    # album ignored for its track count has nothing to do with rate limiting.
+    Field("checker.min_tracks", "Ignore albums with fewer tracks than", "int", "scanning", "0 disables.",
+          minimum=0),
+    Field("checker.min_date", "Ignore releases before", "text", "scanning", "YYYY-MM-DD. Blank disables.",
           placeholder="2025-01-01"),
-    Field("checker.max_date", "Ignore releases after", "text", "checker", "YYYY-MM-DD. Blank disables.",
+    Field("checker.max_date", "Ignore releases after", "text", "scanning", "YYYY-MM-DD. Blank disables.",
           placeholder="2026-12-31"),
-    Field("checker.min_confidence", "Minimum request match confidence", "float", "checker",
-          "Artist and title must also clear their own thresholds.", minimum=0.0, maximum=1.0),
+    Field("checker.min_confidence", "Minimum request match confidence", "float", "scanning",
+          "How closely a Deezer release must match a request before it counts as a fill. Artist and title "
+          "must also clear their own thresholds.", minimum=0.0, maximum=1.0),
     # --- What reaches the queue ---------------------------------------
     # One dropdown whose every option is a whole sentence about a situation,
     # and one checkbox. The page fills the choices in from the trackers you

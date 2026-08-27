@@ -143,6 +143,10 @@ class AlbumCheck(msgspec.Struct):
     all_flac: bool | None = None
     flac_count: int | None = None
     deezer_tracks: int | None = None
+    #: Titles Deezer will not hand over, and why the release is unusable.
+    unavailable: list[str] = msgspec.field(default_factory=list)
+    release_date: str = ""
+    blocked: str = ""
 
     @property
     def missing_from(self) -> list[str]:
@@ -167,6 +171,9 @@ class AlbumCheck(msgspec.Struct):
             "all_flac": self.all_flac,
             "flac_count": self.flac_count,
             "deezer_tracks": self.deezer_tracks,
+            "unavailable": self.unavailable,
+            "release_date": self.release_date,
+            "blocked": self.blocked,
         }
 
 
@@ -333,14 +340,24 @@ class MissingScanner:
         unavailable_reason = availability.reason()
         if unavailable_reason:
             status = "skipped_no_flac" if not availability.all_flac else "skipped_unreadable"
-            if not availability.all_have_id:
+            if availability.unreleased:
+                status = "skipped_unreleased"
+            elif not availability.all_have_id:
                 status = "skipped_missing_track_ids"
             elif not availability.all_have_filesize:
                 status = "skipped_no_filesize"
             self.store.put(
                 "albums",
                 album_id,
-                {"status": status, "title": title, "artist": artist, "reason": unavailable_reason, "source": source},
+                {
+                    "status": status,
+                    "title": title,
+                    "artist": artist,
+                    "reason": unavailable_reason,
+                    "source": source,
+                    "deezer_unavailable": list(availability.unreadable),
+                    "release_date": availability.release_date,
+                },
             )
             emit("filtered", {"album_id": album_id, "reason": unavailable_reason})
             return None
@@ -672,6 +689,12 @@ class MissingScanner:
             check.all_flac = availability.all_flac
             check.flac_count = availability.flac_count
             check.deezer_tracks = availability.total
+            check.unavailable = list(availability.unreadable)
+            check.release_date = availability.release_date
+            # Whatever Deezer cannot supply. Recorded here so the queue can
+            # keep the release out and the page can say which tracks are
+            # missing, rather than offering a download that cannot complete.
+            check.blocked = availability.reason() or ""
 
         for code in trackers:
             if code not in self.gateway.configured_trackers():
@@ -722,10 +745,13 @@ class MissingScanner:
                 "missing_from": check.missing_from,
                 "source": "album check",
                 # Read by the queue, which will not list a release Deezer
-                # cannot supply losslessly.
+                # cannot supply.
                 "all_flac": check.all_flac,
                 "flac_count": check.flac_count,
                 "deezer_tracks": check.deezer_tracks,
+                "deezer_unavailable": check.unavailable,
+                "release_date": check.release_date,
+                "blocked": check.blocked,
                 # The verdicts too, not just the summary. Re-opening the album
                 # should show the groups it found and what it rejected without
                 # spending the budget again to learn the same thing.

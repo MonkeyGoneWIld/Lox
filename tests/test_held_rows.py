@@ -136,32 +136,45 @@ async def run() -> None:
 
     # --- the ones a tracker answered about stay in ------------------------
     check("a release missing from a tracker is a queue row", "3000000001" in listed, "")
-    check("and so is one every tracker already has", "3000000002" in listed, "")
-    check("the first is in the queue",
+    check("and it is in the queue",
           "3000000001" in {r["album_id"] for r in data["found"]}, "")
-    check("the second is not",
-          "3000000002" in {r["album_id"] for r in data["held"]}, "")
+
+    # A release every tracker already has is not waiting for anything: no
+    # setting admits it and no re-check changes the answer. Listing it
+    # produced a page of things nobody could act on, and a re-check put every
+    # one of them straight back. It is counted and dropped.
+    check("one every tracker already has is not listed at all",
+          "3000000002" not in listed, "")
+    check("but it is counted rather than silently missing",
+          data["settled_count"] >= 1, str(data["settled_count"]))
 
     # --- grouped by what is really keeping them out -----------------------
     groups = {g["key"]: g for g in data["held_groups"]}
-    check("a release every tracker has is filed as nothing to do",
-          groups.get("nothing_to_do", {}).get("count") == 1, str(sorted(groups)))
-    check("and offers no fix, because there is not one",
-          groups.get("nothing_to_do", {}).get("fix") is None, "")
-    check("one nobody has checked against Deezer is its own group",
-          groups.get("unproven", {}).get("count") == 1, "")
+    dropped = {g["key"]: g for g in data["settled_groups"]}
+
+    # What is still listed is what can still move.
+    check("one nobody has checked against Deezer is still listed",
+          groups.get("unproven", {}).get("count") == 1, str(sorted(groups)))
     check("and says a re-check is what fixes it",
           groups.get("unproven", {}).get("fix") == "recheck", "")
-    check("one with no lossless source is its own group",
-          groups.get("lossy", {}).get("count") == 1, "")
     check("the queue rules are one group among these, not the label on all of them",
           "rules" not in groups, str(sorted(groups)))
-    check("and every held row is counted exactly once",
+
+    # What is dropped is what cannot.
+    check("a release every tracker has is dropped",
+          dropped.get("nothing_to_do", {}).get("count") == 1, str(sorted(dropped)))
+    check("and so is one with no lossless source",
+          dropped.get("lossy", {}).get("count") == 1, str(sorted(dropped)))
+
+    check("every listed row is counted exactly once",
           sum(g["count"] for g in data["held_groups"]) == data["held_count"],
           f'{sum(g["count"] for g in data["held_groups"])} vs {data["held_count"]}')
+    check("and so is every dropped one",
+          sum(g["count"] for g in data["settled_groups"]) == data["settled_count"],
+          f'{sum(g["count"] for g in data["settled_groups"])} vs {data["settled_count"]}')
 
     # --- removing a release removes all of it -----------------------------
-    both = next(r for r in data["found"] + data["held"] if r["album_id"] == "4000000001")
+    both = next(r for r in data["found"] + data["held"] if r["album_id"] == "4000000001")  # noqa: E501
     check("a release known to a scan and a request is one row",
           sorted(both.get("sources", [])) == ["request", "scan"], str(both.get("sources")))
 
@@ -205,7 +218,7 @@ def page_checks() -> None:
     check("the heading no longer blames the queue rules for all of it",
           "Held back by your queue rules (${" not in js, "")
     check("and says what the list actually is",
-          "Checked, but not in the queue" in js, "")
+          "Excluded from the queue" in js, "")
     check("rows that are out can be selected", "function heldPick" in js, "")
     check("removed", "heldAct('remove')" in js, "")
     check("blacklisted", "heldAct('blacklist')" in js, "")
@@ -213,8 +226,9 @@ def page_checks() -> None:
           "heldAct('recheck')" in js, "")
     check("the re-check is the same one the queue uses",
           "function recheckReleases" in js, "")
-    check("each group says what can be done about it, or that nothing can",
-          "nothing to change" in js, "")
+    check("each group says what can be done about it",
+          "Select them and re-check." in js
+          and "Widen the rule in Settings" in js, "")
 
 
 def main() -> int:

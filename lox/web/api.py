@@ -712,11 +712,15 @@ HELD_SAMPLE = 200
 #: saying rather than implying a setting exists.
 HELD_KINDS: tuple[tuple[str, str, str, str | None], ...] = (
     ("nothing_to_do", "already on every tracker",
-     "already on every tracker that was checked", None),
+     "are already on every tracker that was checked", None),
     ("unproven", "not checked yet",
-     "not checked against Deezer yet", "recheck"),
+     "have not been checked against Deezer", "recheck"),
     ("lossy", "not all FLAC",
-     "no lossless source on Deezer, and no open request accepts lossy", None),
+     "have no lossless source on Deezer, and no open request accepts lossy", None),
+    ("unavailable", "tracks can be downloaded",
+     "cannot be downloaded in full from Deezer", None),
+    ("unreleased", "not released yet",
+     "are not released yet", None),
 )
 
 
@@ -843,6 +847,9 @@ async def api_found(request: web.Request) -> web.Response:
         for key in ("all_flac", "flac_count", "deezer_tracks"):
             if existing.get(key) is None and row.get(key) is not None:
                 existing[key] = row[key]
+        for key in ("deezer_unavailable", "release_date", "blocked"):
+            if not existing.get(key) and row.get(key):
+                existing[key] = row[key]
         # A request's terms only ever come from the request row.
         for key in ("request_formats", "request_encodings"):
             if row.get(key):
@@ -890,6 +897,11 @@ async def api_found(request: web.Request) -> web.Response:
                 "all_flac": entry.get("all_flac"),
                 "flac_count": entry.get("flac_count"),
                 "deezer_tracks": entry.get("deezer_tracks"),
+                # What Deezer will not supply, and why. Named rather than
+                # counted, so the page can say which tracks are missing.
+                "deezer_unavailable": entry.get("deezer_unavailable") or [],
+                "release_date": entry.get("release_date") or "",
+                "blocked": entry.get("blocked") or "",
             },
         )
 
@@ -932,6 +944,9 @@ async def api_found(request: web.Request) -> web.Response:
                 # FLAC is only queueable when one of these says so.
                 "request_formats": entry.get("request_formats") or [],
                 "request_encodings": entry.get("request_encodings") or [],
+                "deezer_unavailable": entry.get("deezer_unavailable") or [],
+                "release_date": entry.get("release_date") or "",
+                "blocked": entry.get("blocked") or "",
             },
         )
 
@@ -944,6 +959,17 @@ async def api_found(request: web.Request) -> web.Response:
     # found nothing.
     rules = queue_rules.rules_from(cfg.checker)
     shown, held = queue_rules.partition(rows, rules)
+
+    # A row excluded for something that will never change -- every tracker has
+    # it, Deezer cannot supply it, it is not out yet -- is not waiting for
+    # anything. Keeping it on the page produced a list of things nobody could
+    # act on, which a re-check could not clear either: re-checking confirmed
+    # the same answer and put the row straight back.
+    #
+    # Only what can still move stays: releases nobody has checked against
+    # Deezer, and releases a queue rule is holding, which the rule can release.
+    settled = [row for row in held if queue_rules.is_settled(row["held_reason"])]
+    held = [row for row in held if not queue_rules.is_settled(row["held_reason"])]
     # Every album a scan ever looked at is a held row once the floor is on, so
     # the count is the honest number and the list is a sample of it. Sending
     # ten thousand rows to explain why they are not on screen would be its own
@@ -954,6 +980,10 @@ async def api_found(request: web.Request) -> web.Response:
             "held": held[:HELD_SAMPLE],
             "held_count": len(held),
             "held_shown": min(len(held), HELD_SAMPLE),
+            # Counted but not listed: the page says how many were dropped for
+            # good so the number is not simply missing.
+            "settled_count": len(settled),
+            "settled_groups": _held_groups(settled),
             # Split out, because "held back by your queue rules" is the wrong
             # thing to tell someone whose rows are held because nobody has
             # checked what Deezer can supply. One is a setting they chose; the

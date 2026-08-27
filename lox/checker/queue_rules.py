@@ -114,6 +114,34 @@ def request_allows_lossy(formats: Any, encodings: Any) -> bool:
     return bool(wanted_formats) or ANY_FORMAT in wanted_encodings
 
 
+#: Reasons a release will never become uploadable. A row held for one of these
+#: is not waiting for anything -- no setting changes it, no re-check changes
+#: it -- so it is dropped rather than parked in a list of things to look at.
+#: Everything else is a state that can still move: unchecked, or excluded by a
+#: rule the user can widen.
+SETTLED = (
+    "already on every tracker",
+    "not released yet",
+    "tracks can be downloaded",
+    "not all FLAC on Deezer",
+    "no song ID",
+    "no filesize",
+    "no tracks returned",
+)
+
+
+def is_settled(reason: str) -> bool:
+    """Whether an exclusion is final rather than something still to resolve.
+
+    Args:
+        reason: The text :func:`admits` produced.
+
+    Returns:
+        True when nothing the user does will change the answer.
+    """
+    return any(needle in reason for needle in SETTLED)
+
+
 def lossless_gate(row: dict[str, Any]) -> tuple[bool, str]:
     """Whether Deezer can actually produce an upload worth making.
 
@@ -131,6 +159,13 @@ def lossless_gate(row: dict[str, Any]) -> tuple[bool, str]:
     Returns:
         ``(True, "")`` to let it through, or ``(False, reason)``.
     """
+    # Whatever the availability check decided Deezer cannot supply: not
+    # released yet, tracks that will not download, no song ids. It is a fact
+    # about the source, so no request and no rule gets past it.
+    blocked = str(row.get("blocked") or "")
+    if blocked:
+        return False, blocked
+
     all_flac = row.get("all_flac")
     if all_flac is True:
         return True, ""

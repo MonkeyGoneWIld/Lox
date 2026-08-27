@@ -80,6 +80,10 @@ class RequestMatch(msgspec.Struct):
     scores: dict[str, Any] = msgspec.field(default_factory=dict)
     all_flac: bool = False
     all_readable: bool = False
+    #: Track titles Deezer will not hand over, so the page can name them
+    #: rather than only counting them.
+    deezer_unavailable: list[str] = msgspec.field(default_factory=list)
+    release_date: str = ""
     verification: dict[str, Any] = msgspec.field(default_factory=dict)
     # Whether the tracker already has this release, and where. A request left
     # open after somebody uploaded it is not worth filling twice.
@@ -503,6 +507,8 @@ class DeezerRequestChecker:
                         # anyone actually ask for lossy?
                         "all_flac": match.all_flac,
                         "deezer_tracks": match.deezer_tracks,
+                        "deezer_unavailable": match.deezer_unavailable,
+                        "release_date": match.release_date,
                         "request_formats": match.formats,
                         "request_encodings": match.bitrates,
                     },
@@ -610,10 +616,20 @@ class DeezerRequestChecker:
 
         match.all_flac = availability.all_flac
         match.all_readable = availability.all_readable
+        match.deezer_unavailable = list(availability.unreadable)
+        match.release_date = availability.release_date
         match.deezer_tracks = availability.total
 
-        if not availability.all_readable:
-            match.reason = f"{len(availability.unreadable)} track(s) not streamable in your region"
+        # Whatever Deezer cannot supply, in its own words: not out yet, only
+        # four of eleven tracks fetchable, no song ids. One verdict rather
+        # than this path's own partial re-statement of it.
+        blocked = availability.reason()
+        if blocked and not availability.all_flac and availability.all_readable:
+            # FLAC alone is the request's business, not ours: a request that
+            # takes MP3 is still fillable from a lossy source.
+            blocked = None
+        if blocked:
+            match.reason = blocked
             return match
 
         flac_only = match.formats == ["FLAC"]

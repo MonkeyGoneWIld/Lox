@@ -1110,6 +1110,45 @@ select {
 /* Dates do not read well broken over two lines. */
 .table td.nowrap { white-space: nowrap; }
 
+/* ---------- sortable, filterable tables ---------- */
+/* The filter belongs in the column it filters. In a bar above the table,
+   nothing said which control narrowed which column. */
+.datatable { width: 100%; }
+.datatable thead th { vertical-align: top; padding-bottom: 8px; }
+.datatable .col-pick { width: 34px; }
+
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  padding: 0 0 6px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.th-sort:hover { color: var(--text); }
+.th-sort.active { color: var(--accent); }
+.th-arrow { font-size: 9px; }
+
+/* A track Deezer will not hand over. The row stays legible -- it is still
+   part of the release -- but it should not read as available. */
+.track-missing { opacity: 0.55; }
+.track-missing .track-title { text-decoration: line-through; }
+
+.th-filter {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  font-size: 12px;
+  padding: 4px 7px;
+}
+
 /* What a run passed over. Sits under the log it belongs to, and goes when it
    is acted on. */
 .skipped-note { margin-top: 12px; border-left: 3px solid var(--accent); }

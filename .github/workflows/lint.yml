@@ -86,6 +86,21 @@ jobs:
       - name: Request collection and filters
         run: uv run python tests/test_requests.py
 
+      - name: Deezer must be able to supply a release before it counts as one
+        # The streamable half of the availability check read a key the gw-light
+        # song records do not have, so the default won on every track of every
+        # album and a pre-release with four of eleven tracks playable was
+        # reported as "11/11 FLAC, all streamable" and queued.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5021"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+        run: |
+          mkdir -p /tmp/lox/downloads
+          uv run python tests/test_availability.py
+
       - name: The queue lists releases, not the scanner's notes to itself
         # Two thirds of one real queue was scan bookkeeping: albums Deezer
         # refused, listed as nameless rows under a heading blaming the queue

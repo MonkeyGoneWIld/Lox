@@ -305,12 +305,24 @@ def main() -> int:
     # would be indefensible, so the selection is scoped to the filtered rows.
     for control in ("found-search", "found-tracker", "found-source", "found-filter-clear"):
         check(f"the queue has a {control}", f'id="{control}"' in shell, "")
-    check("the selection follows the filter, not the whole queue",
-          "filteredFound().filter((f) => state.selectedFound.has(f.id))" in js, "")
-    check("and the count is of what is on screen",
-          "of ${rows.length} selected" in js, "")
-    check("select-all ticks the rows you can see",
-          "selectAllBox(rows.map((f) => f.id)" in js, "")
+    # Every list is one component now: sortable headers, a filter in the
+    # column it filters, and a selection derived from the rows rather than
+    # from the checkboxes.
+    check("there is one table, not one per list", "function dataTable" in js, "")
+    check("its columns sort", "th-sort" in js and "view.dir = -view.dir" in js, "")
+    check("each filter sits in the column it filters", "th-filter" in js, "")
+    check("shift extends a selection from the last box clicked",
+          "e.shiftKey && view.lastIndex !== null" in js, "")
+
+    # Counting the checkboxes meant a row with no id added `undefined` to the
+    # set, so "17 selected" was one more than the list held and clearing left
+    # that one behind.
+    check("counts come from the rows, never the checkboxes",
+          "function countSelected" in js, "")
+    check("the selection follows what the table is showing, filters included",
+          "tableView('queue').shown" in js, "")
+    check("and the buttons act on that same list",
+          "const foundSelection = () =>" in js and "tableView('queue').shown" in js, "")
 
     # A rule that hides rows without saying so is indistinguishable from a
     # scan that found nothing, which is how this page loses someone's trust.

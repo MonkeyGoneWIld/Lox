@@ -10,6 +10,7 @@ import logging
 import random
 import re
 from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
 import aiohttp
@@ -59,25 +60,72 @@ class TrackAvailability(msgspec.Struct, frozen=True):
     all_have_id: bool
     all_have_filesize: bool
     unreadable: list[str]
+    #: The release date the public API reports, and whether it has arrived. A
+    #: pre-release lists its whole tracklist while only the singles play, so
+    #: the date is the difference between "an album" and "an announcement".
+    release_date: str = ""
+    unreleased: bool = False
 
     @property
     def uploadable(self) -> bool:
         """True when the release passes every availability check."""
-        return self.all_flac and self.all_readable and self.all_have_id and self.all_have_filesize
+        return (
+            not self.unreleased
+            and self.all_flac
+            and self.all_readable
+            and self.all_have_id
+            and self.all_have_filesize
+        )
 
     def reason(self) -> str | None:
         """Return why the release is not uploadable, or None if it is."""
         if not self.total:
             return "no tracks returned"
+        if self.unreleased:
+            return f"not released yet — Deezer says {self.release_date}"
         if not self.all_have_id:
             return "some tracks have no song ID"
         if not self.all_have_filesize:
             return "some tracks have no filesize"
+        # Streamability first now that it is actually measured. A pre-release
+        # reports FLAC sizes for tracks nobody can fetch, so "only 4 of 11
+        # tracks can be downloaded" is the honest complaint and the FLAC count
+        # is beside the point.
+        if not self.all_readable:
+            # Counted off the names actually held, not off the shortfall: the
+            # two can differ when a payload names fewer than it excludes, and
+            # "One, Two and 4 more" for a list of two is arithmetic nobody can
+            # follow.
+            shown = self.unreadable[:3]
+            rest = len(self.unreadable) - len(shown)
+            more = f" and {rest} more" if rest > 0 else ""
+            detail = f" ({', '.join(shown)}{more})" if shown else ""
+            return f"only {self.readable_count} of {self.total} tracks can be downloaded{detail}"
         if not self.all_flac:
             return f"only {self.flac_count}/{self.total} tracks are FLAC"
-        if not self.all_readable:
-            return f"{self.total - self.readable_count} track(s) not streamable"
         return None
+
+
+def _is_future(release_date: str) -> bool:
+    """Whether a Deezer release date has not arrived yet.
+
+    An album announced for next month lists its whole tracklist today, so
+    without this the pipeline treats an announcement as a release.
+
+    Args:
+        release_date: ``YYYY-MM-DD`` from the public API, or "".
+
+    Returns:
+        True when the date is after today. An unreadable or missing date is
+        not treated as future -- plenty of real releases carry a blank one.
+    """
+    text = (release_date or "").strip()[:10]
+    if len(text) != 10:
+        return False
+    try:
+        return date.fromisoformat(text) > date.today()
+    except ValueError:
+        return False
 
 
 def _int(value: Any) -> int:
@@ -300,19 +348,48 @@ class DeezerGW:
         if not tracks:
             raise DeezerGWError(f"No tracks returned for album {album_id}")
 
+        # Which tracks actually play, from the public API.
+        #
+        # This used to read ``track.get("readable", True)`` off the gw-light
+        # song records, which are upper-case -- SNG_ID, FILESIZE_FLAC -- and
+        # have no "readable" key at all. The default won every time, so every
+        # album ever checked was declared fully streamable and the check was
+        # dead code. A pre-release sails through it: Deezer lists the whole
+        # tracklist with FLAC sizes while only the released singles play, so
+        # an album with four of eleven tracks available was reported as
+        # "11/11 FLAC, all streamable" and queued.
+        readable_by_id: dict[str, bool] = {}
+        release_date = ""
+        try:
+            public = await self.album(album_id)
+        except DeezerGWError:
+            public = {}
+        if isinstance(public, dict):
+            release_date = str(public.get("release_date") or "")
+            for entry in (public.get("tracks") or {}).get("data") or []:
+                track_id = str(entry.get("id") or "")
+                if track_id:
+                    readable_by_id[track_id] = bool(entry.get("readable", True))
+
         flac_count = readable_count = 0
         all_have_id = all_have_filesize = True
         unreadable: list[str] = []
 
         for track in tracks:
             title = track.get("SNG_TITLE") or track.get("title") or "Unknown"
+            track_id = str(track.get("SNG_ID") or track.get("id") or "")
             if _int(track.get("FILESIZE_FLAC")) > 0:
                 flac_count += 1
-            if bool(track.get("readable", True)):
+            # The public answer where there is one; the record's own field
+            # otherwise, which is how a single-track payload still works.
+            playable = readable_by_id.get(track_id)
+            if playable is None:
+                playable = bool(track.get("readable", True))
+            if playable:
                 readable_count += 1
             else:
                 unreadable.append(title)
-            if not (track.get("SNG_ID") or track.get("id")):
+            if not track_id:
                 all_have_id = False
             if _int(track.get("FILESIZE")) <= 0:
                 all_have_filesize = False
@@ -327,6 +404,8 @@ class DeezerGW:
             all_have_id=all_have_id,
             all_have_filesize=all_have_filesize,
             unreadable=unreadable,
+            release_date=release_date,
+            unreleased=_is_future(release_date),
         )
 
     # ------------------------------------------------------------------

@@ -199,7 +199,14 @@ async def main_endpoint() -> None:
             payload = await r.json()
         titles = sorted(f["title"] for f in payload["found"])
         check("a narrowed rule narrows the queue", titles == ["Alone"], str(titles))
-        check("the rest are held, not dropped", payload["held_count"] == 2, str(payload["held_count"]))
+        # "Twice" is already on RED, which nothing will change, so it leaves
+        # the page rather than sitting in a list nobody can act on. "Everywhere"
+        # is on both, likewise. Only rows a rule or a re-check can still move
+        # stay listed; the rest are counted as dropped.
+        listed = payload["held_count"] + payload["settled_count"]
+        check("the rest are accounted for, listed or dropped", listed == 2, str(listed))
+        check("and the ones nothing can change are the dropped ones",
+              payload["settled_count"] >= 1, str(payload["settled_count"]))
         check("each held row says why", all(h.get("held_reason") for h in payload["held"]), "")
         check("and the page can name the rule in words",
               "missing from every tracker" in payload["rule"].lower(), str(payload.get("rule")))
