@@ -387,7 +387,8 @@ def main() -> int:
     bulk = js[js.index("async function bulkCheck"):]
     end_marker = chr(10) + "  }" + chr(10)
     bulk = bulk[: bulk.index(end_marker)]
-    check("pressing Check trackers checks the trackers", "await missingScan()" in bulk, "")
+    check("pressing Check trackers checks the trackers",
+          "await missingScan({ manual: true })" in bulk, "")
     check("on what you picked, not on whatever was left in the box",
           "box.value = urls.join" in bulk, "")
 
@@ -824,6 +825,36 @@ def main() -> int:
           "$('#missing-sources').value = payload.sources.join" in js, "")
     check("a name Deezer chose can be changed",
           "function renameField" in js and "method: 'PATCH'" in js, "")
+    # The count is already on the line, in "2 of 3 selected". Saying it twice
+    # made the button change width every time a box was ticked.
+    check("the button does not repeat the count beside it",
+          "`Scan ${n} selected`" not in js, "")
+
+    # --- the filters have somewhere to start from -------------------------
+    check("a date is picked off a calendar, not typed in a format",
+          "type: 'date'" in js, "")
+    check("and the browser is told which scheme to draw it in",
+          "color-scheme: dark" in css and "color-scheme: light" in css, "")
+    check("a blank date shows the rolling default rather than nothing",
+          "_effective" in js and "_default" in js, "")
+    check("with the way back to it once one is set",
+          "filter-reset" in js and "`default is ${fallback}`" in js, "")
+
+    # --- picked by hand is not swept up -----------------------------------
+    # The filters are about what to sweep. Somebody who ticked a release and
+    # pressed Check trackers has already made that decision.
+    check("checking picked releases says they were picked",
+          "await missingScan({ manual: true })" in js, "")
+    check("and the scan button does not",
+          "() => missingScan()" in js, "")
+    check("which the collect call carries",
+          "body: { sources, manual }" in js, "")
+
+    # --- the box does not hand back the last scan -------------------------
+    check("a reload starts with an empty box",
+          "$('#missing-sources').value = '';" in js, "")
+    check("and the browser is asked not to restore it either",
+          'id="missing-sources" rows="3" autocomplete="off"' in shell, "")
     check("and the rows are columns, not a ragged flex line",
           "grid-template-columns: auto minmax(0, 1fr) auto auto" in rule(css, ".watchrow"),
           rule(css, ".watchrow").strip()[:80])

@@ -23,7 +23,13 @@ from lox import cfg, debug, settings
 from lox.checker import queue_rules, recheck
 from lox.checker.deezer_requests import DeezerRequestChecker, age_of
 from lox.checker.gateway import TrackerGateway
-from lox.checker.missing import Candidate, MissingScanner
+from lox.checker.missing import (
+    Candidate,
+    MissingScanner,
+    default_max_date,
+    default_min_date,
+    effective_filters,
+)
 from lox.checker.request_detail import request_detail
 from lox.checker.request_filters import schema as filter_schema
 from lox.checker.store import CheckerStore
@@ -491,11 +497,9 @@ async def api_config(request: web.Request) -> web.Response:
             "checker": {
                 "tracker_budget": checker.tracker_budget,
                 "tracker_budget_window": checker.tracker_budget_window,
-                "min_tracks": checker.min_tracks,
-                "min_date": checker.min_date,
-                "max_date": checker.max_date,
                 "min_confidence": checker.min_confidence,
-                "album_recheck_after_days": getattr(checker, "album_recheck_after_days", 30),
+                "album_recheck_after_days": getattr(checker, "album_recheck_after_days", 365),
+                **_scan_filters(),
             },
             "arl_set": bool(request.app["gw"].arl),
             "discogs_set": bool(cfg.metadata.discogs_token),
@@ -1379,6 +1383,10 @@ async def api_missing_collect(request: web.Request) -> web.Response:
     sources = [s for s in (body.get("sources") or []) if s.strip()]
     if not sources:
         return error("sources is required")
+    # Picked by hand from Search or Browse rather than swept up by a scan, so
+    # the scan's own narrowing does not apply: somebody who ticked a release
+    # and pressed Check trackers has already decided it is worth the calls.
+    manual = bool(body.get("manual"))
 
     scanner: MissingScanner = request.app["scanner"]
     jobs: JobRegistry = request.app["jobs"]
@@ -1388,7 +1396,7 @@ async def api_missing_collect(request: web.Request) -> web.Response:
         # window's business, and nothing else's. There used to be a tickbox
         # here saying the same thing in fewer words, which meant one decision
         # had two controls and they could disagree.
-        candidates = await scanner.collect(sources, progress=job.emit)
+        candidates = await scanner.collect(sources, progress=job.emit, manual=manual)
         job.results.extend(c.as_dict() for c in candidates)
 
     job = jobs.spawn("missing_collect", f"Collecting from {len(sources)} source(s)", run)
@@ -1560,13 +1568,28 @@ async def api_scan_history(request: web.Request) -> web.Response:
         "albums": rows[:HISTORY_LIMIT],
         "total": len(rows),
         "shown": min(len(rows), HISTORY_LIMIT),
-        "recheck_after_days": int(getattr(cfg.checker, "album_recheck_after_days", 30) or 0),
-        "filters": {
-            "min_tracks": cfg.checker.min_tracks,
-            "min_date": cfg.checker.min_date or "",
-            "max_date": cfg.checker.max_date or "",
-        },
+        "recheck_after_days": int(getattr(cfg.checker, "album_recheck_after_days", 365) or 0),
+        "filters": _scan_filters(),
     })
+
+
+def _scan_filters() -> dict[str, Any]:
+    """The scan filters as the page needs them: what is set, and what is meant.
+
+    Both dates default to something relative to today, so a blank one is not
+    "no limit" -- it is a value the page has to be told, or it cannot show what
+    a scan is about to do.
+    """
+    effective = effective_filters()
+    return {
+        "min_tracks": cfg.checker.min_tracks,
+        "min_date": cfg.checker.min_date or "",
+        "max_date": cfg.checker.max_date or "",
+        "min_date_default": default_min_date(),
+        "max_date_default": default_max_date(),
+        "min_date_effective": effective["min_date"],
+        "max_date_effective": effective["max_date"],
+    }
 
 
 #: What a stored album status means, in one phrase. The status itself carries

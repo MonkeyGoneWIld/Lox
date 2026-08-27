@@ -10,6 +10,7 @@ handed. That is what the "Check trackers" button in the UI drives.
 """
 
 from collections.abc import Callable
+from datetime import date, timedelta
 from typing import Any
 
 import msgspec
@@ -23,6 +24,56 @@ from lox.checker.store import CheckerStore
 from lox.deezer.gw import DeezerGW, DeezerGWError, parse_artist_id, parse_module_id, parse_playlist_id
 
 ProgressFn = Callable[[str, dict[str, Any]], None]
+
+
+# ----------------------------------------------------------------------
+# What a scan looks at by default
+# ----------------------------------------------------------------------
+# Both date filters are relative to today, so neither can be a number written
+# into a config file once. Left as fixed dates they are right on the day they
+# are set and wrong every day after: a "released after" of a fixed Tuesday
+# starts admitting pre-releases the moment that Tuesday passes, and a "released
+# before" of 2025 keeps scanning 2025 for ever.
+#
+# So they are computed, and an empty setting means "use the computed one". A
+# date typed in by hand wins and stays put; clearing it goes back to the roll.
+
+
+def default_min_date(today: date | None = None) -> str:
+    """The oldest release a scan looks at: 1 January of last year.
+
+    Wide enough that a January scan is not blind to everything from December,
+    narrow enough that a channel module of reissues does not turn into three
+    thousand tracker calls.
+    """
+    return f"{(today or date.today()).year - 1}-01-01"
+
+
+def default_max_date(today: date | None = None) -> str:
+    """The newest: two days out.
+
+    Not today. Deezer lists a release before it is streamable, and a scan that
+    stops at today would still be spending tracker budget on tomorrow's
+    announcements. Two days is the announced-but-not-yet-available window.
+    """
+    return ((today or date.today()) + timedelta(days=2)).isoformat()
+
+
+def effective_filters(checker: Any = None) -> dict[str, Any]:
+    """The filter values a scan will actually apply, defaults resolved.
+
+    Args:
+        checker: ``cfg.checker``, or None to read it.
+
+    Returns:
+        ``min_tracks``, ``min_date`` and ``max_date`` as the scan sees them.
+    """
+    checker = checker if checker is not None else cfg.checker
+    return {
+        "min_tracks": checker.min_tracks,
+        "min_date": (checker.min_date or "").strip() or default_min_date(),
+        "max_date": (checker.max_date or "").strip() or default_max_date(),
+    }
 
 
 class Candidate(msgspec.Struct):
@@ -225,6 +276,7 @@ class MissingScanner:
         self,
         sources: list[str],
         progress: ProgressFn | None = None,
+        manual: bool = False,
     ) -> list[Candidate]:
         """Expand Deezer links into filtered album candidates.
 
@@ -237,6 +289,14 @@ class MissingScanner:
         Args:
             sources: Deezer playlist, channel module, artist or album URLs.
             progress: Optional callback receiving (event, payload) updates.
+            manual: These albums were picked one at a time, so the scan's own
+                narrowing does not apply to them. The filters exist to stop a
+                sweep of a channel module spending budget on four hundred
+                singles; somebody who ticked a release and pressed Check
+                trackers has already made that decision. Neither the track
+                count and date filters nor the "already looked up" skip runs.
+                What Deezer can actually supply still does: that is a fact
+                about the release, not a preference about what to sweep.
 
         Returns:
             Candidates that passed every Deezer-side filter, newest source first.
@@ -260,21 +320,37 @@ class MissingScanner:
         for index, (album_id, source) in enumerate(album_sources.items(), 1):
             emit("progress", {"phase": "filter", "current": index, "total": len(album_sources)})
 
-            # should_skip only ever matched a handful of "skipped_*" statuses,
-            # so an album a scan had already checked against every tracker --
-            # the common case, and the expensive one -- was looked up again on
-            # the next run, and the one after. An answer is trusted for the
-            # recheck window; the Lookup History is where you go to ask again
-            # sooner, row by row.
-            stored = self.store.get("albums", album_id)
-            keep, why = recheck.album_verdict(stored, self._recheck_window())
-            if not keep:
-                skipped.append({"album_id": album_id, "reason": why,
-                                "title": (stored or {}).get("title", ""),
-                                "artist": (stored or {}).get("artist", "")})
-                continue
+            # One answer is worth keeping: on every tracker there is. Anything
+            # else can still move -- a filter that changed, a rule that
+            # widened, somebody else uploading it first -- so it is asked
+            # again. See lox.checker.recheck.album_verdict for why each case
+            # is on the side it is.
+            if not manual:
+                stored = self.store.get("albums", album_id)
+                keep, why = recheck.album_verdict(
+                    stored, self._recheck_window(), trackers=TrackerGateway.configured_trackers())
+                if not keep:
+                    skipped.append({"album_id": album_id, "reason": why,
+                                    "title": (stored or {}).get("title", ""),
+                                    "artist": (stored or {}).get("artist", "")})
+                    continue
 
-            candidate = await self._evaluate_candidate(album_id, source, emit)
+                # An album a filter stopped is reconsidered every scan, because
+                # the filter is a setting and settings change. Reconsidering it
+                # does not need Deezer asked again: the filter is a function of
+                # a track count and a release date, and both are on the record.
+                # Without this, re-scanning a module of four hundred singles
+                # went from free to two Deezer reads apiece for the privilege
+                # of dropping them again.
+                if stored and stored.get("status") == "skipped_filter":
+                    still = self._filter_reason(stored.get("nb_tracks"), stored.get("release_date") or "")
+                    if still:
+                        skipped.append({"album_id": album_id, "reason": still,
+                                        "title": stored.get("title", ""),
+                                        "artist": stored.get("artist", "")})
+                        continue
+
+            candidate = await self._evaluate_candidate(album_id, source, emit, filtered=not manual)
             if candidate:
                 candidates.append(candidate)
 
@@ -337,9 +413,9 @@ class MissingScanner:
             emit("source_error",
                  {"source": source, "error": "Not a Deezer playlist, channel module, artist or album link"})
 
-    async def _evaluate_candidate(self, album_id: str, source: str, emit: ProgressFn) -> Candidate | None:
+    async def _evaluate_candidate(self, album_id: str, source: str, emit: ProgressFn,
+                                  filtered: bool = True) -> Candidate | None:
         """Apply the Deezer-side filters to one album."""
-        checker = cfg.checker
         try:
             info = await self.gw.album(album_id)
         except DeezerGWError as e:
@@ -355,7 +431,7 @@ class MissingScanner:
         nb_tracks = info.get("nb_tracks")
         release_date = info.get("release_date") or ""
 
-        reason = self._filter_reason(nb_tracks, release_date, checker)
+        reason = self._filter_reason(nb_tracks, release_date) if filtered else ""
         if reason:
             self.store.put(
                 "albums",
@@ -432,14 +508,22 @@ class MissingScanner:
         )
 
     @staticmethod
-    def _filter_reason(nb_tracks: int | None, release_date: str, checker) -> str | None:
-        """Return why an album fails the configured filters, or None."""
-        if checker.min_tracks and nb_tracks is not None and nb_tracks < checker.min_tracks:
-            return f"track count {nb_tracks} below minimum {checker.min_tracks}"
-        if checker.min_date and release_date and release_date < checker.min_date:
-            return f"released {release_date}, before {checker.min_date}"
-        if checker.max_date and release_date and release_date > checker.max_date:
-            return f"released {release_date}, after {checker.max_date}"
+    def _filter_reason(nb_tracks: int | None, release_date: str) -> str | None:
+        """Return why an album fails the scan's filters, or None.
+
+        Reads the effective values rather than the config directly: both dates
+        default to something relative to today, and a blank setting means that
+        default rather than "no limit".
+        """
+        active = effective_filters()
+        min_tracks = active["min_tracks"]
+        min_date, max_date = active["min_date"], active["max_date"]
+        if min_tracks and nb_tracks is not None and nb_tracks < min_tracks:
+            return f"track count {nb_tracks} below minimum {min_tracks}"
+        if min_date and release_date and release_date < min_date:
+            return f"released {release_date}, before {min_date}"
+        if max_date and release_date and release_date > max_date:
+            return f"released {release_date}, after {max_date}"
         return None
 
     # ------------------------------------------------------------------

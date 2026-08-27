@@ -206,6 +206,12 @@ jobs:
         # The two sites number the same seven categories differently.
         run: uv run python tests/test_request_parity.py
 
+      - name: What a scan looks at, and what it stops looking at
+        # The filters were fixed dates that went stale, they applied to albums
+        # picked by hand, and one lookup settled an album for ever whatever
+        # the answer had been.
+        run: uv run python tests/test_scan_filters.py
+
       - name: A saved search is a link, and several are one scan
         # Saving one took a name you invented, a kind from a dropdown and an id
         # dug out of a URL -- three answers about something Deezer already

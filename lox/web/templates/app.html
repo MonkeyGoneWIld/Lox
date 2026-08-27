@@ -157,7 +157,10 @@
           <h2>Scan Deezer against your trackers</h2>
           <p class="hint">Paste Deezer links &mdash; a playlist, a channel module, an artist, an album &mdash;
             one per line. Expanding them is free; checking each album against a tracker is not.</p>
-          <textarea id="missing-sources" rows="3" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-...&#10;https://www.deezer.com/artist/27"></textarea>
+          <!-- autocomplete=off so a reload does not hand back the list the
+               last scan ran, sitting in the box looking like the next thing
+               you were about to do. -->
+          <textarea id="missing-sources" rows="3" autocomplete="off" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-...&#10;https://www.deezer.com/artist/27"></textarea>
           <div class="row">
             <div class="segmented" id="missing-trackers"></div>
             <button class="primary" id="missing-scan">Scan</button>

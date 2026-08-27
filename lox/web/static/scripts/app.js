@@ -1270,11 +1270,16 @@
     // scan you set up an hour ago.
     box.value = urls.join('\n');
     clearPicks();
+    // Picked one at a time, so the scan's filters do not apply to them: they
+    // exist to stop a sweep of a channel module spending budget on four
+    // hundred singles, and you have already made that decision by ticking a
+    // release and pressing the button.
+    //
     // And then actually check them. This used to stop here, having moved you
     // to another tab and pasted some URLs, with the button you had already
     // pressed -- "Check trackers" -- waiting to be pressed again under a
     // different name.
-    await missingScan();
+    await missingScan({ manual: true });
   }
 
   function renderGrid(container, items, emptyMessage) {
@@ -2073,7 +2078,6 @@
     const n = state.watchSelected.size;
     const total = state.watchlists.length;
     $('#watchlist-scan').disabled = n === 0;
-    $('#watchlist-scan').textContent = n ? `Scan ${n} selected` : 'Scan selected';
     $('#watchlist-delete').disabled = n === 0;
     $('#watchlist-scan-all').disabled = total === 0;
     $('#watchlist-count').textContent = total
@@ -2485,7 +2489,14 @@
     return $('#missing-sources').value.split('\n').map((s) => s.trim()).filter(Boolean);
   }
 
-  async function missingScan() {
+  /**
+   * Expand the links in the box, then check what comes out.
+   *
+   * @param {boolean} [options.manual] - These were picked one at a time from
+   *   Search or Browse, so the scan's own filters and its "already looked up"
+   *   skip do not apply to them.
+   */
+  async function missingScan({ manual = false } = {}) {
     const sources = sourceLines();
     if (!sources.length) return toast('Paste at least one Deezer link', 'bad');
 
@@ -2502,7 +2513,7 @@
       // had two controls and they could contradict each other.
       const { job_id } = await api('/api/missing/collect', {
         method: 'POST',
-        body: { sources },
+        body: { sources, manual },
       });
       // Beside the log rather than inside it: the log is written with
       // textContent, which would wipe a child button on the next tick.
@@ -3550,8 +3561,11 @@
         body: { changes: { [`checker.${key}`]: String(value) } },
       });
     } catch (e) {
-      toast(e.message, 'bad');
+      return toast(e.message, 'bad');
     }
+    // Read back rather than assumed: clearing a date puts the rolling default
+    // in the box, and the note under it has to change with it.
+    return loadScanFilters();
   }
 
   // The filters a scan applies before contacting a tracker. They govern
@@ -3577,18 +3591,42 @@
       hint ? el('span', { class: 'hint reqhint' }, hint) : null);
   }
 
+  /**
+   * One date filter.
+   *
+   * A real date input, so the answer is picked off a calendar rather than
+   * typed in a format you have to be told. Both of these default to something
+   * relative to today -- last January, and two days out -- so the box shows
+   * that date whether or not one has been set, and the note underneath says
+   * which of the two you are looking at and offers the way back.
+   *
+   * @param {Object} filters - The filter payload from the server.
+   * @param {string} key - min_date or max_date.
+   * @param {string} label - What it is called on screen.
+   */
+  function dateFilter(filters, key, label) {
+    const set = filters[key] || '';
+    const fallback = filters[`${key}_default`] || '';
+    return scanField(label, [
+      el('input', {
+        id: `scan-${key}`,
+        type: 'date',
+        value: set || filters[`${key}_effective`] || fallback,
+        onchange: (e) => saveScanFilter(key, e.target.value.trim()),
+      }),
+    ], set
+      ? el('button', {
+          type: 'button',
+          class: 'linkbtn filter-reset',
+          title: `Go back to ${fallback}, which moves with the calendar`,
+          onclick: () => saveScanFilter(key, ''),
+        }, `default is ${fallback}`)
+      : 'the default, and it rolls forward');
+  }
+
   function renderScanFilters(filters, window_) {
     const host = $('#scan-filters');
     if (!host) return;
-    const dateField = (key, label, placeholder) => scanField(label, [
-      el('input', {
-        id: `scan-${key}`,
-        type: 'text',
-        placeholder,
-        value: filters[key] || '',
-        onchange: (e) => saveScanFilter(key, e.target.value.trim()),
-      }),
-    ], 'YYYY-MM-DD, or blank');
 
     host.replaceChildren(
       scanField('Fewer tracks than', [
@@ -3597,14 +3635,14 @@
           type: 'number',
           min: '0',
           step: '1',
-          value: String(filters.min_tracks || 0),
+          value: String(filters.min_tracks ?? 0),
           onchange: (e) => saveScanFilter('min_tracks', e.target.value || '0'),
         }),
       ], '0 checks every album'),
-      dateField('min_date', 'Released before', '2025-01-01'),
-      dateField('max_date', 'Released after', '2026-12-31'),
-      // The only thing deciding whether an album already looked up is paid for
-      // again. "never" keeps every answer for good.
+      dateFilter(filters, 'min_date', 'Released before'),
+      dateFilter(filters, 'max_date', 'Released after'),
+      // The ceiling over every reason a scan has for asking again. "never"
+      // keeps an answer for good.
       scanField('Looked up more than', durationControl({
         id: 'scan-recheck',
         days: window_,
@@ -3635,14 +3673,9 @@
     try {
       const config = await api('/api/config');
       const checker = config.checker || {};
-      renderScanFilters(
-        {
-          min_tracks: checker.min_tracks,
-          min_date: checker.min_date || '',
-          max_date: checker.max_date || '',
-        },
-        checker.album_recheck_after_days ?? 30,
-      );
+      // Passed through whole: the server sends what is set, what the default
+      // currently is, and which of the two a scan will use.
+      renderScanFilters(checker, checker.album_recheck_after_days ?? 365);
     } catch (e) {
       $('#scan-filters').replaceChildren(empty(e.message));
     }
@@ -6568,7 +6601,12 @@ They will not be listed again, even if a later scan finds them.`)) {
         genre: b.dataset.explore === 'channels' ? '' : genreParam(),
       }))),
     );
-    $('#missing-scan').addEventListener('click', missingScan);
+    $('#missing-scan').addEventListener('click', () => missingScan());
+    // A reload used to bring back whatever was in the box when you left, which
+    // for anyone who had just run a scan was that scan's list -- sitting there
+    // looking like the next thing they were about to do. The browser restores
+    // it; this is what does not.
+    $('#missing-sources').value = '';
     // Re-checks whatever is ticked in the results, which is the only place a
     // subset makes sense.
     $('#missing-check').addEventListener('click', () => missingCheck());

@@ -898,8 +898,29 @@ button.link {
    its container, which on a grid cell is the whole column. */
 .scanfield input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
   width: 100%;
-  max-width: 150px;
+  max-width: 160px;
 }
+
+/* A date is picked off a calendar, not typed in a format you have to be told.
+   The browser draws that calendar and its little icon itself, in whichever
+   scheme it thinks the page is -- which on a dark page with no colour-scheme
+   declared is a black icon on a black field, and a white popup.
+
+   Scoped to these inputs rather than set on :root: the app paints its own
+   controls, so the only things that need the browser told are the ones it
+   still draws. */
+input[type="date"] { color-scheme: dark; }
+:root[data-theme="light"] input[type="date"] { color-scheme: light; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) input[type="date"] { color-scheme: light; }
+}
+input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; opacity: 0.65; }
+input[type="date"]:hover::-webkit-calendar-picker-indicator { opacity: 1; }
+
+/* The way back to a rolling default, in the space the note would have used.
+   Only shown when there is a date of your own to go back from. */
+.filter-reset { padding: 0; font-size: 11.5px; color: var(--text-dim); }
+.filter-reset:hover { color: var(--accent); }
 
 .filebtn { border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 16px; background: var(--bg-input); }
 .filebtn:hover { border-color: var(--accent); }
