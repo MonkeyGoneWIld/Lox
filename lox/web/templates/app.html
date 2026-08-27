@@ -196,7 +196,7 @@
 
           <!-- The default fetches and looks up; the other stops at the list. -->
           <div class="row" id="requests-actions-row">
-            <button class="primary" id="requests-fetch-check">Fetch with Deezer Lookup</button>
+            <button class="primary" id="requests-fetch-check">Fetch and Deezer Lookup</button>
             <button id="requests-fetch">Fetch Requests</button>
             <!-- When the lookups happen, not whether. A list-only fetch
                  looks nothing up regardless of this box. -->
@@ -238,7 +238,6 @@
         <div id="requests-tab-history" hidden>
           <div class="panel">
             <h2>Lookup History</h2>
-            <div class="reqform" id="history-filters"></div>
             <div class="row">
               <button class="primary" id="history-rerun" disabled>Check again</button>
               <button id="history-clear-filters">Clear filters</button>
@@ -265,23 +264,6 @@
             <button class="danger" id="found-blacklist">Blacklist</button>
             <button id="found-restore" hidden>Clear blacklist</button>
             <span class="hint" id="found-count"></span>
-          </div>
-          <!-- Filtering the list you already have, which is a different
-               question from what the settings decide reaches it at all. This
-               one is throwaway: it narrows what is on screen and forgets it
-               when you leave. -->
-          <div class="row queue-filter">
-            <input type="search" id="found-search" placeholder="Artist or title">
-            <select id="found-tracker">
-              <option value="">Any tracker</option>
-            </select>
-            <select id="found-source">
-              <option value="">Scans and requests</option>
-              <option value="scan">Scans only</option>
-              <option value="request">Request fills only</option>
-            </select>
-            <button id="found-filter-clear" hidden>Clear filter</button>
-            <span class="hint" id="found-filtered"></span>
           </div>
           <!-- What the queue rules in Settings kept out. Shown as a count with
                a way to look, never as a silently shorter list. -->

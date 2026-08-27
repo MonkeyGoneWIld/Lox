@@ -299,12 +299,18 @@ def main() -> int:
 
     # --- the queue filters what you can see, and says when it does ----
     # Two different things sit on this page and must not be confused: the
-    # Settings rules decide what belongs in the queue and persist; this narrows
-    # what is drawn and forgets itself. The dangerous overlap is the buttons --
-    # "Download selected" acting on a row scrolled out of existence by a filter
-    # would be indefensible, so the selection is scoped to the filtered rows.
+    # Settings rules decide what belongs in the queue and persist; the column
+    # filters narrow what is drawn and forget themselves. The dangerous
+    # overlap is the buttons -- "Download selected" acting on a row a filter
+    # scrolled out of existence would be indefensible, so the selection is
+    # scoped to the rows the table is showing.
+    #
+    # The queue was filtered twice for a while: a bar above the table with a
+    # search box and two dropdowns, and then the table's own column filters.
+    # Two controls for one job, and the bar could not say which column it
+    # narrowed.
     for control in ("found-search", "found-tracker", "found-source", "found-filter-clear"):
-        check(f"the queue has a {control}", f'id="{control}"' in shell, "")
+        check(f"the queue has no separate {control}", f'id="{control}"' not in shell, "")
     # Every list is one component now: sortable headers, a filter in the
     # column it filters, and a selection derived from the rows rather than
     # from the checkboxes.
@@ -347,8 +353,8 @@ def main() -> int:
     check("with a way to look at them", 'id="found-held-toggle"' in shell, "")
     check("each carrying the reason it was held", "held_reason" in js, "")
     check("and the rule itself said in words", "state.foundRule" in js, "")
-    check("the filter is not persisted, because it is not a setting",
-          "foundFilter: { text: '', tracker: '', source: '' }" in js.replace('"', "'"), "")
+    check("and no state left over from it",
+          "foundFilter" not in js, "")
 
     # --- the search results are a list you can work with --------------
     # Taking twenty of thirty covers was twenty clicks, and there was no way to
@@ -557,7 +563,7 @@ def main() -> int:
     check("the default button does the whole job",
           'class="primary" id="requests-fetch-check"' in shell, "")
     check("named for what the user came to do",
-          "Fetch with Deezer Lookup" in shell, "")
+          "Fetch and Deezer Lookup" in shell, "")
     check("with the list-only one beside it", "Fetch Requests" in shell, "")
     check("and the old jargon gone",
           "Search requests" not in shell and "Search and check" not in shell, "")
@@ -607,7 +613,9 @@ def main() -> int:
     # the same lookups -- but nothing showed them.
     check("Requests has a tab for what has already been checked",
           'data-reqtab="history"' in shell, "")
-    check("with its own filters", "function renderHistoryFilters" in js, "")
+    check("on the same table as the queue", "name: 'history'" in js, "")
+    check("with its filters in the columns too",
+          "function renderHistoryRows" in js and "renderHistoryFilters" not in js, "")
     check("a way to run them again", "function historyRerun" in js, "")
     check("and the re-run asks for a real re-run rather than being skipped",
           "recheck: true" in js, "")
@@ -633,24 +641,38 @@ def main() -> int:
           "never: true" in js, "")
     check("and the unit agrees with the number", "function pluralise" in js, "")
 
-    # The same control on the history filter, which had the same seven guesses.
-    check("the history filter takes a typed duration too",
-          "history-age-dir" in js and "history-age-amount" in js, "")
-    check("in either direction", "'in the last'" in js and "'not for'" in js, "")
-    check("hidden until a direction is chosen", "function syncHistoryAge" in js, "")
-    check("and the old fixed list is gone",
-          "within:30" not in js and "before:90" not in js, "")
+    # History's own filters are column filters now, and the numeric ones take
+    # a lower and an upper limit -- a dropdown of fixed ages could not say
+    # "between 1990 and 1995" or "at least 3 GB".
+    check("a numeric column filters by range", "column.filter === 'range'" in js, "")
+    check("with a lower and an upper limit",
+          "lowLabel" in js and "highLabel" in js, "")
+    check("either of which may be left open",
+          "low === null && high === null" in js, "")
+    check("year is one of them", "label: 'Year'" in js and "lowLabel: 'from'" in js, "")
+    check("and bounty another, compared as a size",
+          "label: 'Bounty (GB)'" in js and "bounty_bytes" in js, "")
+    check("and the old fixed list of ages is gone",
+          "within:30" not in js and "before:90" not in js and "history-age-dir" not in js, "")
+    check("typing in a filter keeps the caret across the rebuild",
+          "setSelectionRange" in js, "")
+
+    # A request id is only unique within a tracker, so a table of requests
+    # cannot select on the id alone.
+    check("a table can say what identifies a row", "idOf = (row) => row.id" in js, "")
+    check("and the history says tracker and id together",
+          "idOf: (r) => r.key" in js, "")
 
     # Two different ages, and the table only ever showed one. A request open
     # for two years and one posted yesterday are not the same proposition.
     check("the history says when the request was opened",
-          "'OPENED'" in js and "created_age" in js, "")
-    check("as well as when it was last looked up",
-          "'LAST LOOKUP'" in js, "")
+          "label: 'Opened'" in js and "created_age" in js, "")
+    check("as well as how long since it was looked up",
+          "label: 'Days since lookup'" in js, "")
     check("each with the date behind the relative time",
           "function checkedOn" in js, "")
     check("and the date is not dropped when a row is due again",
-          "].filter(Boolean).join" in js and "checkedOn(row.checked_at), stale" in js, "")
+          "stale ? 'due a re-check' : ''" in js, "")
 
     # --- what the second tab is called ------------------------------------
     check("the lookup history has a name that says what it is",

@@ -41,7 +41,6 @@
     showHeld: false,
     // Narrowing what is on screen. Not persisted: it is a way of reading the
     // list, not a setting.
-    foundFilter: { text: '', tracker: '', source: '' },
     // Releases ticked for a batch action, by album id.
     picked: new Map(),
     uploadTrackers: new Set(),
@@ -142,8 +141,12 @@
    * @returns {HTMLElement} The table, filters and all.
    */
   function dataTable({ name, rows, columns, selection = null, onShown = null,
-                      empty: emptyText = 'Nothing here.' }) {
+                      idOf = (row) => row.id, empty: emptyText = 'Nothing here.' }) {
     const view = tableView(name);
+    // What identifies a row. Usually its id; for a list of requests it is the
+    // tracker and the id together, because request 70001 exists on both and
+    // is a different release on each.
+    view.idOf = idOf;
 
     // --- filtering, column by column ---------------------------------
     const valueOf = (column, row) =>
@@ -151,6 +154,20 @@
     let shown = rows;
     for (const column of columns) {
       const wanted = view.filters[column.label];
+      if (column.filter === 'range') {
+        // Two limits, either of which may be left empty: "1990 to blank"
+        // means everything from 1990 on, which is how people ask.
+        const low = wanted && wanted.low !== '' ? Number(wanted.low) : null;
+        const high = wanted && wanted.high !== '' ? Number(wanted.high) : null;
+        if (low === null && high === null) continue;
+        shown = shown.filter((row) => {
+          const value = Number(valueOf(column, row));
+          if (!Number.isFinite(value)) return false;
+          if (low !== null && value < low) return false;
+          return !(high !== null && value > high);
+        });
+        continue;
+      }
       if (!wanted) continue;
       shown = shown.filter((row) => {
         const value = String(valueOf(column, row) ?? '').toLowerCase();
@@ -181,9 +198,21 @@
 
     const rerender = () => {
       const host = document.querySelector(`[data-table="${name}"]`);
-      if (host) {
-        host.replaceWith(dataTable({ name, rows, columns, selection, onShown, empty: emptyText }));
-      }
+      if (!host) return;
+      // Which filter box had the caret, so typing survives the rebuild. Without
+      // this the cursor jumped back to the start after every debounce.
+      const focused = document.activeElement;
+      const mark = focused && host.contains(focused)
+        ? { cls: focused.className, ph: focused.placeholder, at: focused.selectionStart }
+        : null;
+      host.replaceWith(dataTable({ name, rows, columns, selection, onShown, idOf, empty: emptyText }));
+      if (!mark) return;
+      const fresh = document.querySelector(`[data-table="${name}"]`);
+      const again = fresh && [...fresh.querySelectorAll('thead .th-filter')]
+        .find((box) => box.className === mark.cls && box.placeholder === mark.ph);
+      if (!again) return;
+      again.focus();
+      try { again.setSelectionRange(mark.at, mark.at); } catch { /* number inputs refuse */ }
     };
 
     // --- the header ----------------------------------------------------
@@ -191,14 +220,14 @@
       selection
         ? el('th', { class: 'col-pick' }, el('input', {
             type: 'checkbox',
-            checked: sorted.length > 0 && sorted.every((r) => selection.set.has(r.id)),
+            checked: sorted.length > 0 && sorted.every((r) => selection.set.has(idOf(r))),
             title: 'Select everything shown',
             onchange: (e) => {
               // From the rows on screen, not from the boxes. Selecting what is
               // filtered out is the other half of the same bug.
               for (const row of sorted) {
-                if (e.target.checked) selection.set.add(row.id);
-                else selection.set.delete(row.id);
+                if (e.target.checked) selection.set.add(idOf(row));
+                else selection.set.delete(idOf(row));
               }
               selection.onChange();
               rerender();
@@ -232,6 +261,24 @@
           el('option', { value: '', selected: !view.filters[column.label] }, 'all'),
           ...options.map((option) =>
             el('option', { value: option, selected: view.filters[column.label] === option }, option)));
+        } else if (column.filter === 'range') {
+          const current = view.filters[column.label] || { low: '', high: '' };
+          const limit = (which, placeholder) => el('input', {
+            class: 'th-filter th-range',
+            type: 'number',
+            placeholder,
+            value: current[which],
+            oninput: (e) => {
+              const next = { ...(view.filters[column.label] || { low: '', high: '' }) };
+              next[which] = e.target.value;
+              view.filters[column.label] = next;
+              clearTimeout(view.timer);
+              view.timer = setTimeout(rerender, 260);
+            },
+          });
+          control = el('div', { class: 'th-range-pair' },
+            limit('low', column.lowLabel || 'min'),
+            limit('high', column.highLabel || 'max'));
         } else if (column.filter) {
           control = el('input', {
             class: 'th-filter',
@@ -268,7 +315,7 @@
         selection
           ? el('td', { class: 'col-pick' }, el('input', {
               type: 'checkbox',
-              checked: selection.set.has(row.id),
+              checked: selection.set.has(idOf(row)),
               onclick: (e) => {
                 // Shift extends from the last box that was clicked, which is
                 // what every list of checkboxes has done for thirty years and
@@ -276,13 +323,13 @@
                 if (e.shiftKey && view.lastIndex !== null) {
                   const [from, to] = [view.lastIndex, index].sort((a, b) => a - b);
                   for (let i = from; i <= to; i++) {
-                    if (e.target.checked) selection.set.add(sorted[i].id);
-                    else selection.set.delete(sorted[i].id);
+                    if (e.target.checked) selection.set.add(idOf(sorted[i]));
+                    else selection.set.delete(idOf(sorted[i]));
                   }
                 } else if (e.target.checked) {
-                  selection.set.add(row.id);
+                  selection.set.add(idOf(row));
                 } else {
-                  selection.set.delete(row.id);
+                  selection.set.delete(idOf(row));
                 }
                 view.lastIndex = index;
                 selection.onChange();
@@ -298,9 +345,16 @@
         el('tbody', {}, ...body)));
   }
 
-  /** How many of `rows` are selected -- from the data, never the checkboxes. */
-  function countSelected(rows, set) {
-    return rows.reduce((n, row) => n + (set.has(row.id) ? 1 : 0), 0);
+  /**
+   * How many of `rows` are selected -- from the data, never the checkboxes.
+   *
+   * @param {Array} rows - The rows on screen.
+   * @param {Set} set - The selection.
+   * @param {Function} [idOf] - What identifies a row; defaults to its id.
+   * @returns {number} How many of them are in the set.
+   */
+  function countSelected(rows, set, idOf = (row) => row.id) {
+    return rows.reduce((n, row) => n + (set.has(idOf(row)) ? 1 : 0), 0);
   }
 
   const duration = (seconds) => {
@@ -2902,192 +2956,148 @@
     if (name === 'history') loadHistory();
   }
 
-  /** The filter form, built once. */
-  function renderHistoryFilters() {
-    const host = $('#history-filters');
-    if (host.childElementCount) return;
-    const onChange = () => loadHistory();
-
-    host.replaceChildren(
-      formRow('Search',
-        el('input', { id: 'history-q', type: 'search', placeholder: 'Artist, album or request id',
-                      onchange: onChange,
-                      onkeydown: (e) => e.key === 'Enter' && loadHistory() })),
-      formRow('Tracker',
-        el('select', { id: 'history-tracker', onchange: onChange },
-          el('option', { value: '' }, 'Either'),
-          ...state.trackers.map((t) => el('option', { value: t.code }, t.code)))),
-      formRow('Outcome',
-        el('div', { class: 'reqchecks', id: 'history-status' },
-          ...Object.entries(HISTORY_STATUS).map(([value, pair]) =>
-            el('label', { class: 'check' },
-              el('input', { type: 'checkbox', value, onchange: onChange }), pair[0])))),
-      formRow('Bounty at least',
-        el('input', { id: 'history-bounty', class: 'reqsmall', type: 'number', min: '0', step: '1',
-                      placeholder: '0', onchange: onChange }),
-        el('span', { class: 'hint reqhint' }, 'GB')),
-      formRow('Year',
-        el('input', { id: 'history-year-min', class: 'reqsmall', type: 'number', placeholder: 'from',
-                      onchange: onChange }),
-        el('input', { id: 'history-year-max', class: 'reqsmall', type: 'number', placeholder: 'to',
-                      onchange: onChange })),
-      // Two ways of asking the same thing, because both are how people ask
-      // it: "what did I look up this week" and "what has gone stale". The
-      // duration beside it is typed, so two months and three years are as
-      // reachable as one week.
-      formRow('Looked up',
-        el('select', {
-          id: 'history-age-dir',
-          onchange: () => { syncHistoryAge(); onChange(); },
-        },
-        el('option', { value: '' }, 'any time'),
-        el('option', { value: 'within' }, 'in the last'),
-        el('option', { value: 'before' }, 'not for')),
-        ...durationControl({ id: 'history-age', days: 30, onChange }),
-        el('span', { class: 'hint reqhint', id: 'history-age-suffix' }, '')),
-    );
-    syncHistoryAge();
-  }
-
-  /** The duration only means anything once a direction is chosen. */
-  function syncHistoryAge() {
-    const direction = $('#history-age-dir')?.value || '';
-    for (const id of ['#history-age-amount', '#history-age-unit']) {
-      const box = $(id);
-      if (box) box.hidden = !direction;
-    }
-    const suffix = $('#history-age-suffix');
-    if (suffix) suffix.textContent = direction === 'before' ? 'or longer' : '';
-  }
-
-  function historyQuery() {
-    const params = new URLSearchParams();
-    const text = $('#history-q') ? $('#history-q').value.trim() : '';
-    if (text) params.set('q', text);
-    const tracker = $('#history-tracker') ? $('#history-tracker').value : '';
-    if (tracker) params.set('tracker', tracker);
-    for (const box of $$('#history-status input:checked')) params.append('status', box.value);
-    // Typed in GB because that is how a tracker shows it; compared in bytes.
-    const bounty = Number($('#history-bounty') ? $('#history-bounty').value : 0);
-    if (bounty > 0) params.set('min_bounty', String(Math.round(bounty * 1024 * 1024 * 1024)));
-    const from = $('#history-year-min') ? $('#history-year-min').value : '';
-    const to = $('#history-year-max') ? $('#history-year-max').value : '';
-    if (from) params.set('min_year', from);
-    if (to) params.set('max_year', to);
-    const direction = $('#history-age-dir') ? $('#history-age-dir').value : '';
-    if (direction) {
-      const days = partsToDays($('#history-age-amount')?.value, $('#history-age-unit')?.value);
-      if (days > 0) params.set(direction === 'within' ? 'checked_within' : 'checked_before', String(days));
-    }
-    return params;
-  }
-
-  async function loadHistory() {
-    renderHistoryFilters();
-    const host = $('#history-results');
-    host.replaceChildren(spinner('Loading'));
-    try {
-      const data = await api('/api/requests/history?' + historyQuery());
-      state.history = data.requests;
-      state.historySelected = new Set();
-      historyPick(null, false);
-      $('#history-count').textContent = data.total === data.shown
-        ? `${data.total} looked up`
-        : `showing ${data.shown} of ${data.total} looked up`;
-      renderHistoryRows(data);
-    } catch (e) {
-      host.replaceChildren(empty(e.message));
-    }
-  }
-
-  function historyPick(key, on) {
-    if (key !== null) {
-      if (on) state.historySelected.add(key);
-      else state.historySelected.delete(key);
-    }
-    const button = $('#history-rerun');
-    const count = state.historySelected.size;
-    button.disabled = count === 0;
-    button.textContent = count ? `Check ${count} again` : 'Check again';
-  }
-
-  /** A stored epoch time as a plain date, or "" when there is not one. */
+  /**
+   * A stored epoch time as a plain date, or "" when there is not one.
+   *
+   * @param {number} stamp - Epoch seconds.
+   * @returns {string} YYYY-MM-DD.
+   */
   function checkedOn(stamp) {
     const seconds = Number(stamp);
     if (!seconds) return '';
     return new Date(seconds * 1000).toISOString().slice(0, 10);
   }
 
-  function renderHistoryRows(data) {
+  async function loadHistory() {
     const host = $('#history-results');
-    if (!state.history.length) {
-      host.replaceChildren(empty('No lookups match these filters.'));
-      return;
+    host.replaceChildren(spinner('Loading'));
+    try {
+      const data = await api('/api/requests/history');
+      state.history = data.requests;
+      state.historyWindow = data.recheck_after_days;
+      state.historySelected = new Set();
+      historyPick();
+      $('#history-count').textContent = data.total === data.shown
+        ? `${data.total} looked up`
+        : `showing ${data.shown} of ${data.total} looked up`;
+      renderHistoryRows();
+    } catch (e) {
+      host.replaceChildren(empty(e.message));
     }
-    const window_ = data.recheck_after_days;
+  }
 
-    const head = el('tr', {},
-      el('th', {}, el('input', {
-        type: 'checkbox',
-        onchange: (e) => {
-          $$('#history-results tbody input[type="checkbox"]').forEach((box) => {
-            box.checked = e.target.checked;
-            historyPick(box.dataset.key, e.target.checked);
-          });
+  /** What identifies one looked-up request. */
+  const historyKey = (r) => r.key || `${r.tracker}:${r.id}`;
+
+  function historyPick() {
+    const shown = tableView('history').shown || state.history;
+    const n = countSelected(shown, state.historySelected, historyKey);
+    const button = $('#history-rerun');
+    button.disabled = n === 0;
+    button.textContent = n ? `Check ${n} again` : 'Check again';
+  }
+
+  function renderHistoryRows() {
+    // Same table as the queue, so the filters sit in the columns they filter
+    // and the numeric ones take a lower and an upper limit. It used to be a
+    // form of its own above the list, with a fixed dropdown of ages, which
+    // could not express "between 1990 and 1995" or "more than 2 GB".
+    const dateCell = (relative, exact, note) => el('span', {},
+      el('div', {}, relative),
+      exact || note
+        ? el('span', { class: 'hint' }, [exact, note].filter(Boolean).join(' · '))
+        : null);
+
+    $('#history-results').replaceChildren(dataTable({
+      name: 'history',
+      rows: state.history,
+      selection: { set: state.historySelected, onChange: historyPick },
+      onShown: historyPick,
+      idOf: (r) => r.key || `${r.tracker}:${r.id}`,
+      empty: 'Nothing has been looked up yet.',
+      columns: [
+        {
+          label: 'Request',
+          value: (r) => `${r.artist || ''} ${r.album || ''} ${r.id}`.trim(),
+          filter: 'text',
+          cell: (r) => {
+            const name = `${r.artist || '?'} — ${r.album || 'Request ' + r.id}`;
+            return el('span', {},
+              el('div', {}, r.request_url
+                ? el('a', { href: r.request_url, target: '_blank', rel: 'noreferrer' }, name)
+                : name),
+              el('span', { class: 'hint' }, `${r.tracker || '?'} #${r.id}`));
+          },
         },
-      })),
-      el('th', {}, 'REQUEST'), el('th', {}, 'OUTCOME'), el('th', {}, 'DEEZER'),
-      el('th', {}, 'YEAR'), el('th', {}, 'BOUNTY'),
-      // Two different ages, and the page only ever showed one of them. A
-      // request open for two years and one posted yesterday are not the same
-      // proposition, and neither is one looked up this morning and one looked
-      // up in March.
-      el('th', {}, 'OPENED'), el('th', {}, 'LAST LOOKUP'));
-
-    host.replaceChildren(el('table', { class: 'table' },
-      el('thead', {}, head),
-      el('tbody', {}, ...state.history.map((row) => {
-        const pair = HISTORY_STATUS[row.status] || [row.status || 'Unknown', ''];
-        const days = row.checked_days_ago;
-        const name = `${row.artist || '?'} — ${row.album || 'Request ' + row.id}`;
-        // Say which rows are due to be looked at again, because that is the
-        // question someone reading this list is actually asking.
-        const stale = window_ > 0 && days !== null && days >= window_;
-        return el('tr', {},
-          el('td', {}, el('input', {
-            type: 'checkbox',
-            'data-key': `${row.tracker}:${row.id}`,
-            onchange: (e) => historyPick(`${row.tracker}:${row.id}`, e.target.checked),
-          })),
-          el('td', {},
-            el('div', {}, row.request_url
-              ? el('a', { href: row.request_url, target: '_blank', rel: 'noreferrer' }, name)
-              : name),
-            el('span', { class: 'hint' }, `${row.tracker} #${row.id}`)),
-          el('td', {},
-            el('span', { class: `pill ${pair[1]}` }, pair[0]),
-            row.reason ? el('div', { class: 'hint' }, row.reason) : null),
-          el('td', {}, row.deezer_url
-            ? el('a', { href: row.deezer_url, target: '_blank', rel: 'noreferrer' }, 'open')
-            : el('span', { class: 'hint' }, '—')),
-          el('td', {}, String(row.year || '')),
-          el('td', {}, row.bounty || ''),
-          el('td', { class: 'nowrap' },
-            el('div', {}, row.created_age ? `${row.created_age} ago` : '—'),
-            row.created ? el('span', { class: 'hint' }, row.created.slice(0, 10)) : null),
-          el('td', { class: 'nowrap' },
-            el('div', {}, days === null ? 'unknown' : days < 1 ? 'today' : `${Math.round(days)}d ago`),
-            // The date stays whether or not the row is due again: the flag
-            // used to take its place, so the rows most worth placing exactly
-            // were the ones that stopped saying when.
-            el('span', { class: 'hint' },
-               [checkedOn(row.checked_at), stale ? 'due a re-check' : ''].filter(Boolean).join(' · '))));
-      }))));
+        {
+          label: 'Tracker',
+          value: (r) => r.tracker || '',
+          filter: 'choice',
+          cell: (r) => el('span', {}, r.tracker || '—'),
+        },
+        {
+          label: 'Outcome',
+          value: (r) => (HISTORY_STATUS[r.status] || [r.status || 'Unknown'])[0],
+          filter: 'choice',
+          cell: (r) => {
+            const pair = HISTORY_STATUS[r.status] || [r.status || 'Unknown', ''];
+            return el('span', {},
+              el('span', { class: `pill ${pair[1]}` }, pair[0]),
+              r.reason ? el('div', { class: 'hint' }, r.reason) : null);
+          },
+        },
+        {
+          label: 'Year',
+          value: (r) => Number(String(r.year || '').slice(0, 4)) || 0,
+          filter: 'range',
+          lowLabel: 'from',
+          highLabel: 'to',
+          class: 'nowrap',
+          cell: (r) => el('span', {}, String(r.year || '—')),
+        },
+        {
+          // Compared in GB, which is the unit the number is written in on the
+          // tracker. Stored as a string, so sorting it as text put 900 MB
+          // above 1 TB.
+          label: 'Bounty (GB)',
+          value: (r) => (Number(r.bounty_bytes) || 0) / (1024 ** 3),
+          filter: 'range',
+          class: 'nowrap',
+          cell: (r) => el('span', {}, r.bounty || '—'),
+        },
+        {
+          label: 'Opened',
+          value: (r) => r.created || '',
+          filter: false,
+          class: 'nowrap',
+          cell: (r) => (r.created_age
+            ? dateCell(`${r.created_age} ago`, (r.created || '').slice(0, 10), '')
+            : el('span', {}, '—')),
+        },
+        {
+          label: 'Days since lookup',
+          value: (r) => (r.checked_days_ago === null ? -1 : r.checked_days_ago),
+          filter: 'range',
+          class: 'nowrap',
+          cell: (r) => {
+            const days = r.checked_days_ago;
+            const window_ = state.historyWindow;
+            const stale = window_ > 0 && days !== null && days >= window_;
+            return dateCell(
+              days === null ? 'unknown' : days < 1 ? 'today' : `${Math.round(days)}d ago`,
+              checkedOn(r.checked_at),
+              stale ? 'due a re-check' : '',
+            );
+          },
+        },
+      ],
+    }));
   }
 
   /** Re-run the ticked rows, whatever their stored answer says. */
   async function historyRerun() {
-    const picked = [...state.historySelected];
+    const shown = tableView('history').shown || state.history;
+    const picked = shown.filter((r) => state.historySelected.has(historyKey(r))).map(historyKey);
     if (!picked.length) return;
     const byTracker = new Map();
     for (const key of picked) {
@@ -3491,7 +3501,6 @@
         $('#found-held-toggle').textContent = state.showHeld ? 'Hide excluded' : 'Show excluded';
       }
 
-      fillTrackerFilter();
       renderFound();
     } catch (e) {
       body.replaceChildren(empty(e.message));
@@ -3500,48 +3509,10 @@
 
   // The tracker options come from the rows themselves rather than a fixed
   // list, so a filter is never offered for a tracker this install does not use.
-  function fillTrackerFilter() {
-    const select = $('#found-tracker');
-    const codes = new Set();
-    [...state.found, ...state.foundHeld].forEach((f) => {
-      (f.missing_from || []).forEach((t) => codes.add(t));
-      (f.found_on || []).forEach((t) => codes.add(t));
-    });
-    const wanted = [...codes].sort();
-    if (select.dataset.codes === wanted.join(',')) return;
-    select.dataset.codes = wanted.join(',');
-    const keep = select.value;
-    select.replaceChildren(
-      el('option', { value: '' }, 'Any tracker'),
-      ...wanted.map((t) => el('option', { value: `missing:${t}` }, `Missing on ${t}`)),
-      ...wanted.map((t) => el('option', { value: `present:${t}` }, `Already on ${t}`)),
-      ...(wanted.length > 1 ? [el('option', { value: 'missing:*' }, 'Missing on every tracker checked')] : []),
-    );
-    select.value = keep;
-  }
-
-  // The filter narrows what is on screen. It is deliberately not the same
-  // thing as the queue rules in Settings: those decide what belongs in the
-  // queue at all and persist, this forgets itself when you leave the tab.
-  function filteredFound() {
-    const { text, tracker, source } = state.foundFilter;
-    const needle = text.trim().toLowerCase();
-    return state.found.filter((f) => {
-      if (source && f.kind !== source) return false;
-      if (needle) {
-        const hay = `${f.artist || ''} ${f.title || ''}`.toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
-      if (tracker) {
-        const [want, code] = tracker.split(':');
-        const missing = f.missing_from || [];
-        const present = f.found_on || [];
-        if (code === '*') return missing.length > 0 && present.length === 0;
-        return want === 'missing' ? missing.includes(code) : present.includes(code);
-      }
-      return true;
-    });
-  }
+  // The list used to be filtered twice: a bar above the table with a search
+  // box and two dropdowns, and then the table's own per-column filters. Two
+  // controls for one job, and the bar could not say which column it narrowed.
+  // The columns do it.
 
   /** The count line, from the rows the table is showing. */
   function updateFoundCount() {
@@ -3553,10 +3524,6 @@
   function renderFound() {
     const body = $('#found-body');
     railCount('#found-count-rail', state.found.length);
-    const filtering = Boolean(
-      state.foundFilter.text || state.foundFilter.tracker || state.foundFilter.source,
-    );
-    $('#found-filter-clear').hidden = !filtering;
     if (!state.found.length) {
       body.replaceChildren(
         state.foundHeld.length
@@ -3567,20 +3534,10 @@
               : 'The queue is empty. Run a scan, or look up some requests.'),
       );
       $('#found-count').textContent = '';
-      $('#found-filtered').textContent = '';
       if (state.showHeld) body.append(heldTable());
       return;
     }
-    const rows = filteredFound();
-    $('#found-filtered').textContent = filtering
-      ? `${rows.length} of ${state.found.length} shown`
-      : '';
-    if (!rows.length) {
-      body.replaceChildren(empty('Nothing in the queue matches that filter.'));
-      $('#found-count').textContent = '';
-      if (state.showHeld) body.append(heldTable());
-      return;
-    }
+    const rows = state.found;
     // Counted from the rows, not the checkboxes, and against what is on
     // screen: the buttons act on what is on screen, so selecting all while
     // filtered and then downloading a hidden row would be indefensible.
@@ -3792,7 +3749,7 @@
   // the table's own column filters as well as the search above it, which is
   // why this asks the table rather than re-deriving the list.
   const foundSelection = () =>
-    (tableView('queue').shown || filteredFound()).filter((f) => state.selectedFound.has(f.id));
+    (tableView('queue').shown || state.found).filter((f) => state.selectedFound.has(f.id));
 
   // Off the list, one of two ways.
   //
@@ -5692,9 +5649,13 @@ They will not be listed again, even if a later scan finds them.`)) {
       b.addEventListener('click', () => showRequestTab(b.dataset.reqtab));
     });
     $('#history-rerun').addEventListener('click', historyRerun);
+    // The filters live in the columns now, so clearing them is clearing the
+    // table's own state rather than emptying a form above it.
     $('#history-clear-filters').addEventListener('click', () => {
-      $('#history-filters').replaceChildren();
-      loadHistory();
+      const view = tableView('history');
+      view.filters = {};
+      view.sort = null;
+      renderHistoryRows();
     });
 
     // The default does the whole job; the other one stops at the list.
@@ -5737,25 +5698,6 @@ They will not be listed again, even if a later scan finds them.`)) {
 
     // Filtering is local: it never refetches, so it stays instant on a long
     // queue and costs no tracker budget.
-    $('#found-search').addEventListener('input', (e) => {
-      state.foundFilter.text = e.target.value;
-      renderFound();
-    });
-    $('#found-tracker').addEventListener('change', (e) => {
-      state.foundFilter.tracker = e.target.value;
-      renderFound();
-    });
-    $('#found-source').addEventListener('change', (e) => {
-      state.foundFilter.source = e.target.value;
-      renderFound();
-    });
-    $('#found-filter-clear').addEventListener('click', () => {
-      state.foundFilter = { text: '', tracker: '', source: '' };
-      $('#found-search').value = '';
-      $('#found-tracker').value = '';
-      $('#found-source').value = '';
-      renderFound();
-    });
     $('#found-held-toggle').addEventListener('click', () => {
       state.showHeld = !state.showHeld;
       $('#found-held-toggle').textContent = state.showHeld ? 'Hide excluded' : 'Show excluded';

@@ -1169,6 +1169,10 @@ select {
   padding: 4px 7px;
 }
 
+/* A lower and an upper limit, side by side and equally wide. */
+.th-range-pair { display: flex; gap: 5px; max-width: 220px; }
+.th-range-pair .th-range { flex: 1 1 0; min-width: 0; }
+
 /* What a run passed over. Sits under the log it belongs to, and goes when it
    is acted on. */
 .skipped-note { margin-top: 12px; border-left: 3px solid var(--accent); }
