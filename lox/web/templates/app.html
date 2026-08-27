@@ -172,6 +172,17 @@
       </section>
 
       <section class="view" id="view-requests">
+        <!-- Two halves of the same job: finding requests to fill, and looking
+             back at the ones already looked up. The second used to have no
+             page at all -- the answers were stored, because they are what stops
+             a second run paying for the same lookups, but there was nowhere to
+             read them. -->
+        <div class="segmented reqtabs" id="requests-tabs">
+          <button type="button" class="active" data-reqtab="find">Find requests</button>
+          <button type="button" data-reqtab="history">Already checked</button>
+        </div>
+
+        <div id="requests-tab-find">
         <div class="panel">
           <h2>Find requests</h2>
           <div class="row">
@@ -183,16 +194,15 @@
                IDs behind the ones they share, so this cannot be a fixed list. -->
           <div class="filters" id="requests-filters"></div>
 
+          <!-- "Search" and "check" meant nothing from outside the code: one
+               read the tracker, the other looked each result up on Deezer, and
+               the names said neither. The buttons are named for what the user
+               came to do, and the one that does the whole job is the default.
+               There is no note explaining them, because a button that needs
+               one is named wrong. -->
           <div class="row" id="requests-actions-row">
-            <button class="primary" id="requests-fetch">Search requests</button>
-            <!-- Searching and then checking is two clicks for one intention.
-                 The button does both; the box beside it makes the plain search
-                 do both, for anyone who always wants that. -->
-            <button id="requests-fetch-check">Search and check</button>
-            <label class="check" title="Check every result against Deezer as soon as the search finishes">
-              <input type="checkbox" id="requests-autocheck">
-              Check matches automatically
-            </label>
+            <button class="primary" id="requests-fetch-check">Find requests I can fill</button>
+            <button id="requests-fetch">Show requests only</button>
             <button class="danger" id="requests-cancel" hidden>Cancel</button>
             <span class="hint" id="requests-cost"></span>
           </div>
@@ -203,25 +213,37 @@
             <span class="hint" id="requests-progress-label"></span>
           </div>
 
-          <!-- Checking is an action on a list, so it lives with the list rather
-               than above an empty box. The button that starts it sits under the
-               results; this half is only about getting requests into the list in
-               the first place. -->
+          <!-- Looking things up is an action on a list, so it lives with the
+               list rather than above an empty box. This half is only about
+               getting requests into the list in the first place. -->
           <details class="paste-ids">
-            <summary>Check specific requests instead</summary>
+            <summary>Or paste specific requests</summary>
             <textarea id="requests-ids" rows="3" placeholder="Request IDs or URLs, one per line"></textarea>
             <div class="row">
-              <button class="primary" id="requests-check-pasted">Check these</button>
+              <button class="primary" id="requests-check-pasted">Look these up on Deezer</button>
               <label class="check filebtn">
                 <input type="file" id="requests-file" accept=".txt,.csv,.log,text/plain" hidden>
-                Check a list from a file&hellip;
+                Load a list from a file&hellip;
               </label>
-              <span class="hint">A file starts checking as soon as you pick it.</span>
             </div>
           </details>
           <div class="joblog" id="requests-log" hidden></div>
         </div>
         <div id="requests-results"></div>
+        </div>
+
+        <div id="requests-tab-history" hidden>
+          <div class="panel">
+            <h2>Already checked</h2>
+            <div class="reqform" id="history-filters"></div>
+            <div class="row">
+              <button class="primary" id="history-rerun" disabled>Check again</button>
+              <button id="history-clear-filters">Clear filters</button>
+              <span class="hint" id="history-count"></span>
+            </div>
+          </div>
+          <div id="history-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-found">

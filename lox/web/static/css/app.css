@@ -1069,6 +1069,16 @@ select {
 }
 
 .reqprogress .bar { flex: 1; margin-top: 0; }
+
+/* The two halves of Requests: finding them, and looking back at the ones
+   already looked up. */
+.reqtabs { margin-bottom: 14px; }
+
+/* What a run passed over. Sits under the log it belongs to, and goes when it
+   is acted on. */
+.skipped-note { margin-top: 12px; border-left: 3px solid var(--accent); }
+.skipped-list { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--text-dim); }
+.skipped-list li { margin-bottom: 3px; }
 .reqprogress .hint { white-space: nowrap; }
 
 .reqgroup { display: flex; flex-direction: column; gap: 10px; width: 100%; }

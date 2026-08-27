@@ -421,6 +421,13 @@ class Checker(BaseStruct):
     # this is an "or" around it rather than a filter on top of it.
     queue_requests_too: bool = True
 
+    # How long a request check is trusted for, in days. A request that has been
+    # looked up already is not looked up again inside this window: what Deezer
+    # has and what the request wants barely move, and re-asking is one tracker
+    # call and one Deezer search per request for an answer we already had.
+    # 0 means never re-check a request that has an answer.
+    request_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 30
+
     # Where scan state is kept. Defaults to <download_directory>/.lox-checker.
     state_dir: str | None = None
 

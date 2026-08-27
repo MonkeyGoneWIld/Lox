@@ -151,7 +151,7 @@ OPS = TrackerFilters(
         "release_types": ALL,
         "media": ("WEB",),
         "formats": ("MP3", "FLAC"),
-        "encodings": ("Lossless", "24bit Lossless", "V0 (VBR)", "320"),
+        "encodings": ("Lossless", "V0 (VBR)", "320"),
     },
     supports_bounty=True,
 )
@@ -191,11 +191,15 @@ def _checked(spec: TrackerFilters, key: str, options: list[str], fallback: bool)
     return [option for option in options if option in set(wanted)]
 
 
-def schema(tracker: str) -> dict[str, Any]:
+def schema(tracker: str, recheck_after_days: int = 0) -> dict[str, Any]:
     """Describe the filters a tracker takes, for the UI to render itself from.
 
     Args:
         tracker: Tracker code.
+        recheck_after_days: How long a request check is trusted, passed through
+            so the search form can offer that setting beside the search it
+            governs. This module knows trackers, not config, so the caller
+            supplies it.
 
     Returns:
         The available fields and their options. ``mapped`` is False when this
@@ -225,6 +229,7 @@ def schema(tracker: str) -> dict[str, Any]:
             "include_old": False,
             "descriptions": False,
             "page_size": PAGE_SIZE,
+            "recheck_after_days": int(recheck_after_days),
         }
     groups = {
         "release_types": ("Release types", list(spec.release_types), ""),
@@ -292,6 +297,7 @@ def schema(tracker: str) -> dict[str, Any]:
         "include_old": spec.supports_include_old,
         "descriptions": spec.supports_descriptions,
         "page_size": PAGE_SIZE,
+        "recheck_after_days": int(recheck_after_days),
     }
 
 

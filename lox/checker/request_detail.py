@@ -171,6 +171,12 @@ def _artist_name(raw: dict) -> str:
 async def request_detail(gateway: TrackerGateway, tracker: str, request_id: int) -> dict[str, Any]:
     """Fetch one request and lay it out for display.
 
+    Someone clicked a row and is watching a spinner, so this is an interactive
+    call: it still costs a unit of budget and still obeys the circuit breaker,
+    but it does not join the back of the queue behind a running batch. It used
+    to, and opening a request while a hundred-request check ran meant waiting
+    for the hundred.
+
     Args:
         gateway: The tracker gateway, which spends the call against the budget.
         tracker: Tracker code.
@@ -182,7 +188,7 @@ async def request_detail(gateway: TrackerGateway, tracker: str, request_id: int)
         the full comment thread -- descriptions and comments rendered from
         BBCode -- plus anything unrecognised under ``extra``.
     """
-    raw = await gateway.get_request(tracker, int(request_id))
+    raw = await gateway.get_request(tracker, int(request_id), interactive=True)
     raw = raw if isinstance(raw, dict) else {}
     base_url = gateway.api(tracker).base_url.rstrip("/")
 

@@ -214,9 +214,11 @@ def main() -> int:
     check("RED starts on the three encodings worth filling",
           group("RED", "encodings")["checked"] == ["V0 (VBR)", "320", "Lossless"],
           str(group("RED", "encodings")["checked"]))
-    check("OPS starts on its four",
-          group("OPS", "encodings")["checked"] == ["Lossless", "24bit Lossless", "V0 (VBR)", "320"],
+    check("OPS starts on the same three, in its own order",
+          group("OPS", "encodings")["checked"] == ["Lossless", "V0 (VBR)", "320"],
           str(group("OPS", "encodings")["checked"]))
+    check("and neither tracker asks for 24bit by default",
+          not any("24bit Lossless" in group(t, "encodings")["checked"] for t in ("RED", "OPS")), "")
 
     # A default naming something the tracker does not offer must not tick a box
     # that is not there, and must not crash.

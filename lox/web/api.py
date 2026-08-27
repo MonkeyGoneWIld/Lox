@@ -20,7 +20,7 @@ import msgspec
 from aiohttp import web
 
 from lox import cfg, debug, settings
-from lox.checker import queue_rules
+from lox.checker import queue_rules, recheck
 from lox.checker.deezer_requests import DeezerRequestChecker
 from lox.checker.gateway import TrackerGateway
 from lox.checker.missing import Candidate, MissingScanner
@@ -706,6 +706,45 @@ async def api_album(request: web.Request) -> web.Response:
 #: this bounds the sample the page can show beside it.
 HELD_SAMPLE = 200
 
+HISTORY_LIMIT = 2000
+"""How many checked requests one page of history returns. The count is always
+the real one; this caps what travels."""
+
+#: Suffix to multiplier, for turning "1.49 GB" back into a number to compare.
+_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4, "PB": 1024**5}
+
+
+def _bounty_bytes(bounty: Any) -> float:
+    """A stored bounty as a number, for filtering and sorting.
+
+    Bounties are kept as the string the tracker showed -- "1.49 GB" -- because
+    that is what goes on screen. Comparing those as text puts 900 MB above 1 TB.
+
+    Args:
+        bounty: The stored bounty, e.g. ``"25.00 GB"``.
+
+    Returns:
+        Bytes, or 0.0 when there is nothing to read.
+    """
+    if isinstance(bounty, (int, float)):
+        return float(bounty)
+    parts = str(bounty or "").strip().split()
+    if len(parts) != 2:
+        return 0.0
+    try:
+        return float(parts[0]) * _UNITS.get(parts[1].upper(), 0)
+    except ValueError:
+        return 0.0
+
+
+def _as_year(value: Any) -> float:
+    """A stored year as a number, or 0 when it is missing or not one."""
+    try:
+        return float(str(value)[:4])
+    except (TypeError, ValueError):
+        return 0.0
+
+
 
 @routes.get("/api/found")
 async def api_found(request: web.Request) -> web.Response:
@@ -1309,6 +1348,108 @@ async def api_request_detail(request: web.Request) -> web.Response:
         return error(str(e), status=502)
 
 
+@routes.get("/api/requests/history")
+async def api_requests_history(request: web.Request) -> web.Response:
+    """Every request that has been checked, and what came of it. No tracker calls.
+
+    The answers were already being stored -- they are what stops a second run
+    paying for the same lookups -- but there was nowhere to read them. So a
+    request checked last week was invisible: you could not see what it said, or
+    that it had been checked at all, only that a new run went quiet about it.
+
+    Filtering happens here rather than in the browser because the collection is
+    every request ever checked and most of it is not what you are looking at.
+    """
+    store: CheckerStore = request.app["store"]
+
+    def number(name: str, default: float | None = None) -> float | None:
+        raw = request.query.get(name, "")
+        try:
+            return float(raw) if raw != "" else default
+        except ValueError:
+            return default
+
+    want_status = {s for s in request.query.getall("status", []) if s}
+    want_tracker = request.query.get("tracker", "")
+    text = request.query.get("q", "").strip().lower()
+    min_bounty = number("min_bounty")
+    min_year, max_year = number("min_year"), number("max_year")
+    checked_within = number("checked_within")   # days
+    checked_before = number("checked_before")   # days
+    now = time.time()
+
+    rows = []
+    for key, entry in (store.load("requests") or {}).items():
+        # Keys are "TRACKER:ID". A key written before that convention has no
+        # colon, and partition would hand back the whole thing as the tracker
+        # and an empty id -- a row claiming to be tracker "r1" with no request
+        # behind it, which cannot be re-run and reads as corruption.
+        raw_key = str(key)
+        tracker, sep, request_id = raw_key.partition(":")
+        if not sep:
+            tracker, request_id = "", raw_key
+        age = recheck.age_days(entry, now)
+        row = {
+            "key": raw_key,
+            "id": request_id,
+            "tracker": tracker,
+            "status": entry.get("status") or "",
+            "reason": entry.get("reason") or "",
+            "artist": entry.get("artist") or entry.get("deezer_artist") or "",
+            "album": entry.get("album") or entry.get("deezer_title") or "",
+            "year": entry.get("year") or "",
+            "bounty": entry.get("bounty") or "",
+            "bounty_bytes": _bounty_bytes(entry.get("bounty")),
+            "created": entry.get("created") or "",
+            "request_url": entry.get("request_url") or "",
+            "deezer_id": entry.get("deezer_id") or "",
+            "deezer_url": entry.get("deezer_url") or "",
+            "confidence": entry.get("confidence"),
+            "filled": bool(entry.get("filled")),
+            "already_on_tracker": entry.get("already_on_tracker"),
+            "all_flac": entry.get("all_flac"),
+            "checked_at": entry.get("checked_at"),
+            "checked_days_ago": age,
+        }
+        if want_status and row["status"] not in want_status:
+            continue
+        if want_tracker and row["tracker"] != want_tracker:
+            continue
+        if text and text not in f"{row['artist']} {row['album']} {row['id']}".lower():
+            continue
+        if min_bounty is not None and row["bounty_bytes"] < min_bounty:
+            continue
+        # A row with no year does not match a year filter either way. Letting
+        # it through read as year 0, which is below every "from" and under
+        # every "to", so undated rows turned up in every year search.
+        if min_year is not None or max_year is not None:
+            year = _as_year(row["year"])
+            if not year:
+                continue
+            if min_year is not None and year < min_year:
+                continue
+            if max_year is not None and year > max_year:
+                continue
+        # "checked in the last N days" and "not checked for N days" are the two
+        # ways anyone asks about this, so both are offered rather than one
+        # range control that has to be reasoned about.
+        if checked_within is not None and (age is None or age > checked_within):
+            continue
+        if checked_before is not None and (age is None or age < checked_before):
+            continue
+        rows.append(row)
+
+    rows.sort(key=lambda r: r.get("checked_at") or 0, reverse=True)
+    window = int(getattr(cfg.checker, "request_recheck_after_days", 30) or 0)
+    return json_response({
+        "requests": rows[:HISTORY_LIMIT],
+        "total": len(rows),
+        "shown": min(len(rows), HISTORY_LIMIT),
+        "statuses": sorted({r["status"] for r in rows if r["status"]}),
+        "recheck_after_days": window,
+    })
+
+
 @routes.get("/api/requests/filters")
 async def api_requests_filters(request: web.Request) -> web.Response:
     """Describe the filters a tracker's request search takes. No tracker calls.
@@ -1320,7 +1461,10 @@ async def api_requests_filters(request: web.Request) -> web.Response:
     tracker = request.query.get("tracker", "")
     if not tracker:
         return error("tracker is required")
-    return json_response(filter_schema(tracker))
+    return json_response(filter_schema(
+        tracker,
+        recheck_after_days=int(getattr(cfg.checker, "request_recheck_after_days", 30) or 0),
+    ))
 
 
 @routes.post("/api/requests/check")
@@ -1341,8 +1485,12 @@ async def api_requests_check(request: web.Request) -> web.Response:
     notifier: DiscordNotifier = request.app["notifier"]
     jobs: JobRegistry = request.app["jobs"]
 
+    # "Run them anyway" -- the button offered next to the list of requests that
+    # were skipped because they already had an answer.
+    recheck_all = bool(body.get("recheck"))
+
     async def run(job) -> None:
-        matches = await checker.check_many(tracker, request_ids, progress=job.emit)
+        matches = await checker.check_many(tracker, request_ids, progress=job.emit, force=recheck_all)
         if cfg.notifications.notify_fillable and notifier.enabled:
             for match in matches:
                 if match.fillable:

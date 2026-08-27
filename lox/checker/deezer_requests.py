@@ -17,6 +17,7 @@ from typing import Any
 import msgspec
 
 from lox import cfg, debug
+from lox.checker import recheck
 from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import MIN_TOTAL_SCORE, find_best_deezer_match
 from lox.checker.request_filters import PAGE_SIZE, build_params
@@ -400,28 +401,51 @@ class DeezerRequestChecker:
         request_ids: list[str],
         progress: ProgressFn | None = None,
         skip_known: bool = True,
+        force: bool = False,
     ) -> list[RequestMatch]:
-        """Check a batch of requests.
+        """Check a batch of requests, skipping the ones already answered.
+
+        A check is a tracker call and a Deezer search per request. Running the
+        same search twice paid for all of it twice: ``should_skip`` was asking
+        whether the status was one of the *album* scanner's final statuses, and
+        a request is never any of those, so nothing was ever skipped and every
+        run started from nothing.
 
         Args:
             tracker: Tracker code the requests belong to.
             request_ids: Request IDs to check.
             progress: Optional callback receiving (event, payload) updates.
-            skip_known: Skip requests with a stored final status.
+            skip_known: Reuse answers that are still inside the recheck window.
+            force: Check everything, however recently it was checked. This is
+                what "run them anyway" does.
 
         Returns:
-            One RequestMatch per request that was actually checked.
+            One RequestMatch per request that was actually checked. What was
+            skipped, and why, is emitted as a ``skipped`` event before any call
+            is made -- a run that quietly did a tenth of what was asked looks
+            broken, and the caller needs the list to offer running them anyway.
         """
         emit = progress or (lambda *_: None)
         verifier = TrackCountVerifier()
         results: list[RequestMatch] = []
 
+        window = int(getattr(cfg.checker, "request_recheck_after_days", 30) or 0)
+        if skip_known and not force:
+            request_ids, skipped = recheck.plan(
+                self.store, tracker, [str(r) for r in request_ids], recheck_after_days=window
+            )
+        else:
+            skipped = []
+        if skipped:
+            debug.log(
+                "requests %s: %s already answered, %s to check",
+                tracker, len(skipped), len(request_ids), level=20,
+            )
+        emit("skipped", {"tracker": tracker, "requests": skipped, "count": len(skipped),
+                         "recheck_after_days": window})
+
         try:
             for index, request_id in enumerate(request_ids, 1):
-                key = f"{tracker}:{request_id}"
-                if skip_known and self.store.should_skip("requests", key):
-                    continue
-
                 emit("progress", {"current": index, "total": len(request_ids), "request_id": request_id})
 
                 if not self.gateway.can_check(tracker):
@@ -450,7 +474,7 @@ class DeezerRequestChecker:
                 # the status meant the Found tab had nothing to show.
                 self.store.put(
                     "requests",
-                    key,
+                    f"{tracker}:{request_id}",
                     {
                         "status": match.status,
                         "reason": match.reason,

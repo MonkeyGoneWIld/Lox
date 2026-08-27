@@ -50,6 +50,10 @@
     // The running search, so Cancel has something to stop and a second click
     // on Search cannot start a parallel one.
     requestsAbort: null,
+    requestTab: 'find',
+    recheckDays: 30,
+    history: [],
+    historySelected: new Set(),
     // Check results by request id, so the split view can show what was found.
     requestMatches: new Map(),
     trackers: [],
@@ -1954,6 +1958,7 @@
       return;
     }
     state.requestFilters = spec;
+    if (typeof spec.recheck_after_days === 'number') state.recheckDays = spec.recheck_after_days;
 
     const GROUP_IDS = {
       categories: 'requests-category',
@@ -2011,6 +2016,29 @@
       return null;
     }).filter(Boolean);
 
+    // The same setting as Settings > Queue, offered where it bites. Deciding
+    // how long an answer is good for is part of setting up a search, and
+    // sending someone to another page to change it and back again is how a
+    // setting ends up never being changed.
+    rows.push(formRow('Look up again if checked',
+      el('select', {
+        id: 'requests-recheck',
+        onchange: async (e) => {
+          const days = Number(e.target.value);
+          state.recheckDays = days;
+          try {
+            await api('/api/settings', {
+              method: 'PUT',
+              body: { changes: { 'checker.request_recheck_after_days': String(days) } },
+            });
+          } catch (err) {
+            toast(err.message, 'bad');
+          }
+        },
+      },
+      ...RECHECK_CHOICES.map(([days, label]) =>
+        el('option', { value: String(days), selected: days === state.recheckDays }, label)))));
+
     rows.push(formRow('Pages to fetch',
       // Pages, not a row count. One page is one call against the budget.
       el('input', { id: 'requests-limit', type: 'number', class: 'reqsmall', min: '1', step: '1',
@@ -2046,6 +2074,18 @@
       ? `Only ${budget.remaining} call${budget.remaining === 1 ? '' : 's'} left on ${budget.code} — the search will stop when they run out.`
       : '';
   }
+
+  // How long a request's answer is trusted before it is worth asking again.
+  // Written in the units people think in rather than a box of days.
+  const RECHECK_CHOICES = [
+    [0, 'Never — an answer is final'],
+    [1, 'More than a day ago'],
+    [7, 'More than a week ago'],
+    [30, 'More than a month ago'],
+    [90, 'More than three months ago'],
+    [180, 'More than six months ago'],
+    [365, 'More than a year ago'],
+  ];
 
   const ticked = (id) => !!$(`#${id}`)?.checked;
 
@@ -2204,7 +2244,7 @@
     toast(parts.join(' '), cancelled ? '' : 'ok');
     refreshStatus();
 
-    if (!cancelled && rows.length && (thenCheck || ticked('requests-autocheck'))) {
+    if (!cancelled && rows.length && thenCheck) {
       await requestsCheck(rows.map((r) => r.id));
     }
   }
@@ -2291,7 +2331,7 @@
   // sat above an empty list and was pressable with nothing to press it on. The
   // caller says what to check now, and each caller only exists where there is
   // something to check.
-  async function requestsCheck(entries, { placeholders = false } = {}) {
+  async function requestsCheck(entries, { placeholders = false, recheck = false } = {}) {
     // Callers used to hand over bare ids; they hand over {id, tracker} now,
     // and a bare id still works so a caller that has only an id is not forced
     // to invent a tracker for it.
@@ -2335,11 +2375,12 @@
 
     let checked = 0;
     let stoppedEarly = null;
+    const skipNotes = new Map();
     try {
       for (const [tracker, ids] of groups) {
         const { job_id: jobId } = await api('/api/requests/check', {
           method: 'POST',
-          body: { tracker, request_ids: ids },
+          body: { tracker, request_ids: ids, recheck },
         });
         const cancel = jobCancel(jobId, 'Stop checking');
         log.after(cancel);
@@ -2350,6 +2391,11 @@
             onUpdate: (j) => {
               jobProgress(log, j, groups.size > 1 ? `${tracker}: ` : '');
               j.results.forEach(applyRequestResult);
+              const note = j.events.find((e) => e.event === 'skipped' && e.count);
+              if (note && !skipNotes.has(tracker)) {
+                skipNotes.set(tracker, note);
+                showSkipped(tracker, note);
+              }
             },
             onDone: resolve,
           });
@@ -2367,6 +2413,236 @@
     } catch (e) {
       done();
       toast(e.message, 'bad');
+    }
+  }
+
+  // What a run did not do, and why.
+  //
+  // Skipping requests that already have an answer is the point -- a check is a
+  // tracker call and a Deezer search each -- but a run that silently did a
+  // tenth of what was asked is indistinguishable from one that broke. So it
+  // says how many it passed over, on what grounds, and offers to do them
+  // anyway.
+  function showSkipped(tracker, note) {
+    const rows = note.requests || [];
+    const host = $('#requests-log');
+    const window_ = note.recheck_after_days;
+    const summary = window_
+      ? `${note.count} already checked in the last ${window_} day${window_ === 1 ? '' : 's'} — skipped.`
+      : `${note.count} already checked — skipped.`;
+
+    host.after(el('div', { class: 'panel skipped-note' },
+      el('div', { class: 'row' },
+        el('strong', {}, summary),
+        el('button', {
+          onclick: async (e) => {
+            e.target.closest('.skipped-note').remove();
+            await requestsCheck(rows.map((r) => ({ id: r.id, tracker: r.tracker })),
+                                { placeholders: true, recheck: true });
+          },
+        }, 'Check them anyway'),
+        el('button', {
+          onclick: (e) => {
+            e.target.closest('.skipped-note').remove();
+            showRequestTab('history');
+          },
+        }, 'Show me what they said')),
+      // The first few by name, so the number is not the only thing on offer.
+      el('ul', { class: 'skipped-list' },
+        ...rows.slice(0, 8).map((r) =>
+          el('li', {}, `${r.artist || '?'} — ${r.album || 'Request ' + r.id}: ${r.reason}`)),
+        rows.length > 8 ? el('li', { class: 'hint' }, `and ${rows.length - 8} more`) : null)));
+  }
+
+  // ------------------------------------------------------------------
+  // Already checked
+  // ------------------------------------------------------------------
+  // Every request that has been looked up, and what came of it. The answers
+  // were already being kept -- they are what stops a second run paying for the
+  // same tracker calls -- but nothing showed them, so a request checked last
+  // week was indistinguishable from one that had never been touched.
+
+  const HISTORY_STATUS = {
+    fillable: ['Can be filled', 'ok'],
+    filled: ['Already filled', ''],
+    skipped: ['Nothing usable', ''],
+    error: ['Check failed', 'bad'],
+  };
+
+  function showRequestTab(name) {
+    state.requestTab = name;
+    $('#requests-tab-find').hidden = name !== 'find';
+    $('#requests-tab-history').hidden = name !== 'history';
+    $$('#requests-tabs button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.reqtab === name);
+    });
+    if (name === 'history') loadHistory();
+  }
+
+  /** The filter form, built once. */
+  function renderHistoryFilters() {
+    const host = $('#history-filters');
+    if (host.childElementCount) return;
+    const onChange = () => loadHistory();
+
+    host.replaceChildren(
+      formRow('Search',
+        el('input', { id: 'history-q', type: 'search', placeholder: 'Artist, album or request id',
+                      onchange: onChange,
+                      onkeydown: (e) => e.key === 'Enter' && loadHistory() })),
+      formRow('Tracker',
+        el('select', { id: 'history-tracker', onchange: onChange },
+          el('option', { value: '' }, 'Either'),
+          ...state.trackers.map((t) => el('option', { value: t.code }, t.code)))),
+      formRow('Outcome',
+        el('div', { class: 'reqchecks', id: 'history-status' },
+          ...Object.entries(HISTORY_STATUS).map(([value, pair]) =>
+            el('label', { class: 'check' },
+              el('input', { type: 'checkbox', value, onchange: onChange }), pair[0])))),
+      formRow('Bounty at least',
+        el('input', { id: 'history-bounty', class: 'reqsmall', type: 'number', min: '0', step: '1',
+                      placeholder: '0', onchange: onChange }),
+        el('span', { class: 'hint reqhint' }, 'GB')),
+      formRow('Year',
+        el('input', { id: 'history-year-min', class: 'reqsmall', type: 'number', placeholder: 'from',
+                      onchange: onChange }),
+        el('input', { id: 'history-year-max', class: 'reqsmall', type: 'number', placeholder: 'to',
+                      onchange: onChange })),
+      // Two ways of asking the same thing, because both are how people ask it:
+      // "what did I check this week" and "what has gone stale".
+      formRow('Checked',
+        el('select', { id: 'history-age', onchange: onChange },
+          el('option', { value: '' }, 'Any time'),
+          el('option', { value: 'within:1' }, 'In the last day'),
+          el('option', { value: 'within:7' }, 'In the last week'),
+          el('option', { value: 'within:30' }, 'In the last month'),
+          el('option', { value: 'before:30' }, 'Not for a month'),
+          el('option', { value: 'before:90' }, 'Not for three months'),
+          el('option', { value: 'before:365' }, 'Not for a year'))),
+    );
+  }
+
+  function historyQuery() {
+    const params = new URLSearchParams();
+    const text = $('#history-q') ? $('#history-q').value.trim() : '';
+    if (text) params.set('q', text);
+    const tracker = $('#history-tracker') ? $('#history-tracker').value : '';
+    if (tracker) params.set('tracker', tracker);
+    for (const box of $$('#history-status input:checked')) params.append('status', box.value);
+    // Typed in GB because that is how a tracker shows it; compared in bytes.
+    const bounty = Number($('#history-bounty') ? $('#history-bounty').value : 0);
+    if (bounty > 0) params.set('min_bounty', String(Math.round(bounty * 1024 * 1024 * 1024)));
+    const from = $('#history-year-min') ? $('#history-year-min').value : '';
+    const to = $('#history-year-max') ? $('#history-year-max').value : '';
+    if (from) params.set('min_year', from);
+    if (to) params.set('max_year', to);
+    const age = $('#history-age') ? $('#history-age').value : '';
+    if (age) {
+      const parts = age.split(':');
+      params.set(parts[0] === 'within' ? 'checked_within' : 'checked_before', parts[1]);
+    }
+    return params;
+  }
+
+  async function loadHistory() {
+    renderHistoryFilters();
+    const host = $('#history-results');
+    host.replaceChildren(spinner('Loading'));
+    try {
+      const data = await api('/api/requests/history?' + historyQuery());
+      state.history = data.requests;
+      state.historySelected = new Set();
+      historyPick(null, false);
+      $('#history-count').textContent = data.total === data.shown
+        ? `${data.total} checked`
+        : `showing ${data.shown} of ${data.total} checked`;
+      renderHistoryRows(data);
+    } catch (e) {
+      host.replaceChildren(empty(e.message));
+    }
+  }
+
+  function historyPick(key, on) {
+    if (key !== null) {
+      if (on) state.historySelected.add(key);
+      else state.historySelected.delete(key);
+    }
+    const button = $('#history-rerun');
+    const count = state.historySelected.size;
+    button.disabled = count === 0;
+    button.textContent = count ? `Check ${count} again` : 'Check again';
+  }
+
+  function renderHistoryRows(data) {
+    const host = $('#history-results');
+    if (!state.history.length) {
+      host.replaceChildren(empty('Nothing checked yet that matches these filters.'));
+      return;
+    }
+    const window_ = data.recheck_after_days;
+
+    const head = el('tr', {},
+      el('th', {}, el('input', {
+        type: 'checkbox',
+        onchange: (e) => {
+          $$('#history-results tbody input[type="checkbox"]').forEach((box) => {
+            box.checked = e.target.checked;
+            historyPick(box.dataset.key, e.target.checked);
+          });
+        },
+      })),
+      el('th', {}, 'REQUEST'), el('th', {}, 'OUTCOME'), el('th', {}, 'DEEZER'),
+      el('th', {}, 'YEAR'), el('th', {}, 'BOUNTY'), el('th', {}, 'CHECKED'));
+
+    host.replaceChildren(el('table', { class: 'table' },
+      el('thead', {}, head),
+      el('tbody', {}, ...state.history.map((row) => {
+        const pair = HISTORY_STATUS[row.status] || [row.status || 'Unknown', ''];
+        const days = row.checked_days_ago;
+        const name = `${row.artist || '?'} — ${row.album || 'Request ' + row.id}`;
+        // Say which rows are due to be looked at again, because that is the
+        // question someone reading this list is actually asking.
+        const stale = window_ > 0 && days !== null && days >= window_;
+        return el('tr', {},
+          el('td', {}, el('input', {
+            type: 'checkbox',
+            'data-key': `${row.tracker}:${row.id}`,
+            onchange: (e) => historyPick(`${row.tracker}:${row.id}`, e.target.checked),
+          })),
+          el('td', {},
+            el('div', {}, row.request_url
+              ? el('a', { href: row.request_url, target: '_blank', rel: 'noreferrer' }, name)
+              : name),
+            el('span', { class: 'hint' }, `${row.tracker} #${row.id}`)),
+          el('td', {},
+            el('span', { class: `pill ${pair[1]}` }, pair[0]),
+            row.reason ? el('div', { class: 'hint' }, row.reason) : null),
+          el('td', {}, row.deezer_url
+            ? el('a', { href: row.deezer_url, target: '_blank', rel: 'noreferrer' }, 'open')
+            : el('span', { class: 'hint' }, '—')),
+          el('td', {}, String(row.year || '')),
+          el('td', {}, row.bounty || ''),
+          el('td', {},
+            el('div', {}, days === null ? 'unknown' : days < 1 ? 'today' : `${Math.round(days)}d ago`),
+            stale ? el('span', { class: 'hint' }, 'due a re-check') : null));
+      }))));
+  }
+
+  /** Re-run the ticked rows, whatever their stored answer says. */
+  async function historyRerun() {
+    const picked = [...state.historySelected];
+    if (!picked.length) return;
+    const byTracker = new Map();
+    for (const key of picked) {
+      const parts = key.split(':');
+      if (!byTracker.has(parts[0])) byTracker.set(parts[0], []);
+      byTracker.get(parts[0]).push(parts[1]);
+    }
+    showRequestTab('find');
+    for (const [tracker, ids] of byTracker) {
+      // eslint-disable-next-line no-await-in-loop -- serial on purpose: two
+      // trackers at once race the same budget guard.
+      await requestsCheck(ids.map((id) => ({ id, tracker })), { placeholders: true, recheck: true });
     }
   }
 
@@ -4809,8 +5085,18 @@ They will not be listed again, even if a later scan finds them.`)) {
     // Re-checks whatever is ticked in the results, which is the only place a
     // subset makes sense.
     $('#missing-check').addEventListener('click', () => missingCheck());
-    $('#requests-fetch').addEventListener('click', () => requestsFetch());
+    $$('#requests-tabs button').forEach((b) => {
+      b.addEventListener('click', () => showRequestTab(b.dataset.reqtab));
+    });
+    $('#history-rerun').addEventListener('click', historyRerun);
+    $('#history-clear-filters').addEventListener('click', () => {
+      $('#history-filters').replaceChildren();
+      loadHistory();
+    });
+
+    // The default does the whole job; the other one stops at the list.
     $('#requests-fetch-check').addEventListener('click', () => requestsFetch({ thenCheck: true }));
+    $('#requests-fetch').addEventListener('click', () => requestsFetch());
     // Stops before the next page is paid for, rather than after all of them.
     // The check that may follow has its own Stop button, next to its log.
     $('#requests-cancel').addEventListener('click', () => state.requestsAbort?.abort());

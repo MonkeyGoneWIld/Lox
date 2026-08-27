@@ -263,6 +263,12 @@ FIELDS: tuple[Field, ...] = (
     Field("checker.queue_requests_too", "Also queue anything that fills an open request", "bool", "queue",
           "Even when it does not match the rule above. An open request is a reason to upload on its own."),
 
+    Field("checker.request_recheck_after_days", "Re-check a request after", "int", "queue",
+          "Days. A request already looked up is skipped inside this window -- what Deezer has and what the "
+          "request wants barely move, and asking again costs a tracker call and a Deezer search for an "
+          "answer you already have. 0 never re-checks one that has an answer.",
+          minimum=0, maximum=3650),
+
     Field("checker.state_dir", "Scan history directory", "path", "paths",
           "Which albums and requests have already been checked, so a rescan does not spend tracker budget "
           "asking again."),

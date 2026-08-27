@@ -86,6 +86,22 @@ jobs:
       - name: Request collection and filters
         run: uv run python tests/test_requests.py
 
+      - name: A request already answered is not paid for twice
+        # check_many asked should_skip, which compares against the album
+        # scanner's final statuses. A request's status is never one of those,
+        # so nothing was ever skipped and every run started from nothing.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5019"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+          LOX_STATE_DIR: /tmp/lox/recheck-state
+          LOX_SETTINGS_DIR: /tmp/lox/recheck-config
+        run: |
+          mkdir -p /tmp/lox/downloads /tmp/lox/recheck-state /tmp/lox/recheck-config
+          uv run python tests/test_recheck.py
+
       - name: Nothing reaches the queue that Deezer cannot supply
         # A release that is not all FLAC is not an upload unless a request
         # says lossy will do. Only the request path ever checked, so albums

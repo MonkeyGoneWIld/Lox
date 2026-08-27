@@ -519,10 +519,42 @@ def main() -> int:
     check("the Cancel button exists in the page", 'id="requests-cancel"' in shell, "")
     check("and the bar with it", 'id="requests-progress"' in shell, "")
 
-    # --- searching and checking in one go ---------------------------------
-    check("there is a button that searches and then checks",
-          'id="requests-fetch-check"' in shell, "")
-    check("and an option to always do that", 'id="requests-autocheck"' in shell, "")
+    # --- the buttons say what they do -------------------------------------
+    # "Search requests" and "Search and check" meant nothing from outside the
+    # code: one read the tracker, the other looked each result up on Deezer,
+    # and neither name said so. The one that does the whole job is the default,
+    # and neither carries a note explaining it -- a button that needs one is
+    # named wrong.
+    check("the default button does the whole job",
+          'class="primary" id="requests-fetch-check"' in shell, "")
+    check("named for what the user came to do",
+          "Find requests I can fill" in shell, "")
+    check("with the list-only one beside it", "Show requests only" in shell, "")
+    check("and the old jargon gone",
+          "Search requests" not in shell and "Search and check" not in shell, "")
+    check("the redundant 'check automatically' box is gone",
+          'id="requests-autocheck"' not in shell, "")
+    check("and so is the note under the file picker",
+          "starts checking as soon as you pick it" not in shell, "")
+
+    # --- already checked --------------------------------------------------
+    # Answers were being stored -- they are what stops a second run paying for
+    # the same lookups -- but nothing showed them.
+    check("Requests has a tab for what has already been checked",
+          'data-reqtab="history"' in shell, "")
+    check("with its own filters", "function renderHistoryFilters" in js, "")
+    check("a way to run them again", "function historyRerun" in js, "")
+    check("and the re-run asks for a real re-run rather than being skipped",
+          "recheck: true" in js, "")
+    check("what a run skipped is shown rather than silently dropped",
+          "function showSkipped" in js, "")
+    check("with the offer to do them anyway", "Check them anyway" in js, "")
+
+    # The window is a setting, offered where it is used.
+    check("how long an answer is trusted is set on the page that uses it",
+          "requests-recheck" in js and "RECHECK_CHOICES" in js, "")
+    check("in units people think in, not a box of days",
+          "More than a week ago" in js, "")
 
     # --- the running-cost commentary is gone ------------------------------
     check("the standing 'checking costs one more call' line is gone",
@@ -559,7 +591,6 @@ def main() -> int:
           and "name: " + "'" + "requests-tags-mode" in flat_js, "")
     check("read back from whichever is picked",
           "requests-tags-mode" + "'" + "]:checked" in flat_js, "")
-    check("and the button says what it does", "Search requests" in shell, "")
     check("with the old wording gone", "Fetch open requests" not in shell, "")
 
     failed = [n for n, ok, _ in results if not ok]
