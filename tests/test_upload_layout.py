@@ -528,8 +528,8 @@ def main() -> int:
     check("the default button does the whole job",
           'class="primary" id="requests-fetch-check"' in shell, "")
     check("named for what the user came to do",
-          "Find requests I can fill" in shell, "")
-    check("with the list-only one beside it", "Show requests only" in shell, "")
+          "Fetch with Deezer Lookup" in shell, "")
+    check("with the list-only one beside it", "Fetch Requests" in shell, "")
     check("and the old jargon gone",
           "Search requests" not in shell and "Search and check" not in shell, "")
     check("the box that decided WHETHER to look things up is gone",
@@ -541,7 +541,7 @@ def main() -> int:
     check("and is replaced by one that decides when",
           'id="requests-pipeline"' in shell, "")
     check("named for what it actually does",
-          "Look up on Deezer as pages arrive" in shell, "")
+          "Look up on Deezer as requests arrive" in shell, "")
     check("a list-only run never looks anything up, ticked or not",
           "thenCheck && ticked('requests-pipeline')" in js, "")
     check("each page's requests go off as that page lands",

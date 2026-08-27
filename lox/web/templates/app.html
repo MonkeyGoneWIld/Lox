@@ -194,21 +194,15 @@
                IDs behind the ones they share, so this cannot be a fixed list. -->
           <div class="filters" id="requests-filters"></div>
 
-          <!-- "Search" and "check" meant nothing from outside the code: one
-               read the tracker, the other looked each result up on Deezer, and
-               the names said neither. The buttons are named for what the user
-               came to do, and the one that does the whole job is the default.
-               There is no note explaining them, because a button that needs
-               one is named wrong. -->
+          <!-- The default fetches and looks up; the other stops at the list. -->
           <div class="row" id="requests-actions-row">
-            <button class="primary" id="requests-fetch-check">Find requests I can fill</button>
-            <button id="requests-fetch">Show requests only</button>
-            <!-- Only about WHEN the lookups happen, never whether: the box it
-                 replaced turned "show me the list" into a run that spent
-                 budget on every row, which is not what either name promised. -->
+            <button class="primary" id="requests-fetch-check">Fetch with Deezer Lookup</button>
+            <button id="requests-fetch">Fetch Requests</button>
+            <!-- When the lookups happen, not whether. A list-only fetch
+                 looks nothing up regardless of this box. -->
             <label class="check">
               <input type="checkbox" id="requests-pipeline" checked>
-              Look up on Deezer as pages arrive
+              Look up on Deezer as requests arrive
             </label>
             <button class="danger" id="requests-cancel" hidden>Cancel</button>
             <span class="hint" id="requests-cost"></span>
@@ -220,17 +214,14 @@
             <span class="hint" id="requests-progress-label"></span>
           </div>
 
-          <!-- Looking things up is an action on a list, so it lives with the
-               list rather than above an empty box. This half is only about
-               getting requests into the list in the first place. -->
           <details class="paste-ids">
             <summary>Or paste specific requests</summary>
             <textarea id="requests-ids" rows="3" placeholder="Request IDs or URLs, one per line"></textarea>
             <div class="row">
-              <button class="primary" id="requests-check-pasted">Look these up on Deezer</button>
+              <button class="primary" id="requests-check-pasted">Deezer Lookup</button>
               <label class="check filebtn">
                 <input type="file" id="requests-file" accept=".txt,.csv,.log,text/plain" hidden>
-                Load a list from a file&hellip;
+                Import from File
               </label>
             </div>
           </details>
