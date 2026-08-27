@@ -1247,13 +1247,65 @@ async def api_watchlists(request: web.Request) -> web.Response:
 
 @routes.post("/api/watchlists")
 async def api_watchlist_create(request: web.Request) -> web.Response:
-    """Save a new Deezer search."""
+    """Save Deezer links as re-runnable searches. Deezer only, no budget spent.
+
+    Takes the links and nothing else. What each one is, what it is called and
+    how big it is are all things Deezer knows, so they are asked for rather
+    than typed: naming a search, choosing its kind from a dropdown and finding
+    an id were three questions about the link already on the clipboard.
+
+    Every link is reported on individually, so one bad line in a pasted list
+    does not throw away the good ones with it.
+    """
     body = await request.json()
-    kind = body.get("kind")
-    if kind not in ("new_releases", "chart", "search", "artist", "playlist", "module"):
-        return error("kind must be one of new_releases, chart, search, artist, playlist, module")
+    links = [str(u).strip() for u in (body.get("urls") or ([body["url"]] if body.get("url") else []))]
+    links = [u for u in links if u]
+    if not links:
+        return error("url or urls is required")
+
     manager: WatchlistManager = request.app["watchlists"]
-    watch = manager.create(body.get("name", ""), kind, body.get("target", "0"), int(body.get("limit", 50)))
+    saved, failed = [], []
+    for link in links:
+        try:
+            watch, already = await manager.save_link(link)
+        except DeezerGWError as e:
+            failed.append({"url": link, "error": str(e)})
+            continue
+        saved.append({**watch.as_dict(), "already_saved": already})
+    return json_response({"saved": saved, "failed": failed})
+
+
+@routes.post("/api/watchlists/sources")
+async def api_watchlist_sources(request: web.Request) -> web.Response:
+    """The scan sources behind a set of saved searches. No tracker budget spent.
+
+    Registered before the ``{watch_id}`` routes below so "sources" is read as
+    the word rather than as somebody's saved search.
+
+    An empty ``ids`` means all of them, which is what "Scan all" asks for.
+    """
+    body = await request.json()
+    manager: WatchlistManager = request.app["watchlists"]
+    ids = [str(i) for i in (body.get("ids") or [])] or [w.id for w in manager.saved()]
+    sources, problems = await manager.scan_sources(ids)
+    return json_response({"sources": sources, "problems": problems})
+
+
+@routes.patch("/api/watchlists/{watch_id}")
+async def api_watchlist_rename(request: web.Request) -> web.Response:
+    """Rename a saved search.
+
+    Deezer's name for a channel module is whatever it was called that week, and
+    a playlist carries whatever its owner typed. Being stuck with either is the
+    reason this exists.
+    """
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return error("name is required")
+    watch = request.app["watchlists"].rename(request.match_info["watch_id"], name)
+    if not watch:
+        return error("no such watchlist", status=404)
     return json_response(watch.as_dict())
 
 
@@ -1261,19 +1313,6 @@ async def api_watchlist_create(request: web.Request) -> web.Response:
 async def api_watchlist_delete(request: web.Request) -> web.Response:
     """Delete a saved search."""
     return json_response({"deleted": request.app["watchlists"].delete(request.match_info["watch_id"])})
-
-
-@routes.post("/api/watchlists/{watch_id}/run")
-async def api_watchlist_run(request: web.Request) -> web.Response:
-    """Run a saved search. Deezer only, no tracker budget spent."""
-    manager: WatchlistManager = request.app["watchlists"]
-    try:
-        albums = await manager.run(request.match_info["watch_id"])
-    except KeyError:
-        return error("no such watchlist", status=404)
-    except DeezerGWError as e:
-        return error(str(e), status=502)
-    return json_response({"results": albums})
 
 
 # ----------------------------------------------------------------------
@@ -1335,18 +1374,21 @@ async def api_downloads_clear(request: web.Request) -> web.Response:
 
 @routes.post("/api/missing/collect")
 async def api_missing_collect(request: web.Request) -> web.Response:
-    """Expand playlists and modules into filtered candidates. No tracker calls."""
+    """Expand Deezer links into filtered candidates. No tracker calls."""
     body = await request.json()
     sources = [s for s in (body.get("sources") or []) if s.strip()]
     if not sources:
         return error("sources is required")
-    skip_known = bool(body.get("skip_known", True))
 
     scanner: MissingScanner = request.app["scanner"]
     jobs: JobRegistry = request.app["jobs"]
 
     async def run(job) -> None:
-        candidates = await scanner.collect(sources, progress=job.emit, skip_known=skip_known)
+        # Whether an album already answered is looked up again is the recheck
+        # window's business, and nothing else's. There used to be a tickbox
+        # here saying the same thing in fewer words, which meant one decision
+        # had two controls and they could disagree.
+        candidates = await scanner.collect(sources, progress=job.emit)
         job.results.extend(c.as_dict() for c in candidates)
 
     job = jobs.spawn("missing_collect", f"Collecting from {len(sources)} source(s)", run)

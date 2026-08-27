@@ -20,7 +20,7 @@ from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUn
 from lox.checker.matching import build_search_queries, evaluate_group
 from lox.checker.request_filters import for_tracker
 from lox.checker.store import CheckerStore
-from lox.deezer.gw import DeezerGW, DeezerGWError, parse_module_id, parse_playlist_id
+from lox.deezer.gw import DeezerGW, DeezerGWError, parse_artist_id, parse_module_id, parse_playlist_id
 
 ProgressFn = Callable[[str, dict[str, Any]], None]
 
@@ -225,14 +225,18 @@ class MissingScanner:
         self,
         sources: list[str],
         progress: ProgressFn | None = None,
-        skip_known: bool = True,
     ) -> list[Candidate]:
-        """Expand playlist and module URLs into filtered album candidates.
+        """Expand Deezer links into filtered album candidates.
+
+        An album already answered is skipped, and how long an answer is trusted
+        is the recheck window -- ``checker.album_recheck_after_days``, which the
+        Scan tab offers as a filter. There used to be a tickbox beside it
+        saying the same thing in fewer words, so two controls governed one
+        decision and the tickbox could contradict the window sitting under it.
 
         Args:
-            sources: Deezer playlist URLs, channel module URLs, or bare album URLs.
+            sources: Deezer playlist, channel module, artist or album URLs.
             progress: Optional callback receiving (event, payload) updates.
-            skip_known: Skip albums whose stored status is final.
 
         Returns:
             Candidates that passed every Deezer-side filter, newest source first.
@@ -256,20 +260,19 @@ class MissingScanner:
         for index, (album_id, source) in enumerate(album_sources.items(), 1):
             emit("progress", {"phase": "filter", "current": index, "total": len(album_sources)})
 
-            if skip_known:
-                # should_skip only ever matched a handful of "skipped_*"
-                # statuses, so an album a scan had already checked against
-                # every tracker -- the common case, and the expensive one --
-                # was looked up again on the next run, and the one after.
-                # An answer is trusted for the recheck window; the Lookup
-                # History is where you go to ask again sooner.
-                stored = self.store.get("albums", album_id)
-                keep, why = recheck.album_verdict(stored, self._recheck_window())
-                if not keep:
-                    skipped.append({"album_id": album_id, "reason": why,
-                                    "title": (stored or {}).get("title", ""),
-                                    "artist": (stored or {}).get("artist", "")})
-                    continue
+            # should_skip only ever matched a handful of "skipped_*" statuses,
+            # so an album a scan had already checked against every tracker --
+            # the common case, and the expensive one -- was looked up again on
+            # the next run, and the one after. An answer is trusted for the
+            # recheck window; the Lookup History is where you go to ask again
+            # sooner, row by row.
+            stored = self.store.get("albums", album_id)
+            keep, why = recheck.album_verdict(stored, self._recheck_window())
+            if not keep:
+                skipped.append({"album_id": album_id, "reason": why,
+                                "title": (stored or {}).get("title", ""),
+                                "artist": (stored or {}).get("artist", "")})
+                continue
 
             candidate = await self._evaluate_candidate(album_id, source, emit)
             if candidate:
@@ -298,6 +301,7 @@ class MissingScanner:
 
         playlist_id = parse_playlist_id(source)
         module_id = parse_module_id(source)
+        artist_id = parse_artist_id(source)
         album_id = parse_album_id(source)
 
         if playlist_id:
@@ -316,11 +320,22 @@ class MissingScanner:
             for item in albums:
                 album_sources.setdefault(item["id"], label)
             emit("source_done", {"source": label, "kind": "module", "albums": len(albums)})
+        elif artist_id:
+            # A discography, flattened. The artist page groups by release type
+            # because that is how a discography is read; a scan wants the list.
+            artist = await Explorer(self.gw).artist(artist_id)
+            label = artist.get("name") or f"Artist {artist_id}"
+            albums = [a for group in artist.get("groups", []) for a in group.get("albums", [])]
+            for album in albums:
+                if album.get("id"):
+                    album_sources.setdefault(str(album["id"]), label)
+            emit("source_done", {"source": label, "kind": "artist", "albums": len(albums)})
         elif album_id:
             album_sources.setdefault(album_id, "Direct link")
             emit("source_done", {"source": source, "kind": "album", "albums": 1})
         else:
-            emit("source_error", {"source": source, "error": "Not a Deezer playlist, module or album URL"})
+            emit("source_error",
+                 {"source": source, "error": "Not a Deezer playlist, channel module, artist or album link"})
 
     async def _evaluate_candidate(self, album_id: str, source: str, emit: ProgressFn) -> Candidate | None:
         """Apply the Deezer-side filters to one album."""

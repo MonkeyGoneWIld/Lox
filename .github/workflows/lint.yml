@@ -206,6 +206,12 @@ jobs:
         # The two sites number the same seven categories differently.
         run: uv run python tests/test_request_parity.py
 
+      - name: A saved search is a link, and several are one scan
+        # Saving one took a name you invented, a kind from a dropdown and an id
+        # dug out of a URL -- three answers about something Deezer already
+        # knows. Runs the real classes against a stand-in for Deezer.
+        run: uv run python tests/test_saved_searches.py
+
       - name: What reaches the queue
         # The rules are applied when the queue is read, so narrowing hides rows
         # and widening brings the same rows back with no tracker call.
