@@ -128,6 +128,14 @@
       </section>
 
       <section class="view" id="view-missing">
+        <!-- Two halves, as on Requests: setting a scan up, and looking back at
+             what has already been checked. -->
+        <div class="segmented reqtabs" id="scan-tabs">
+          <button type="button" class="active" data-scantab="run">Scan</button>
+          <button type="button" data-scantab="history">Lookup History</button>
+        </div>
+
+        <div id="scan-tab-run">
         <div class="panel">
           <h2>Saved searches</h2>
           <p class="hint">Re-runnable Deezer queries. Running one is free &mdash; it feeds albums into the collect step below.</p>
@@ -154,12 +162,23 @@
           <textarea id="missing-sources" rows="4" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-..."></textarea>
           <div class="row">
             <div class="segmented" id="missing-trackers"></div>
-            <label class="check"><input type="checkbox" id="missing-skip-known" checked> Skip albums already resolved</label>
+            <label class="check"><input type="checkbox" id="missing-skip-known" checked> Skip albums already looked up</label>
             <button class="primary" id="missing-scan">Scan</button>
           </div>
           <p class="hint" id="missing-cost"></p>
           <div class="joblog" id="missing-collect-log" hidden></div>
           <div class="joblog" id="missing-check-log" hidden></div>
+        </div>
+
+        <!-- These narrow what a scan looks at, before any tracker is
+             contacted. They apply to scanning and to nothing else, so they
+             live here rather than on the settings page, where they read as
+             rules the whole app obeys. -->
+        <div class="panel">
+          <h2>Scan filters</h2>
+          <p class="hint">Applied while a scan expands its sources, before any tracker is contacted.
+            They do not affect requests, searches or anything you check by hand.</p>
+          <div class="reqform" id="scan-filters"></div>
         </div>
 
         <div class="panel" id="missing-candidates-panel" hidden>
@@ -168,6 +187,22 @@
             <button id="missing-check">Check again</button>
           </div>
           <table class="table" id="missing-table"></table>
+        </div>
+        </div>
+
+        <div id="scan-tab-history" hidden>
+          <div class="panel">
+            <h2>Lookup History</h2>
+            <p class="hint">Every album a scan has looked up. A scan skips what is listed here, so the same
+              tracker calls are not paid for twice &mdash; select rows and re-check to look again.</p>
+            <div class="row">
+              <button class="primary" id="scanhistory-rerun" disabled>Check again</button>
+              <button id="scanhistory-clear-filters">Clear filters</button>
+              <button id="scanhistory-forget">Forget</button>
+              <span class="hint" id="scanhistory-count"></span>
+            </div>
+          </div>
+          <div id="scanhistory-results"></div>
         </div>
       </section>
 

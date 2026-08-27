@@ -15,6 +15,7 @@ from typing import Any
 import msgspec
 
 from lox import cfg, debug
+from lox.checker import recheck
 from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import build_search_queries, evaluate_group
 from lox.checker.request_filters import for_tracker
@@ -238,6 +239,7 @@ class MissingScanner:
         """
         emit = progress or (lambda *_: None)
         album_sources: dict[str, str] = {}
+        skipped: list[dict[str, Any]] = []
 
         for source in sources:
             source = source.strip()
@@ -254,16 +256,40 @@ class MissingScanner:
         for index, (album_id, source) in enumerate(album_sources.items(), 1):
             emit("progress", {"phase": "filter", "current": index, "total": len(album_sources)})
 
-            if skip_known and self.store.should_skip("albums", album_id):
-                continue
+            if skip_known:
+                # should_skip only ever matched a handful of "skipped_*"
+                # statuses, so an album a scan had already checked against
+                # every tracker -- the common case, and the expensive one --
+                # was looked up again on the next run, and the one after.
+                # An answer is trusted for the recheck window; the Lookup
+                # History is where you go to ask again sooner.
+                stored = self.store.get("albums", album_id)
+                keep, why = recheck.album_verdict(stored, self._recheck_window())
+                if not keep:
+                    skipped.append({"album_id": album_id, "reason": why,
+                                    "title": (stored or {}).get("title", ""),
+                                    "artist": (stored or {}).get("artist", "")})
+                    continue
 
             candidate = await self._evaluate_candidate(album_id, source, emit)
             if candidate:
                 candidates.append(candidate)
 
         self.store.flush("albums")
-        emit("collect_done", {"candidates": len(candidates)})
+        # Said before anything is spent, so a scan that quietly did a tenth of
+        # what was asked is explained rather than looking broken.
+        if skipped:
+            emit("skipped", {"albums": skipped[:200], "count": len(skipped),
+                             "recheck_after_days": self._recheck_window()})
+            debug.log("scan: %s album(s) already looked up, %s to check",
+                      len(skipped), len(candidates), level=20)
+        emit("collect_done", {"candidates": len(candidates), "skipped": len(skipped)})
         return candidates
+
+    @staticmethod
+    def _recheck_window() -> int:
+        """How long a scan's answer about an album is trusted, in days."""
+        return int(getattr(cfg.checker, "album_recheck_after_days", 30) or 0)
 
     async def _expand_source(self, source: str, album_sources: dict[str, str], emit: ProgressFn) -> None:
         """Resolve one source URL into album IDs, recording where each came from."""

@@ -68,6 +68,14 @@ class Field(NamedTuple):
     independent credentials -- four image-host keys, five metadata sources --
     cannot be tested by a single button at the top: it can only report on one
     of them, which is what "Test connection" beside five tokens was doing."""
+    on_page: str = ""
+    """Where this setting is edited, when that is not the settings page.
+
+    A field still has to be declared to be validated and saved -- the settings
+    API will not accept a key it does not know -- but a setting that governs
+    one screen belongs on that screen. The scan filters read as rules the
+    whole app obeys when they sit in a list beside the tracker budget, and
+    that is exactly how they came to be understood as one."""
 
     def as_dict(self) -> dict[str, Any]:
         """Serialize for the settings page."""
@@ -144,13 +152,6 @@ SECTIONS: tuple[Section, ...] = (
         "Tracker budget",
         "Nothing contacts a tracker until you press a check button. These numbers bound what one press can cost. "
         "The defaults are conservative guesses, not measured limits.",
-        category="Accounts",
-    ),
-    Section(
-        "scanning",
-        "What gets checked",
-        "Applied to a release before any tracker is contacted, so anything ruled out here costs nothing. "
-        "These decide which releases are worth looking at, not how often a tracker may be asked.",
         category="Accounts",
     ),
     Section(
@@ -254,23 +255,27 @@ FIELDS: tuple[Field, ...] = (
     Field("checker.failure_threshold", "Failures before a tracker is benched", "int", "checker", minimum=1),
     Field("checker.cooldown_seconds", "Bench duration (seconds)", "int", "checker", minimum=0),
 
-    # --- What gets checked --------------------------------------------
-    # These filter releases; the ones above bound how hard a tracker is hit.
-    # Filed together under "Tracker budget" they read as rate limiting, and an
-    # album ignored for its track count has nothing to do with rate limiting.
-    Field("checker.min_tracks", "Ignore albums with fewer tracks than", "int", "scanning", "0 disables.",
-          minimum=0),
-    Field("checker.min_date", "Ignore releases before", "text", "scanning", "YYYY-MM-DD. Blank disables.",
-          placeholder="2025-01-01"),
-    Field("checker.max_date", "Ignore releases after", "text", "scanning", "YYYY-MM-DD. Blank disables.",
-          placeholder="2026-12-31"),
-    Field("checker.min_confidence", "Minimum request match confidence", "float", "scanning",
-          "How closely a Deezer release must match a request before it counts as a fill. Artist and title "
-          "must also clear their own thresholds.", minimum=0.0, maximum=1.0),
+    # --- Scan filters, edited on the Scan tab -------------------------
+    # Declared here so they are validated and saved like any other setting,
+    # and marked as living elsewhere so the settings page does not show them.
+    # They narrow what a SCAN looks at and nothing else: the request checker,
+    # the album page and the search results never consult them.
+    Field("checker.min_tracks", "Ignore albums with fewer tracks than", "int", "checker",
+          minimum=0, on_page="scan"),
+    Field("checker.min_date", "Ignore releases before", "text", "checker", on_page="scan"),
+    Field("checker.max_date", "Ignore releases after", "text", "checker", on_page="scan"),
+    Field("checker.album_recheck_after_days", "Look up an album again after", "int", "checker",
+          minimum=0, maximum=3650, on_page="scan"),
     # --- What reaches the queue ---------------------------------------
     # One dropdown whose every option is a whole sentence about a situation,
     # and one checkbox. The page fills the choices in from the trackers you
     # actually have configured.
+    # A request-matching threshold, filed with requests. It spent a while under
+    # "Tracker budget", where it read as something about rate limiting.
+    Field("checker.min_confidence", "Minimum request match confidence", "float", "requests",
+          "How closely a Deezer release must match a request before it counts as a fill. Artist and title "
+          "must also clear their own thresholds.", minimum=0.0, maximum=1.0),
+
     Field("checker.queue_when", "Queue a release when it is", "choice", "queue",
           "Everything a check found is kept either way. This decides which of it is worth acting on.",
           choices=QUEUE_CHOICES, labels=QUEUE_LABELS),
@@ -424,7 +429,10 @@ def sections_with_fields() -> list[dict[str, Any]]:
     """Return sections, each carrying its own fields, in display order."""
     out = []
     for section in SECTIONS:
-        fields = [f.as_dict() for f in FIELDS if f.section == section.id]
+        # `on_page` fields are edited on the screen they govern, so they are
+        # not offered here. They are still declared, still validated and still
+        # saved through the same endpoint.
+        fields = [f.as_dict() for f in FIELDS if f.section == section.id and not f.on_page]
         # A section with no editable fields but a test still earns its place:
         # the torrent clients are declared in config.toml, and hiding the
         # section hid the only way to check they answer.

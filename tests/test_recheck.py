@@ -129,6 +129,48 @@ def policy_checks() -> None:
     check("with the window off only failures and unknowns are run", todo == ["3"], str(todo))
 
 
+def album_checks() -> None:
+    """A scan does not pay twice for an album it has already looked up.
+
+    ``should_skip`` compared the stored status against FINAL_STATUSES, which
+    lists ``exists_red`` and ``exists_ops`` but not ``exists_ops_red`` -- the
+    status a scan writes when an album is on both trackers, which is the
+    common case. Nor any ``missing_*``. So the albums a scan had already
+    answered were the ones it looked up again on every run.
+    """
+    from lox.checker import recheck
+
+    now = time.time()
+    day = 86400
+
+    for status in ("exists_red", "exists_ops_red", "missing_red", "missing_ops_red",
+                   "skipped_no_flac", "skipped_unreleased", "skipped_filter"):
+        check(f"a scan that returned {status} has answered",
+              recheck.album_answered(status), status)
+    for status in ("tracker_failed", "deezer_info_failed", "flac_check_failed", ""):
+        check(f"but {status or '(nothing)'} has not", not recheck.album_answered(status), status)
+
+    fresh = {"status": "exists_ops_red", "checked_at": now - day}
+    ok, why = recheck.album_verdict(fresh, 30, now)
+    check("an album on every tracker is not looked up again", not ok, why)
+    check("and the reason says when and what", "exists_ops_red" in why, why)
+
+    stale = {"status": "missing_red", "checked_at": now - 90 * day}
+    check("one past the window is", recheck.album_verdict(stale, 30, now)[0], "")
+
+    check("a failed lookup is always retried",
+          recheck.album_verdict({"status": "tracker_failed", "checked_at": now}, 30, now)[0], "")
+    check("an album never seen is looked up", recheck.album_verdict(None, 30, now)[0], "")
+    check("and with the window off, an answer is trusted forever",
+          not recheck.album_verdict({"status": "exists_red", "checked_at": now - 900 * day}, 0, now)[0], "")
+
+    # The request spelling must not leak into the album reading and vice versa.
+    check("a request status is not an album answer",
+          not recheck.album_answered("fillable"), "")
+    check("and an album status is not a request answer",
+          recheck.verdict({"status": "missing_red", "checked_at": now}, 30, now)[0], "")
+
+
 async def endpoint_checks() -> None:
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -206,6 +248,37 @@ async def endpoint_checks() -> None:
     check("a nonsense number is ignored rather than fatal",
           (await history("?min_bounty=abc"))["total"] == 4, "")
 
+    # --- the scan's own history ------------------------------------------
+    store.put("albums", "a1", {"status": "exists_ops_red", "title": "Everyone Has It",
+                               "artist": "A", "source": "playlist",
+                               "found_on": ["RED", "OPS"], "missing_from": []})
+    store.put("albums", "a2", {"status": "missing_red", "title": "Worth Uploading",
+                               "artist": "B", "source": "genre",
+                               "missing_from": ["RED"], "found_on": []})
+    store.put("albums", "a3", {"status": "skipped_filter", "title": "Ruled Out",
+                               "artist": "C", "source": "playlist",
+                               "reason": "released 2019-01-01, before 2025-01-01"}, flush=True)
+
+    response = await client.get("/api/scan/history", headers=headers)
+    scan = await response.json()
+    by_id = {row["id"]: row for row in scan["albums"]}
+    check("the scan history lists what a scan looked up", scan["total"] >= 3, str(scan["total"]))
+    check("with the tracker verdict read as a phrase",
+          by_id["a1"]["outcome"] == "Already on every tracker", by_id["a1"]["outcome"])
+    check("whichever trackers the status names",
+          by_id["a2"]["outcome"] == "Missing from a tracker", by_id["a2"]["outcome"])
+    check("and a filtered album says so",
+          by_id["a3"]["outcome"] == "Ruled out by a scan filter", by_id["a3"]["outcome"])
+    check("it carries the reason", "before 2025-01-01" in by_id["a3"]["reason"], "")
+    check("where the album came from", by_id["a2"]["source"] == "genre", by_id["a2"]["source"])
+    check("when it was added and when it was last looked at",
+          by_id["a2"]["added_at"] and by_id["a2"]["checked_at"], "")
+    check("and the window a scan will trust it for",
+          isinstance(scan["recheck_after_days"], int), "")
+    check("plus the filters a scan applies, so the page can show them",
+          set(scan["filters"]) == {"min_tracks", "min_date", "max_date"},
+          str(sorted(scan["filters"])))
+
     await client.close()
 
 
@@ -218,6 +291,37 @@ def source_checks() -> None:
 
     source = inspect.getsource(deezer_requests.DeezerRequestChecker.check_many)
     check("the batch check asks the recheck policy", "recheck.plan" in source, "")
+
+    from lox.checker import missing as missing_mod
+
+    scan = inspect.getsource(missing_mod.MissingScanner.collect)
+    check("and a scan asks the album half of it",
+          "recheck.album_verdict" in scan, "")
+    check("rather than the status list that missed exists_ops_red",
+          "self.store.should_skip" not in scan, "")
+    check("saying what it passed over before it spends anything",
+          'emit("skipped"' in scan, "")
+
+    # The scan filters govern scanning and nothing else.
+    from lox.checker import deezer_requests as dr_mod
+
+    check("only the scan consults the scan filters",
+          "_filter_reason" in inspect.getsource(missing_mod)
+          and "min_tracks" not in inspect.getsource(dr_mod), "")
+
+    from lox.config.schema import FIELDS
+
+    hidden = {f.key for f in FIELDS if f.on_page == "scan"}
+    check("the scan filters are declared, so they can still be saved",
+          {"checker.min_tracks", "checker.min_date", "checker.max_date"} <= hidden,
+          str(sorted(hidden)))
+    from lox.config.schema import sections_with_fields
+
+    on_page = {f["key"] for s_ in sections_with_fields() for f in s_["fields"]}
+    check("but not offered on the settings page", not (hidden & on_page),
+          str(sorted(hidden & on_page)))
+    check("while the request threshold is",
+          "checker.min_confidence" in on_page, "")
     # should_skip compares against the album scanner's final statuses, which a
     # request's status is never one of -- which is why nothing was skipped.
     check("rather than the album scanner's statuses",
@@ -237,6 +341,7 @@ def source_checks() -> None:
 
 def main() -> int:
     policy_checks()
+    album_checks()
     asyncio.run(endpoint_checks())
     source_checks()
 

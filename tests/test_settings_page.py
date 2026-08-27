@@ -267,7 +267,19 @@ async def main() -> int:
         check("and per-field tests",
               any(f.get("test") for s in payload["sections"] for f in s["fields"]), "")
         listed = {f["key"] for s in payload["sections"] for f in s["fields"]}
-        check("every field is served", listed == keys, str(sorted(keys ^ listed)))
+        # Every field except the ones edited on the screen they govern. The
+        # scan filters are declared here so the settings API validates and
+        # saves them, but they belong on the Scan tab: sat in a list beside
+        # the tracker budget they read as rules the whole app obeys, which is
+        # how they came to be understood as one.
+        elsewhere = {f.key for f in FIELDS if f.on_page}
+        check("the scan filters are edited on the Scan tab",
+              elsewhere >= {"checker.min_tracks", "checker.min_date", "checker.max_date"},
+              str(sorted(elsewhere)))
+        check("every other field is served", listed == keys - elsewhere,
+              str(sorted((keys - elsewhere) ^ listed)))
+        check("and none of them leaks onto the settings page",
+              not (listed & elsewhere), str(sorted(listed & elsewhere)))
     finally:
         await session.close()
         await runner.cleanup()

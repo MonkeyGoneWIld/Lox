@@ -428,6 +428,12 @@ class Checker(BaseStruct):
     # 0 means never re-check a request that has an answer.
     request_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 30
 
+    # The same for albums a scan has looked up. A scan re-ran every album it
+    # had ever seen, because the old skip matched only a handful of statuses
+    # and "checked against every tracker" was not one of them. 0 means an
+    # answer never goes stale.
+    album_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 30
+
     # Where scan state is kept. Defaults to <download_directory>/.lox-checker.
     state_dir: str | None = None
 

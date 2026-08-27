@@ -53,6 +53,10 @@
     // on Search cannot start a parallel one.
     requestsAbort: null,
     requestTab: 'find',
+    scanTab: 'run',
+    scanHistory: [],
+    scanHistorySelected: new Set(),
+    scanWindow: 30,
     recheckDays: 30,
     history: [],
     historySelected: new Set(),
@@ -399,7 +403,7 @@
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
     $('#view-title').textContent = navLabel(view);
     if (view === 'explore') loadExplore();
-    if (view === 'missing') loadWatchlists();
+    if (view === 'missing') { loadWatchlists(); loadScanFilters(); }
     if (view === 'found') loadFound();
     if (view === 'requests' && state.requestFiltersFor !== state.requestsTracker) loadRequestFilters();
     if (view === 'downloads') pollDownloads(true);
@@ -2929,6 +2933,220 @@
         ...rows.slice(0, 8).map((r) =>
           el('li', {}, `${r.artist || '?'} — ${r.album || 'Request ' + r.id}: ${r.reason}`)),
         rows.length > 8 ? el('li', { class: 'hint' }, `and ${rows.length - 8} more`) : null)));
+  }
+
+  // ------------------------------------------------------------------
+  // Scanning: its filters, and what it has already looked up
+  // ------------------------------------------------------------------
+
+  function showScanTab(name) {
+    state.scanTab = name;
+    $('#scan-tab-run').hidden = name !== 'run';
+    $('#scan-tab-history').hidden = name !== 'history';
+    $$('#scan-tabs button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.scantab === name);
+    });
+    if (name === 'history') loadScanHistory();
+  }
+
+  /**
+   * Save one scan filter.
+   *
+   * @param {string} key - The config key under `checker.`.
+   * @param {string} value - What to store; blank disables the filter.
+   */
+  async function saveScanFilter(key, value) {
+    try {
+      await api('/api/settings', {
+        method: 'PUT',
+        body: { changes: { [`checker.${key}`]: String(value) } },
+      });
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
+  // The filters a scan applies before contacting a tracker. They govern
+  // scanning and nothing else -- the request checker, the album page and the
+  // search results never consult them -- so they sit with the scan rather
+  // than on the settings page, where they read as rules the whole app obeys.
+  function renderScanFilters(filters, window_) {
+    const host = $('#scan-filters');
+    const textRow = (key, label, placeholder, hint) => formRow(label,
+      el('input', {
+        id: `scan-${key}`,
+        type: 'text',
+        class: 'reqsmall',
+        placeholder,
+        value: filters[key] || '',
+        onchange: (e) => saveScanFilter(key, e.target.value.trim()),
+      }),
+      el('span', { class: 'hint reqhint' }, hint));
+
+    host.replaceChildren(
+      formRow('Ignore albums with fewer tracks than',
+        el('input', {
+          id: 'scan-min-tracks',
+          type: 'number',
+          class: 'reqsmall',
+          min: '0',
+          step: '1',
+          value: String(filters.min_tracks || 0),
+          onchange: (e) => saveScanFilter('min_tracks', e.target.value || '0'),
+        }),
+        el('span', { class: 'hint reqhint' }, '0 checks every album')),
+      textRow('min_date', 'Ignore releases before', '2025-01-01', 'YYYY-MM-DD, or blank'),
+      textRow('max_date', 'Ignore releases after', '2026-12-31', 'YYYY-MM-DD, or blank'),
+      formRow('Look up again if checked more than',
+        ...durationControl({
+          id: 'scan-recheck',
+          days: window_,
+          never: true,
+          onChange: (days) => saveScanFilter('album_recheck_after_days', days),
+        }),
+        el('span', { class: 'hint reqhint' }, 'ago')),
+    );
+  }
+
+  const scanKey = (r) => r.album_id;
+
+  function scanHistoryPick() {
+    const shown = tableView('scanhistory').shown || state.scanHistory;
+    const n = countSelected(shown, state.scanHistorySelected, scanKey);
+    $('#scanhistory-rerun').disabled = n === 0;
+    $('#scanhistory-rerun').textContent = n ? `Check ${n} again` : 'Check again';
+    $('#scanhistory-forget').disabled = n === 0;
+  }
+
+  /**
+   * Draw the scan filters from the config the page already has.
+   *
+   * The panel is on the run tab, so it cannot wait for the history tab to be
+   * opened before it exists.
+   */
+  async function loadScanFilters() {
+    if (!$('#scan-filters')) return;
+    try {
+      const config = await api('/api/config');
+      const checker = config.checker || {};
+      renderScanFilters(
+        {
+          min_tracks: checker.min_tracks,
+          min_date: checker.min_date || '',
+          max_date: checker.max_date || '',
+        },
+        checker.album_recheck_after_days ?? 30,
+      );
+    } catch (e) {
+      $('#scan-filters').replaceChildren(empty(e.message));
+    }
+  }
+
+  async function loadScanHistory() {
+    const host = $('#scanhistory-results');
+    host.replaceChildren(spinner('Loading'));
+    try {
+      const data = await api('/api/scan/history');
+      state.scanHistory = data.albums;
+      state.scanWindow = data.recheck_after_days;
+      state.scanHistorySelected = new Set();
+      renderScanFilters(data.filters, data.recheck_after_days);
+      $('#scanhistory-count').textContent = data.total === data.shown
+        ? `${data.total} looked up`
+        : `showing ${data.shown} of ${data.total} looked up`;
+      renderScanHistoryRows();
+      scanHistoryPick();
+    } catch (e) {
+      host.replaceChildren(empty(e.message));
+    }
+  }
+
+  function renderScanHistoryRows() {
+    $('#scanhistory-results').replaceChildren(dataTable({
+      name: 'scanhistory',
+      rows: state.scanHistory,
+      selection: { set: state.scanHistorySelected, onChange: scanHistoryPick },
+      onShown: scanHistoryPick,
+      idOf: scanKey,
+      empty: 'No scan has looked anything up yet.',
+      columns: [
+        {
+          label: 'Release',
+          value: (r) => `${r.artist || ''} ${r.title || ''}`.trim(),
+          filter: 'text',
+          cell: (r) => el('a', {
+            href: '#',
+            onclick: (e) => { e.preventDefault(); openAlbum(r.album_id); },
+          }, `${r.artist || '?'} — ${r.title || r.album_id}`),
+        },
+        {
+          label: 'Outcome',
+          value: (r) => r.outcome,
+          filter: 'choice',
+          cell: (r) => el('span', {},
+            el('span', { class: 'pill' }, r.outcome),
+            r.reason ? el('div', { class: 'hint' }, r.reason) : null),
+        },
+        {
+          label: 'Trackers',
+          class: 'found-trackers',
+          value: trackerSummary,
+          filter: 'choice',
+          cell: (r) => el('span', {}, ...trackerTags(r)),
+        },
+        {
+          label: 'Source',
+          value: (r) => r.source || '',
+          filter: 'choice',
+          cell: (r) => el('span', { class: 'tag dim' }, r.source || '—'),
+        },
+        {
+          label: 'Added',
+          value: (r) => r.added_at || 0,
+          filter: false,
+          class: 'nowrap',
+          cell: (r) => el('span', {}, r.added_at ? ago(r.added_at) : '—'),
+        },
+        {
+          label: 'Days since lookup',
+          value: (r) => (r.checked_days_ago === null ? -1 : r.checked_days_ago),
+          filter: 'range',
+          class: 'nowrap',
+          cell: (r) => {
+            const days = r.checked_days_ago;
+            const stale = state.scanWindow > 0 && days !== null && days >= state.scanWindow;
+            return el('span', {},
+              el('div', {}, days === null ? 'unknown' : days < 1 ? 'today' : `${Math.round(days)}d ago`),
+              el('span', { class: 'hint' },
+                 [checkedOn(r.checked_at), stale ? 'due a re-check' : ''].filter(Boolean).join(' · ')));
+          },
+        },
+      ],
+    }));
+  }
+
+  /** Re-check the ticked albums against the trackers, window or no window. */
+  async function scanHistoryRerun() {
+    const shown = tableView('scanhistory').shown || state.scanHistory;
+    const picked = shown.filter((r) => state.scanHistorySelected.has(scanKey(r)));
+    if (!picked.length) return;
+    showScanTab('run');
+    await recheckReleases(picked);
+  }
+
+  /** Forget the stored answers, so the next scan looks them up again. */
+  async function scanHistoryForget() {
+    const shown = tableView('scanhistory').shown || state.scanHistory;
+    const ids = shown.filter((r) => state.scanHistorySelected.has(scanKey(r))).map(scanKey);
+    if (!ids.length) return;
+    try {
+      await api('/api/found/dismiss', { method: 'POST', body: { ids, blacklist: false } });
+      toast(`${ids.length} forgotten. The next scan will look them up again.`, 'ok');
+      state.scanHistorySelected = new Set();
+      await loadScanHistory();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
   }
 
   // ------------------------------------------------------------------
@@ -5645,6 +5863,18 @@ They will not be listed again, even if a later scan finds them.`)) {
     // Re-checks whatever is ticked in the results, which is the only place a
     // subset makes sense.
     $('#missing-check').addEventListener('click', () => missingCheck());
+    $$('#scan-tabs button').forEach((b) => {
+      b.addEventListener('click', () => showScanTab(b.dataset.scantab));
+    });
+    $('#scanhistory-rerun').addEventListener('click', scanHistoryRerun);
+    $('#scanhistory-forget').addEventListener('click', scanHistoryForget);
+    $('#scanhistory-clear-filters').addEventListener('click', () => {
+      const view = tableView('scanhistory');
+      view.filters = {};
+      view.sort = null;
+      renderScanHistoryRows();
+    });
+
     $$('#requests-tabs button').forEach((b) => {
       b.addEventListener('click', () => showRequestTab(b.dataset.reqtab));
     });

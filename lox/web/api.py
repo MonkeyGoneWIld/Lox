@@ -495,6 +495,7 @@ async def api_config(request: web.Request) -> web.Response:
                 "min_date": checker.min_date,
                 "max_date": checker.max_date,
                 "min_confidence": checker.min_confidence,
+                "album_recheck_after_days": getattr(checker, "album_recheck_after_days", 30),
             },
             "arl_set": bool(request.app["gw"].arl),
             "discogs_set": bool(cfg.metadata.discogs_token),
@@ -1476,6 +1477,84 @@ async def api_request_detail(request: web.Request) -> web.Response:
         return json_response(await request_detail(gateway, tracker, request_id))
     except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
         return error(str(e), status=502)
+
+
+@routes.get("/api/scan/history")
+async def api_scan_history(request: web.Request) -> web.Response:
+    """Every album a scan has looked up, and what it found. No tracker calls.
+
+    A scan skips what is in here, so this is also the answer to "why did that
+    scan do so little": the work was already paid for. Selecting rows and
+    re-checking is how you ask again before the recheck window is up.
+    """
+    store: CheckerStore = request.app["store"]
+    now = time.time()
+
+    rows = []
+    for album_id, entry in (store.load("albums") or {}).items():
+        status = str(entry.get("status") or "")
+        rows.append({
+            "id": str(album_id),
+            "album_id": str(album_id),
+            "title": entry.get("title") or "",
+            "artist": entry.get("artist") or "",
+            "status": status,
+            "outcome": _scan_outcome(entry),
+            "reason": entry.get("reason") or entry.get("error") or "",
+            "source": entry.get("source") or "",
+            "found_on": entry.get("found_on") or [],
+            "missing_from": entry.get("missing_from") or [],
+            "all_flac": entry.get("all_flac"),
+            "deezer_tracks": entry.get("deezer_tracks"),
+            "release_date": entry.get("release_date") or "",
+            "added_at": entry.get("first_seen") or entry.get("checked_at"),
+            "checked_at": entry.get("checked_at"),
+            "checked_days_ago": recheck.age_days(entry, now),
+            "url": f"https://www.deezer.com/album/{album_id}",
+        })
+
+    rows.sort(key=lambda r: r.get("checked_at") or 0, reverse=True)
+    return json_response({
+        "albums": rows[:HISTORY_LIMIT],
+        "total": len(rows),
+        "shown": min(len(rows), HISTORY_LIMIT),
+        "recheck_after_days": int(getattr(cfg.checker, "album_recheck_after_days", 30) or 0),
+        "filters": {
+            "min_tracks": cfg.checker.min_tracks,
+            "min_date": cfg.checker.min_date or "",
+            "max_date": cfg.checker.max_date or "",
+        },
+    })
+
+
+#: What a stored album status means, in one phrase. The status itself carries
+#: whichever trackers were configured -- "missing_ops_red" -- which is precise
+#: and unreadable.
+def _scan_outcome(entry: dict[str, Any]) -> str:
+    """One phrase for what a scan concluded about an album.
+
+    Args:
+        entry: The stored album record.
+
+    Returns:
+        Something a column can group by.
+    """
+    status = str(entry.get("status") or "")
+    if status.startswith("missing_"):
+        return "Missing from a tracker"
+    if status.startswith("exists_"):
+        return "Already on every tracker"
+    if status == "skipped_filter":
+        return "Ruled out by a scan filter"
+    if status == "skipped_no_flac":
+        return "No lossless source"
+    if status == "skipped_unreleased":
+        return "Not released yet"
+    if status.startswith("skipped_"):
+        return "Nothing usable on Deezer"
+    if status:
+        return "Lookup failed"
+    return "Unknown"
 
 
 @routes.get("/api/requests/history")
