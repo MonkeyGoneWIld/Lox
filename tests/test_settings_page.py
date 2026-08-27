@@ -132,8 +132,17 @@ async def main() -> int:
     # combine them, and an enum for requests: a truth table with dropdowns in
     # front of it. Nobody wants to say "RED must already be there".
     queue_keys = {f.key for f in FIELDS if f.section == "queue"}
-    check("the queue is configured by two settings",
-          queue_keys == {"checker.queue_when", "checker.queue_requests_too"}, str(sorted(queue_keys)))
+    check("the queue is configured by a rule and two switches",
+          queue_keys == {"checker.queue_when", "checker.queue_requests_too",
+                         "checker.request_recheck_after_days"},
+          str(sorted(queue_keys)))
+
+    # How long a request check is trusted. The same setting is offered on the
+    # Requests page, beside the search it governs, because a setting reachable
+    # only from another page is a setting nobody changes.
+    window = next(f for f in FIELDS if f.key == "checker.request_recheck_after_days")
+    check("the recheck window is a number of days", window.kind == "int", window.kind)
+    check("and cannot be negative", window.minimum == 0, str(window.minimum))
     for dead in ("checker.queue_red", "checker.queue_ops", "checker.queue_dic",
                  "checker.queue_match", "checker.queue_requests",
                  "checker.queue_require_somewhere_missing"):
@@ -258,7 +267,19 @@ async def main() -> int:
         check("and per-field tests",
               any(f.get("test") for s in payload["sections"] for f in s["fields"]), "")
         listed = {f["key"] for s in payload["sections"] for f in s["fields"]}
-        check("every field is served", listed == keys, str(sorted(keys ^ listed)))
+        # Every field except the ones edited on the screen they govern. The
+        # scan filters are declared here so the settings API validates and
+        # saves them, but they belong on the Scan tab: sat in a list beside
+        # the tracker budget they read as rules the whole app obeys, which is
+        # how they came to be understood as one.
+        elsewhere = {f.key for f in FIELDS if f.on_page}
+        check("the scan filters are edited on the Scan tab",
+              elsewhere >= {"checker.min_tracks", "checker.min_date", "checker.max_date"},
+              str(sorted(elsewhere)))
+        check("every other field is served", listed == keys - elsewhere,
+              str(sorted((keys - elsewhere) ^ listed)))
+        check("and none of them leaks onto the settings page",
+              not (listed & elsewhere), str(sorted(listed & elsewhere)))
     finally:
         await session.close()
         await runner.cleanup()

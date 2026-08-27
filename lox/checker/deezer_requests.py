@@ -17,6 +17,7 @@ from typing import Any
 import msgspec
 
 from lox import cfg, debug
+from lox.checker import recheck
 from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import MIN_TOTAL_SCORE, find_best_deezer_match
 from lox.checker.request_filters import PAGE_SIZE, build_params
@@ -79,6 +80,10 @@ class RequestMatch(msgspec.Struct):
     scores: dict[str, Any] = msgspec.field(default_factory=dict)
     all_flac: bool = False
     all_readable: bool = False
+    #: Track titles Deezer will not hand over, so the page can name them
+    #: rather than only counting them.
+    deezer_unavailable: list[str] = msgspec.field(default_factory=list)
+    release_date: str = ""
     verification: dict[str, Any] = msgspec.field(default_factory=dict)
     # Whether the tracker already has this release, and where. A request left
     # open after somebody uploaded it is not worth filling twice.
@@ -286,6 +291,7 @@ class DeezerRequestChecker:
         search: str = "",
         *,
         limit: int = 25,
+        start_page: int = 1,
         **filters: Any,
     ) -> dict[str, Any]:
         """Page through requests until ``limit`` of them are gathered.
@@ -299,12 +305,19 @@ class DeezerRequestChecker:
             tracker: Tracker code.
             search: Search string.
             limit: How many requests to gather.
+            start_page: Which page to begin at, 1-based. Asking for one page at
+                a time is how the browser drives a search it can show progress
+                for and stop halfway through: a cancelled search then costs
+                only the pages already read, where one long call would have
+                spent every page's budget before anyone could stop it.
             **filters: Selections by label, translated per tracker.
 
         Returns:
             ``requests``, the number of ``calls`` spent, ``filtered`` -- how many
-            already-filled rows were dropped -- and ``complete``, which is False
-            when the tracker ran out of results before the limit.
+            already-filled rows were dropped -- ``complete``, which is False
+            when the tracker ran out of results before the limit, and how much
+            of the whole search was read: ``pages_read`` of ``pages``, with
+            ``total_estimate`` rows matching in total.
 
         Raises:
             TrackerBudgetExceeded: If the budget runs out mid-collection.
@@ -313,7 +326,7 @@ class DeezerRequestChecker:
         seen: set[str] = set()
         calls = 0
         filtered = 0
-        page = 1
+        page = max(1, start_page)
         total_pages = 0
 
         # The limit is a page count in disguise: the UI asks for pages, because
@@ -361,6 +374,16 @@ class DeezerRequestChecker:
             "filtered": filtered,
             "complete": len(gathered) >= limit,
             "pages": total_pages,
+            # How much of the search was actually looked at. A four-page fetch
+            # against a search the tracker answers with four hundred pages
+            # returned a hundred rows and said "100 requests from 4 calls",
+            # which reads as the whole result -- so a search that matched ten
+            # thousand requests and a search that matched a hundred looked
+            # identical. Gazelle reports pages, not a row count, so the total
+            # is an estimate and is described as one.
+            "pages_read": min(calls, total_pages) if total_pages else calls,
+            "page_size": PAGE_SIZE,
+            "total_estimate": total_pages * PAGE_SIZE if total_pages else 0,
         }
 
     @staticmethod
@@ -382,28 +405,51 @@ class DeezerRequestChecker:
         request_ids: list[str],
         progress: ProgressFn | None = None,
         skip_known: bool = True,
+        force: bool = False,
     ) -> list[RequestMatch]:
-        """Check a batch of requests.
+        """Check a batch of requests, skipping the ones already answered.
+
+        A check is a tracker call and a Deezer search per request. Running the
+        same search twice paid for all of it twice: ``should_skip`` was asking
+        whether the status was one of the *album* scanner's final statuses, and
+        a request is never any of those, so nothing was ever skipped and every
+        run started from nothing.
 
         Args:
             tracker: Tracker code the requests belong to.
             request_ids: Request IDs to check.
             progress: Optional callback receiving (event, payload) updates.
-            skip_known: Skip requests with a stored final status.
+            skip_known: Reuse answers that are still inside the recheck window.
+            force: Check everything, however recently it was checked. This is
+                what "run them anyway" does.
 
         Returns:
-            One RequestMatch per request that was actually checked.
+            One RequestMatch per request that was actually checked. What was
+            skipped, and why, is emitted as a ``skipped`` event before any call
+            is made -- a run that quietly did a tenth of what was asked looks
+            broken, and the caller needs the list to offer running them anyway.
         """
         emit = progress or (lambda *_: None)
         verifier = TrackCountVerifier()
         results: list[RequestMatch] = []
 
+        window = int(getattr(cfg.checker, "request_recheck_after_days", 30) or 0)
+        if skip_known and not force:
+            request_ids, skipped = recheck.plan(
+                self.store, tracker, [str(r) for r in request_ids], recheck_after_days=window
+            )
+        else:
+            skipped = []
+        if skipped:
+            debug.log(
+                "requests %s: %s already answered, %s to check",
+                tracker, len(skipped), len(request_ids), level=20,
+            )
+        emit("skipped", {"tracker": tracker, "requests": skipped, "count": len(skipped),
+                         "recheck_after_days": window})
+
         try:
             for index, request_id in enumerate(request_ids, 1):
-                key = f"{tracker}:{request_id}"
-                if skip_known and self.store.should_skip("requests", key):
-                    continue
-
                 emit("progress", {"current": index, "total": len(request_ids), "request_id": request_id})
 
                 if not self.gateway.can_check(tracker):
@@ -432,7 +478,7 @@ class DeezerRequestChecker:
                 # the status meant the Found tab had nothing to show.
                 self.store.put(
                     "requests",
-                    key,
+                    f"{tracker}:{request_id}",
                     {
                         "status": match.status,
                         "reason": match.reason,
@@ -455,6 +501,16 @@ class DeezerRequestChecker:
                         "confidence": match.confidence,
                         "already_on_tracker": match.already_on_tracker,
                         "tracker_group_url": match.tracker_group_url,
+                        # What Deezer has, and what this request will take.
+                        # The queue needs both to answer the only question
+                        # that matters for a source that is not all FLAC: did
+                        # anyone actually ask for lossy?
+                        "all_flac": match.all_flac,
+                        "deezer_tracks": match.deezer_tracks,
+                        "deezer_unavailable": match.deezer_unavailable,
+                        "release_date": match.release_date,
+                        "request_formats": match.formats,
+                        "request_encodings": match.bitrates,
                     },
                 )
                 results.append(match)
@@ -560,10 +616,20 @@ class DeezerRequestChecker:
 
         match.all_flac = availability.all_flac
         match.all_readable = availability.all_readable
+        match.deezer_unavailable = list(availability.unreadable)
+        match.release_date = availability.release_date
         match.deezer_tracks = availability.total
 
-        if not availability.all_readable:
-            match.reason = f"{len(availability.unreadable)} track(s) not streamable in your region"
+        # Whatever Deezer cannot supply, in its own words: not out yet, only
+        # four of eleven tracks fetchable, no song ids. One verdict rather
+        # than this path's own partial re-statement of it.
+        blocked = availability.reason()
+        if blocked and not availability.all_flac and availability.all_readable:
+            # FLAC alone is the request's business, not ours: a request that
+            # takes MP3 is still fillable from a lossy source.
+            blocked = None
+        if blocked:
+            match.reason = blocked
             return match
 
         flac_only = match.formats == ["FLAC"]

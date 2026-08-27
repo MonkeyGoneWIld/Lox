@@ -14,7 +14,8 @@ from typing import Any
 
 import msgspec
 
-from lox import cfg
+from lox import cfg, debug
+from lox.checker import recheck
 from lox.checker.gateway import TrackerBudgetExceeded, TrackerGateway, TrackerUnavailable, plain
 from lox.checker.matching import build_search_queries, evaluate_group
 from lox.checker.request_filters import for_tracker
@@ -136,6 +137,17 @@ class AlbumCheck(msgspec.Struct):
     title: str
     artist: str
     verdicts: list[TrackerVerdict] = msgspec.field(default_factory=list)
+    # What Deezer will actually hand over. "No tracker has it" is only half of
+    # "worth uploading"; this is the other half, and it used to go unasked on
+    # this path -- so an album checked from Search or Browse joined the queue
+    # without anyone knowing whether there was a lossless release behind it.
+    all_flac: bool | None = None
+    flac_count: int | None = None
+    deezer_tracks: int | None = None
+    #: Titles Deezer will not hand over, and why the release is unusable.
+    unavailable: list[str] = msgspec.field(default_factory=list)
+    release_date: str = ""
+    blocked: str = ""
 
     @property
     def missing_from(self) -> list[str]:
@@ -157,6 +169,12 @@ class AlbumCheck(msgspec.Struct):
             "missing_from": self.missing_from,
             "found_on": self.found_on,
             "uploadable_to": self.missing_from,
+            "all_flac": self.all_flac,
+            "flac_count": self.flac_count,
+            "deezer_tracks": self.deezer_tracks,
+            "unavailable": self.unavailable,
+            "release_date": self.release_date,
+            "blocked": self.blocked,
         }
 
 
@@ -221,6 +239,7 @@ class MissingScanner:
         """
         emit = progress or (lambda *_: None)
         album_sources: dict[str, str] = {}
+        skipped: list[dict[str, Any]] = []
 
         for source in sources:
             source = source.strip()
@@ -237,16 +256,40 @@ class MissingScanner:
         for index, (album_id, source) in enumerate(album_sources.items(), 1):
             emit("progress", {"phase": "filter", "current": index, "total": len(album_sources)})
 
-            if skip_known and self.store.should_skip("albums", album_id):
-                continue
+            if skip_known:
+                # should_skip only ever matched a handful of "skipped_*"
+                # statuses, so an album a scan had already checked against
+                # every tracker -- the common case, and the expensive one --
+                # was looked up again on the next run, and the one after.
+                # An answer is trusted for the recheck window; the Lookup
+                # History is where you go to ask again sooner.
+                stored = self.store.get("albums", album_id)
+                keep, why = recheck.album_verdict(stored, self._recheck_window())
+                if not keep:
+                    skipped.append({"album_id": album_id, "reason": why,
+                                    "title": (stored or {}).get("title", ""),
+                                    "artist": (stored or {}).get("artist", "")})
+                    continue
 
             candidate = await self._evaluate_candidate(album_id, source, emit)
             if candidate:
                 candidates.append(candidate)
 
         self.store.flush("albums")
-        emit("collect_done", {"candidates": len(candidates)})
+        # Said before anything is spent, so a scan that quietly did a tenth of
+        # what was asked is explained rather than looking broken.
+        if skipped:
+            emit("skipped", {"albums": skipped[:200], "count": len(skipped),
+                             "recheck_after_days": self._recheck_window()})
+            debug.log("scan: %s album(s) already looked up, %s to check",
+                      len(skipped), len(candidates), level=20)
+        emit("collect_done", {"candidates": len(candidates), "skipped": len(skipped)})
         return candidates
+
+    @staticmethod
+    def _recheck_window() -> int:
+        """How long a scan's answer about an album is trusted, in days."""
+        return int(getattr(cfg.checker, "album_recheck_after_days", 30) or 0)
 
     async def _expand_source(self, source: str, album_sources: dict[str, str], emit: ProgressFn) -> None:
         """Resolve one source URL into album IDs, recording where each came from."""
@@ -323,14 +366,24 @@ class MissingScanner:
         unavailable_reason = availability.reason()
         if unavailable_reason:
             status = "skipped_no_flac" if not availability.all_flac else "skipped_unreadable"
-            if not availability.all_have_id:
+            if availability.unreleased:
+                status = "skipped_unreleased"
+            elif not availability.all_have_id:
                 status = "skipped_missing_track_ids"
             elif not availability.all_have_filesize:
                 status = "skipped_no_filesize"
             self.store.put(
                 "albums",
                 album_id,
-                {"status": status, "title": title, "artist": artist, "reason": unavailable_reason, "source": source},
+                {
+                    "status": status,
+                    "title": title,
+                    "artist": artist,
+                    "reason": unavailable_reason,
+                    "source": source,
+                    "deezer_unavailable": list(availability.unreadable),
+                    "release_date": availability.release_date,
+                },
             )
             emit("filtered", {"album_id": album_id, "reason": unavailable_reason})
             return None
@@ -480,6 +533,13 @@ class MissingScanner:
                     "found_on": result.found_on,
                     "missing_from": result.missing_from,
                     "errors": result.errors,
+                    # A candidate only gets this far by being all FLAC -- the
+                    # filter above drops the rest as skipped_no_flac -- but the
+                    # queue should not have to know that to trust the row. Say
+                    # it, so a row is readable on its own.
+                    "all_flac": bool((candidate.availability or {}).get("all_flac")),
+                    "flac_count": (candidate.availability or {}).get("flac_count"),
+                    "deezer_tracks": (candidate.availability or {}).get("total"),
                 },
             )
             # A request that this same release would fill lives in its own
@@ -642,6 +702,26 @@ class MissingScanner:
             artist=(info.get("artist") or {}).get("name") or "",
         )
 
+        # Before any tracker call: what can Deezer give us? A release that is
+        # not all FLAC is not an upload unless a request says lossy will do, so
+        # the answer belongs on the record whatever the trackers say. It costs
+        # no tracker budget, and a failure here is not fatal -- the check is
+        # still worth running, the row just stays unproven.
+        try:
+            availability = await self.gw.availability(album_id)
+        except DeezerGWError as e:
+            debug.log("availability check for %s failed: %s", album_id, e, level=30)
+        else:
+            check.all_flac = availability.all_flac
+            check.flac_count = availability.flac_count
+            check.deezer_tracks = availability.total
+            check.unavailable = list(availability.unreadable)
+            check.release_date = availability.release_date
+            # Whatever Deezer cannot supply. Recorded here so the queue can
+            # keep the release out and the page can say which tracks are
+            # missing, rather than offering a download that cannot complete.
+            check.blocked = availability.reason() or ""
+
         for code in trackers:
             if code not in self.gateway.configured_trackers():
                 check.verdicts.append(TrackerVerdict(tracker=code, status="unconfigured", error="not configured"))
@@ -690,6 +770,14 @@ class MissingScanner:
                 "found_on": check.found_on,
                 "missing_from": check.missing_from,
                 "source": "album check",
+                # Read by the queue, which will not list a release Deezer
+                # cannot supply.
+                "all_flac": check.all_flac,
+                "flac_count": check.flac_count,
+                "deezer_tracks": check.deezer_tracks,
+                "deezer_unavailable": check.unavailable,
+                "release_date": check.release_date,
+                "blocked": check.blocked,
                 # The verdicts too, not just the summary. Re-opening the album
                 # should show the groups it found and what it rejected without
                 # spending the budget again to learn the same thing.

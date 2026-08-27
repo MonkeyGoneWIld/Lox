@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import re
 from os.path import dirname, join
 
 import aiohttp_jinja2
@@ -11,6 +12,7 @@ from aiohttp_jinja2 import render_template
 from lox import cfg
 from lox.common import commandgroup
 from lox.config import find_config_path
+from lox.config.schema import CATEGORIES, SECTIONS
 from lox.database import run_migrations
 from lox.errors import WebServerIsAlreadyRunning
 from lox.web import api, settings_api, spectrals
@@ -97,6 +99,57 @@ async def create_app_async() -> web.AppRunner:
     return runner
 
 
+def _slug(name: str) -> str:
+    """A display name as it is written in an address.
+
+    Character for character the rule the script uses, because the two have to
+    agree on what ``/settings/accounts`` means or one of them 404s what the
+    other links to.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", name.lower())
+
+
+def _settings_paths() -> tuple[str, ...]:
+    """An address for every part of the settings page.
+
+    The page is one long scroll, so a section is a place on it, and a place
+    that cannot be named cannot be linked to or returned to on a reload.
+    Generated from the schema rather than listed, so a section added there
+    gets an address without anybody remembering to come back here.
+
+    ``users`` is the sign-in panel: it is headed "Accounts" on screen, which
+    is already the name of the category holding the tracker credentials, and
+    two parts of one page cannot share an address.
+    """
+    names = [_slug(c) for c in CATEGORIES]
+    names += [section.id for section in SECTIONS]
+    names += ["config-file", "debug-log", "appearance", "scan-history", "users"]
+    return tuple(f"/settings/{name}" for name in dict.fromkeys(names))
+
+
+#: Every address the single-page UI can show, so the server answers each of
+#: them with the shell and the script picks the screen back up from it.
+#: A tab is here too -- Requests and Scan each have a second one, Browse has
+#: three -- because returning to the first tab on reload is the same bug in
+#: miniature as landing on Search.
+APP_PATHS: tuple[str, ...] = (
+    "/search",
+    "/browse",
+    "/browse/channels",
+    "/browse/charts",
+    "/browse/releases",
+    "/scan",
+    "/scan/history",
+    "/requests",
+    "/requests/history",
+    "/queue",
+    "/downloading",
+    "/uploading",
+    "/settings",
+    *_settings_paths(),
+)
+
+
 def add_routes(app: web.Application) -> None:
     """Add routes to the web application.
 
@@ -112,6 +165,21 @@ def add_routes(app: web.Application) -> None:
     # an upgrade looked like the feature had been removed.
     app["asset_version"] = _asset_version()
     app.router.add_route("GET", "/", handle_app)
+    # The same shell at every address the app navigates to, so reloading on a
+    # page keeps you on it and Back means what it means everywhere else. The
+    # app never changed the address bar at all, so a reload always landed on
+    # Search and the browser's own buttons did nothing.
+    #
+    # Listed rather than a catch-all: a typo should still be a 404, and an
+    # /api path that does not exist must not come back as a page of HTML.
+    for path in APP_PATHS:
+        app.router.add_route("GET", path, handle_app)
+    # The four that name something rather than somewhere. These cannot be
+    # listed, because the thing they name is on Deezer or on a tracker.
+    app.router.add_route("GET", "/album/{album_id}", handle_app)
+    app.router.add_route("GET", "/artist/{artist_id}", handle_app)
+    app.router.add_route("GET", "/browse/channel/{slug}", handle_app)
+    app.router.add_route("GET", "/requests/{tracker}/{request_id}", handle_app)
     app.router.add_route("GET", "/login", handle_login)
     app.router.add_route("GET", "/legacy", handle_index)
     app.router.add_route("GET", "/spectrals", spectrals.handle_spectrals)

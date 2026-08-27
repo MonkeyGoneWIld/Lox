@@ -34,11 +34,13 @@
     selectedFound: new Set(),
     // Rows the Settings queue rules kept out, and the rule in words.
     foundHeld: [],
+    selectedHeld: new Set(),
+    heldGroups: [],
+    droppedNote: '',
     foundRule: '',
     showHeld: false,
     // Narrowing what is on screen. Not persisted: it is a way of reading the
     // list, not a setting.
-    foundFilter: { text: '', tracker: '', source: '' },
     // Releases ticked for a batch action, by album id.
     picked: new Map(),
     uploadTrackers: new Set(),
@@ -47,6 +49,24 @@
     linking: false,
     requestRows: [],
     selectedRequests: new Set(),
+    // The running search, so Cancel has something to stop and a second click
+    // on Search cannot start a parallel one.
+    requestsAbort: null,
+    requestTab: 'find',
+    scanTab: 'run',
+    // A channel page inside Browse, and a place on the settings page. Both are
+    // somewhere you can be, so both are somewhere with an address.
+    exploreChannel: '',
+    settingsSection: '',
+    // Which detail page is open, so the address can say so and Back can leave.
+    openAlbumId: null,
+    openArtistId: null,
+    scanHistory: [],
+    scanHistorySelected: new Set(),
+    scanWindow: 30,
+    recheckDays: 30,
+    history: [],
+    historySelected: new Set(),
     // Check results by request id, so the split view can show what was found.
     requestMatches: new Map(),
     trackers: [],
@@ -96,6 +116,258 @@
     return node;
   }
 
+  // ------------------------------------------------------------------
+  // Tables
+  // ------------------------------------------------------------------
+  // Every list in the app had its own header row, its own filter controls in
+  // a bar somewhere above it, and its own idea of what "selected" meant. Three
+  // consequences, all of which had been reported: shift-click selected
+  // nothing, because no list tracked where the last click was; filters sat
+  // detached from the columns they filtered, so which control narrowed which
+  // column was guesswork; and the count came from walking the DOM, so a row
+  // whose id was missing added `undefined` to the set and "17 selected" was
+  // one more than the list held.
+  //
+  // Selection here is derived from the row data, never from the checkboxes.
+  // A count that disagrees with the list is then not expressible.
+
+  const tableState = new Map();
+
+  /** The sort and per-column filters for one table, kept across re-renders. */
+  function tableView(name) {
+    if (!tableState.has(name)) {
+      tableState.set(name, { sort: null, dir: 1, filters: {}, lastIndex: null });
+    }
+    return tableState.get(name);
+  }
+
+  /**
+   * A sortable, filterable table with optional row selection.
+   *
+   * @param {object} spec
+   *   `name` keys the retained sort/filter state. `rows` is the data. Each
+   *   column has a `label`, a `cell(row)` renderer, an optional `value(row)`
+   *   for sorting and filtering, and `filter: 'text' | 'choice' | false`.
+   *   `selection` is `{ set, onChange }` to add checkboxes.
+   * @returns {HTMLElement} The table, filters and all.
+   */
+  function dataTable({ name, rows, columns, selection = null, onShown = null,
+                      idOf = (row) => row.id, empty: emptyText = 'Nothing here.' }) {
+    const view = tableView(name);
+    // What identifies a row. Usually its id; for a list of requests it is the
+    // tracker and the id together, because request 70001 exists on both and
+    // is a different release on each.
+    view.idOf = idOf;
+
+    // --- filtering, column by column ---------------------------------
+    const valueOf = (column, row) =>
+      column.value ? column.value(row) : '';
+    let shown = rows;
+    for (const column of columns) {
+      const wanted = view.filters[column.label];
+      if (column.filter === 'range') {
+        // Two limits, either of which may be left empty: "1990 to blank"
+        // means everything from 1990 on, which is how people ask.
+        const low = wanted && wanted.low !== '' ? Number(wanted.low) : null;
+        const high = wanted && wanted.high !== '' ? Number(wanted.high) : null;
+        if (low === null && high === null) continue;
+        shown = shown.filter((row) => {
+          const value = Number(valueOf(column, row));
+          if (!Number.isFinite(value)) return false;
+          if (low !== null && value < low) return false;
+          return !(high !== null && value > high);
+        });
+        continue;
+      }
+      if (!wanted) continue;
+      shown = shown.filter((row) => {
+        const value = String(valueOf(column, row) ?? '').toLowerCase();
+        return column.filter === 'choice'
+          ? value === String(wanted).toLowerCase()
+          : value.includes(String(wanted).toLowerCase());
+      });
+    }
+
+    // --- sorting -------------------------------------------------------
+    const sorted = [...shown];
+    const sortColumn = columns.find((c) => c.label === view.sort);
+    if (sortColumn) {
+      sorted.sort((a, b) => {
+        const x = valueOf(sortColumn, a);
+        const y = valueOf(sortColumn, b);
+        if (typeof x === 'number' && typeof y === 'number') return (x - y) * view.dir;
+        return String(x ?? '').localeCompare(String(y ?? ''), undefined, { numeric: true }) * view.dir;
+      });
+    }
+
+    // What the table actually drew, after its own column filters. The
+    // buttons above it act on this: selecting everything, then narrowing a
+    // column, then pressing Download would otherwise have downloaded rows
+    // that were no longer on screen.
+    view.shown = sorted;
+    if (onShown) onShown(sorted);
+
+    const rerender = () => {
+      const host = document.querySelector(`[data-table="${name}"]`);
+      if (!host) return;
+      // Which filter box had the caret, so typing survives the rebuild. Without
+      // this the cursor jumped back to the start after every debounce.
+      const focused = document.activeElement;
+      const mark = focused && host.contains(focused)
+        ? { cls: focused.className, ph: focused.placeholder, at: focused.selectionStart }
+        : null;
+      host.replaceWith(dataTable({ name, rows, columns, selection, onShown, idOf, empty: emptyText }));
+      if (!mark) return;
+      const fresh = document.querySelector(`[data-table="${name}"]`);
+      const again = fresh && [...fresh.querySelectorAll('thead .th-filter')]
+        .find((box) => box.className === mark.cls && box.placeholder === mark.ph);
+      if (!again) return;
+      again.focus();
+      try { again.setSelectionRange(mark.at, mark.at); } catch { /* number inputs refuse */ }
+    };
+
+    // --- the header ----------------------------------------------------
+    const header = el('tr', {},
+      selection
+        ? el('th', { class: 'col-pick' }, el('input', {
+            type: 'checkbox',
+            checked: sorted.length > 0 && sorted.every((r) => selection.set.has(idOf(r))),
+            title: 'Select everything shown',
+            onchange: (e) => {
+              // From the rows on screen, not from the boxes. Selecting what is
+              // filtered out is the other half of the same bug.
+              for (const row of sorted) {
+                if (e.target.checked) selection.set.add(idOf(row));
+                else selection.set.delete(idOf(row));
+              }
+              selection.onChange();
+              rerender();
+            },
+          }))
+        : null,
+      ...columns.map((column) => {
+        const active = view.sort === column.label;
+        const sortButton = el('button', {
+          class: `th-sort${active ? ' active' : ''}`,
+          title: `Sort by ${column.label.toLowerCase()}`,
+          onclick: () => {
+            if (view.sort === column.label) view.dir = -view.dir;
+            else { view.sort = column.label; view.dir = 1; }
+            rerender();
+          },
+        }, column.label, active ? el('span', { class: 'th-arrow' }, view.dir > 0 ? '▲' : '▼') : null);
+
+        // The filter lives in the column it filters -- it used to sit in a bar
+        // above the table, where nothing said which column it applied to --
+        // and every cell gets the same two rows whether or not it has one.
+        // Without the empty slot, columns with no filter were a row shorter
+        // and the header stepped up and down across the table.
+        let control = null;
+        if (column.filter === 'choice') {
+          const options = [...new Set(rows.map((r) => String(valueOf(column, r) ?? '')).filter(Boolean))].sort();
+          control = el('select', {
+            class: 'th-filter',
+            onchange: (e) => { view.filters[column.label] = e.target.value; rerender(); },
+          },
+          el('option', { value: '', selected: !view.filters[column.label] }, 'all'),
+          ...options.map((option) =>
+            el('option', { value: option, selected: view.filters[column.label] === option }, option)));
+        } else if (column.filter === 'range') {
+          const current = view.filters[column.label] || { low: '', high: '' };
+          const limit = (which, placeholder) => el('input', {
+            class: 'th-filter th-range',
+            type: 'number',
+            placeholder,
+            value: current[which],
+            oninput: (e) => {
+              const next = { ...(view.filters[column.label] || { low: '', high: '' }) };
+              next[which] = e.target.value;
+              view.filters[column.label] = next;
+              clearTimeout(view.timer);
+              view.timer = setTimeout(rerender, 260);
+            },
+          });
+          control = el('div', { class: 'th-range-pair' },
+            limit('low', column.lowLabel || 'min'),
+            limit('high', column.highLabel || 'max'));
+        } else if (column.filter) {
+          control = el('input', {
+            class: 'th-filter',
+            type: 'search',
+            placeholder: 'filter',
+            value: view.filters[column.label] || '',
+            oninput: (e) => {
+              view.filters[column.label] = e.target.value;
+              clearTimeout(view.timer);
+              // Typing should not rebuild the table on every keystroke.
+              view.timer = setTimeout(rerender, 220);
+            },
+          });
+        }
+
+        // The column's class dresses the DATA cell, not the header. Applying
+        // it to both put `display: flex` on the trackers header, which laid
+        // the label and its filter out side by side while every other header
+        // stacked them -- the row stepped up and down across the table.
+        return el('th', {},
+          el('div', { class: 'th-label' }, sortButton),
+          el('div', { class: 'th-filter-slot' }, control));
+      }));
+
+    if (!sorted.length) {
+      return el('div', { 'data-table': name, class: 'datatable' },
+        el('table', { class: 'table' }, el('thead', {}, header)),
+        empty(rows.length ? 'Nothing matches these filters.' : emptyText));
+    }
+
+    // --- the rows ------------------------------------------------------
+    const body = sorted.map((row, index) =>
+      el('tr', {},
+        selection
+          ? el('td', { class: 'col-pick' }, el('input', {
+              type: 'checkbox',
+              checked: selection.set.has(idOf(row)),
+              onclick: (e) => {
+                // Shift extends from the last box that was clicked, which is
+                // what every list of checkboxes has done for thirty years and
+                // what none of these did.
+                if (e.shiftKey && view.lastIndex !== null) {
+                  const [from, to] = [view.lastIndex, index].sort((a, b) => a - b);
+                  for (let i = from; i <= to; i++) {
+                    if (e.target.checked) selection.set.add(idOf(sorted[i]));
+                    else selection.set.delete(idOf(sorted[i]));
+                  }
+                } else if (e.target.checked) {
+                  selection.set.add(idOf(row));
+                } else {
+                  selection.set.delete(idOf(row));
+                }
+                view.lastIndex = index;
+                selection.onChange();
+                rerender();
+              },
+            }))
+          : null,
+        ...columns.map((column) => el('td', { class: column.class || '' }, column.cell(row)))));
+
+    return el('div', { 'data-table': name, class: 'datatable' },
+      el('table', { class: 'table' },
+        el('thead', {}, header),
+        el('tbody', {}, ...body)));
+  }
+
+  /**
+   * How many of `rows` are selected -- from the data, never the checkboxes.
+   *
+   * @param {Array} rows - The rows on screen.
+   * @param {Set} set - The selection.
+   * @param {Function} [idOf] - What identifies a row; defaults to its id.
+   * @returns {number} How many of them are in the set.
+   */
+  function countSelected(rows, set, idOf = (row) => row.id) {
+    return rows.reduce((n, row) => n + (set.has(idOf(row)) ? 1 : 0), 0);
+  }
+
   const duration = (seconds) => {
     if (!seconds) return '';
     const m = Math.floor(seconds / 60);
@@ -127,6 +399,380 @@
     $(`.nav-item[data-view="uploads"]`)?.classList.toggle('needs-you', n > 0);
   }
 
+  // ------------------------------------------------------------------
+  // Addresses
+  // ------------------------------------------------------------------
+  // The address bar is where the app is, not a note it writes afterwards.
+  // Every move goes through go(): it puts the address up and then draws
+  // whatever that address names, and nothing else paints a screen.
+  //
+  // The two used to be separate -- a click changed the screen and then, where
+  // somebody had got round to it, mentioned itself to history -- and the
+  // places nobody had got round to were the ones people actually use. A
+  // search, a Browse tab, a genre, a channel, a request, the excluded rows in
+  // the queue and a place on the settings page all carried the address of
+  // whichever screen you had arrived from. Back skipped every one of them at
+  // once, a reload threw them away, and none of them could be bookmarked or
+  // sent to anybody.
+  //
+  // The view names are internal and half of them are wrong from outside --
+  // "missing" is the Scan tab, "found" is the Queue -- so the path is what the
+  // screen is called, and this maps between the two.
+
+  const VIEW_PATHS = {
+    search: '/search',
+    explore: '/browse',
+    missing: '/scan',
+    requests: '/requests',
+    found: '/queue',
+    downloads: '/downloading',
+    uploads: '/uploading',
+    settings: '/settings',
+  };
+
+  // Browse is three lists, not one. Which of them you are reading is part of
+  // where you are, and it was lost on every reload.
+  const BROWSE_PATHS = {
+    channels: '/browse/channels',
+    charts: '/browse/charts',
+    releases: '/browse/releases',
+  };
+
+  const SEARCH_TYPES = ['all', 'album', 'track', 'artist'];
+
+  // The query keys the routes own. Anything else in the address belongs to
+  // somebody else -- ?token= above all, which is how a bookmark authenticates
+  // -- so it is carried through every move rather than dropped.
+  const ROUTE_KEYS = ['q', 'type', 'genre', 'tracker', 'held'];
+
+  /**
+   * An address: a path, this route's own parameters, and whatever else the
+   * current address is carrying.
+   *
+   * An empty value drops its key rather than writing `?genre=`, and the keys
+   * are written in ROUTE_KEYS order rather than the caller's, so a screen has
+   * exactly one address. Two ways of saying the same thing would otherwise
+   * differ by the order of the query and become two history entries, one of
+   * which Back would step through for no reason.
+   *
+   * @param {string} path - The path part.
+   * @param {Object} [params] - The route's own query parameters. A key that
+   *   is not one of ROUTE_KEYS is not the route's to set, and is ignored.
+   * @returns {string} The address to hand to go().
+   */
+  function addr(path, params = {}) {
+    const query = new URLSearchParams(location.search);
+    ROUTE_KEYS.forEach((key) => query.delete(key));
+    for (const key of ROUTE_KEYS) {
+      const value = params[key];
+      if (value !== null && value !== undefined && value !== '') query.set(key, String(value));
+    }
+    const rest = query.toString();
+    return rest ? `${path}?${rest}` : path;
+  }
+
+  /** The address on screen: path and query together, which is what Back sees. */
+  const here = () => location.pathname + location.search;
+
+  /** The kind filter as the address writes it. `all` is the absence of one. */
+  const typeParam = () => (state.searchType === 'all' ? '' : state.searchType);
+
+  /** The genre as the address writes it. `0` is Deezer's own "every genre". */
+  const genreParam = () => (state.exploreGenre === '0' ? '' : state.exploreGenre);
+
+  /**
+   * Go somewhere: put the address up, then draw it.
+   *
+   * @param {string} target - Where to go, from addr().
+   * @param {boolean} [options.replace] - Overwrite the current entry rather
+   *   than adding one. For the first paint and for corrections, neither of
+   *   which is somewhere Back should return to.
+   */
+  function go(target, { replace = false } = {}) {
+    if (target === here() && !replace) return;
+    if (replace) history.replaceState({ url: target }, '', target);
+    else history.pushState({ url: target }, '', target);
+    renderRoute(target);
+  }
+
+  // The address whose page is on screen, and the one before it. A detail page
+  // covers the pane it opened from and keeps the nodes; that entry has to
+  // remember which address those nodes belong to, or Back cannot pair the two
+  // up again.
+  let showingUrl = null;
+  let leavingUrl = null;
+  // And what that page was called. Read here rather than where the pane is
+  // stacked, which happens after the new screen has already renamed the tab:
+  // Back out of a release came home to a page of search results titled
+  // "Search".
+  let leavingTitle = null;
+
+  /** An address split into its path and its parsed query. */
+  function splitAddr(target) {
+    const cut = target.indexOf('?');
+    if (cut < 0) return [target, new URLSearchParams()];
+    return [target.slice(0, cut), new URLSearchParams(target.slice(cut + 1))];
+  }
+
+  /**
+   * Draw whatever an address names.
+   *
+   * Never touches history: go() and the browser's own buttons are the only
+   * things that do, which is what keeps the bar and the screen agreeing.
+   *
+   * @param {string} target - The address to draw.
+   */
+  function renderRoute(target) {
+    leavingUrl = showingUrl;
+    leavingTitle = document.title;
+    showingUrl = target;
+    const [path, query] = splitAddr(target);
+    const param = (key) => query.get(key) || '';
+
+    // The box and the kind filter are part of the address whether the results
+    // are fetched again or handed back by restorePane below.
+    if (path === '/search') syncSearchControls(param('q'), param('type'));
+
+    // Coming back to a page whose nodes are still in hand: put them back
+    // rather than fetching them a second time. Brings the scroll position and
+    // the ticks with them, and costs no API call.
+    if (restorePane(target)) return;
+
+    const album = path.match(/^\/album\/(.+)$/);
+    if (album) { openAlbum(decodeURIComponent(album[1])); return; }
+    const artist = path.match(/^\/artist\/(.+)$/);
+    if (artist) { openArtist(decodeURIComponent(artist[1])); return; }
+    const channel = path.match(/^\/browse\/channel\/(.+)$/);
+    if (channel) { showBrowse('channels', '', decodeURIComponent(channel[1])); return; }
+    // Two segments, so /requests/history stays a tab and never a request.
+    const request = path.match(/^\/requests\/([^/]+)\/([^/]+)$/);
+    if (request) { openRequest(decodeURIComponent(request[1]), decodeURIComponent(request[2])); return; }
+    const settings = path.match(/^\/settings\/([^/]+)$/);
+    if (settings) { showSettings(decodeURIComponent(settings[1])); return; }
+
+    switch (path) {
+      case '/search': showSearch(param('q')); return;
+      case '/browse':
+      case '/browse/channels': showBrowse('channels', '', ''); return;
+      case '/browse/charts': showBrowse('charts', param('genre'), ''); return;
+      case '/browse/releases': showBrowse('releases', param('genre'), ''); return;
+      case '/scan': showScan('run'); return;
+      case '/scan/history': showScan('history'); return;
+      case '/requests': showRequests('find', param('tracker')); return;
+      case '/requests/history': showRequests('history', param('tracker')); return;
+      case '/queue': showQueue(param('held') === '1'); return;
+      case '/downloading': setView('downloads'); return;
+      case '/uploading': setView('uploads'); return;
+      case '/settings': showSettings(''); return;
+      default: break;
+    }
+    // An address the app has no way to. Correct it rather than leaving a blank
+    // frame, replacing the entry so Back does not lead straight back to it.
+    go(addr('/search'), { replace: true });
+  }
+
+  /**
+   * The address a nav item goes to.
+   *
+   * Not simply the screen's path: the tab you last had open on Requests or
+   * Scan, the genre you were browsing and the search you ran are all part of
+   * where that screen is, so pressing its name in the rail returns you to it
+   * as you left it rather than to its empty first page.
+   *
+   * @param {string} view - The internal view name from the rail.
+   * @returns {string} Where that item goes.
+   */
+  function navAddr(view) {
+    if (view === 'search') {
+      return addr('/search', { q: $('#search-input')?.value.trim() || '', type: typeParam() });
+    }
+    if (view === 'explore') {
+      if (state.exploreChannel) return addr(`/browse/channel/${encodeURIComponent(state.exploreChannel)}`);
+      return addr(BROWSE_PATHS[state.exploreTab] || '/browse/channels',
+                  { genre: state.exploreTab === 'channels' ? '' : genreParam() });
+    }
+    if (view === 'missing') return addr(state.scanTab === 'history' ? '/scan/history' : '/scan');
+    if (view === 'requests') {
+      return state.requestTab === 'history'
+        ? addr('/requests/history')
+        : addr('/requests', { tracker: state.requestsTracker || '' });
+    }
+    if (view === 'found') return addr('/queue', { held: state.showHeld ? '1' : '' });
+    if (view === 'settings') {
+      return addr(state.settingsSection ? `/settings/${state.settingsSection}` : '/settings');
+    }
+    return addr(VIEW_PATHS[view] || '/search');
+  }
+
+  // Opening a release or an artist is going to its page, so it goes through
+  // the address rather than straight to the function that draws it. These are
+  // also real hrefs, so the status bar names where a link goes and a
+  // middle-click opens it in a tab, which a `href="#"` could never do.
+  const albumHref = (id) => addr(`/album/${encodeURIComponent(id)}`);
+  const artistHref = (id) => addr(`/artist/${encodeURIComponent(id)}`);
+  const goAlbum = (id) => go(albumHref(id));
+  const goArtist = (id) => go(artistHref(id));
+
+  /**
+   * Name the tab after whatever is on screen.
+   *
+   * Kept out of the address layer, which runs before the view has changed on
+   * the way in -- the first paint of a deep link set the title from the view
+   * the app had not left yet, so opening /requests/history said "Search".
+   *
+   * @param {string} [name] - An override, for a page that knows what it is
+   *   showing.
+   */
+  function setTitle(name) {
+    document.title = name ? `lox — ${name}` : `lox — ${navLabel(state.view)}`;
+  }
+
+  // ------------------------------------------------------------------
+  // The screens, one per address
+  // ------------------------------------------------------------------
+  // Each of these draws a screen from an address and nothing else: no history,
+  // and no assumption about where the reader came from. That is what makes a
+  // reload, a bookmark and Back the same thing rather than three code paths
+  // with three sets of bugs.
+
+  /**
+   * Put the search box and the kind filter where the address says.
+   *
+   * @param {string} query - The text searched for.
+   * @param {string} type - all, album, track or artist.
+   */
+  function syncSearchControls(query, type) {
+    const wanted = SEARCH_TYPES.includes(type) ? type : 'all';
+    // Narrowing to one kind is a different list, so it is not the batch you
+    // picked from the last one.
+    if (state.searchType !== wanted) clearPicks();
+    state.searchType = wanted;
+    const box = $('#search-input');
+    if (box && box.value !== query) box.value = query;
+    $$('#search-type button').forEach((b) => b.classList.toggle('active', b.dataset.type === wanted));
+  }
+
+  /**
+   * The Search screen, showing whatever the address asked for.
+   *
+   * The query is in the address, so results survive a reload, can be sent to
+   * somebody, and Back out of a release returns to them. Pressing Search used
+   * to change the page and nothing else, so Back from a search left the app
+   * and a reload lost what you had typed.
+   *
+   * @param {string} query - The text to search for, or "" for the empty page.
+   */
+  async function showSearch(query) {
+    setView('search');
+    // A search is a root: there is nothing behind it to go back to.
+    state.paneStack.length = 0;
+    setTitle(query ? `“${query}”` : undefined);
+    if (!query) { searchPane('grid').replaceChildren(); return; }
+    await runSearch(query);
+  }
+
+  /**
+   * The Browse screen: which of the three lists, which genre, and the channel
+   * if one is open.
+   *
+   * @param {string} tab - channels, charts or releases.
+   * @param {string} genre - A Deezer genre id, or "" for all of them.
+   * @param {string} channel - A channel slug, when a channel page is open.
+   */
+  function showBrowse(tab, genre, channel) {
+    const wanted = BROWSE_PATHS[tab] ? tab : 'channels';
+    const wantedGenre = genre || '0';
+    const wantedChannel = channel || '';
+    // A batch belongs to the list it was picked from, and each of these is a
+    // different list.
+    if (state.exploreTab !== wanted || state.exploreGenre !== wantedGenre
+        || state.exploreChannel !== wantedChannel) clearPicks();
+    state.exploreTab = wanted;
+    state.exploreGenre = wantedGenre;
+    state.exploreChannel = wantedChannel;
+    $$('#explore-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.explore === wanted));
+    setView('explore');
+    if (wantedChannel) setTitle(wantedChannel);
+  }
+
+  /**
+   * The Scan screen, on one of its two tabs.
+   *
+   * @param {string} tab - run or history.
+   */
+  function showScan(tab) {
+    const wanted = tab === 'history' ? 'history' : 'run';
+    state.scanTab = wanted;
+    setView('missing');
+    showScanTab(wanted);
+  }
+
+  /**
+   * The Requests screen: which tab, and whose requests.
+   *
+   * The tracker is in the address because the whole form under it belongs to
+   * that tracker -- the two sites do not offer the same filters -- so a page
+   * without it in the address is not the page you bookmarked.
+   *
+   * @param {string} tab - find or history.
+   * @param {string} tracker - A tracker code, or "" to keep the current one.
+   */
+  function showRequests(tab, tracker) {
+    const wanted = tab === 'history' ? 'history' : 'find';
+    if (tracker && tracker !== state.requestsTracker) {
+      state.requestsTracker = tracker;
+      // The counts on screen belonged to the other tracker's search.
+      requestsSummary({ shown: null });
+    }
+    // Only the ticks move: rebuilding all three pickers from here would fight
+    // with the correction renderTrackerPickers makes when the status arrives.
+    $$('#requests-tracker button').forEach(
+      (b) => b.classList.toggle('active', b.dataset.tracker === state.requestsTracker));
+    setView('requests');
+    showRequestTab(wanted);
+  }
+
+  /**
+   * The Queue, with or without the rows the queue rules kept out.
+   *
+   * @param {boolean} held - Whether the excluded rows are shown.
+   */
+  function showQueue(held) {
+    const showing = state.view === 'found';
+    state.showHeld = held;
+    const toggle = $('#found-held-toggle');
+    if (toggle) toggle.textContent = held ? 'Hide excluded' : 'Show excluded';
+    // Already here: re-draw rather than re-fetch, so showing the excluded rows
+    // and hiding them again does not clear what you had ticked.
+    if (showing) { renderFound(); setTitle(); return; }
+    setView('found');
+  }
+
+  /**
+   * The Settings page, at the part the address names.
+   *
+   * @param {string} section - A category slug, a section id, or "" for the top.
+   */
+  function showSettings(section) {
+    state.settingsSection = section || '';
+    // Already here: scroll, and do not re-fetch. Rebuilding the page would
+    // throw away every edit that has not been saved yet.
+    if (state.view === 'settings' && state.settings) {
+      setTitle();
+      revealSettingsSection(true);
+      return;
+    }
+    setView('settings');
+  }
+
+  /**
+   * Show one of the top-level screens.
+   *
+   * The address is go()'s business; this only swaps what is on screen and
+   * starts whatever that screen loads.
+   *
+   * @param {string} view - The internal view name.
+   */
   function setView(view) {
     // A batch belongs to the list it was picked from. Leaving the list --
     // to the Queue, to Downloading, to anywhere -- leaves you holding
@@ -138,12 +784,16 @@
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
     $('#view-title').textContent = navLabel(view);
     if (view === 'explore') loadExplore();
-    if (view === 'missing') loadWatchlists();
+    if (view === 'missing') { loadWatchlists(); loadScanFilters(); }
     if (view === 'found') loadFound();
     if (view === 'requests' && state.requestFiltersFor !== state.requestsTracker) loadRequestFilters();
     if (view === 'downloads') pollDownloads(true);
     if (view === 'uploads') { loadFolders(); resumeFlows(); }
     if (view === 'settings') loadSettings();
+    // Leaving a detail page for a list is leaving the detail page.
+    state.openAlbumId = null;
+    state.openArtistId = null;
+    setTitle();
   }
 
   // ---------------------------------------------------------------- status
@@ -218,7 +868,7 @@
     banner.replaceChildren(
       el('strong', {}, list.length === 1 ? 'Configuration problem' : `${list.length} configuration problems`),
       el('ul', {}, ...list.map((p) => el('li', {}, p.message))),
-      el('button', { class: 'link', onclick: () => setView('settings') }, 'Open settings'),
+      el('button', { class: 'link', onclick: () => go(addr('/settings')) }, 'Open settings'),
     );
   }
 
@@ -261,19 +911,29 @@
       ),
     );
 
-    if (!state.requestsTracker && state.trackers.length) state.requestsTracker = state.trackers[0].code;
+    // The tracker can arrive from the address, which is written before the
+    // status says which trackers this install has. One that is not configured
+    // is corrected here, and the address is corrected with it rather than left
+    // naming a tracker that is not the one on screen.
+    if (state.trackers.length && !state.trackers.some((t) => t.code === state.requestsTracker)) {
+      state.requestsTracker = state.trackers[0].code;
+      if (location.pathname === '/requests') {
+        go(addr('/requests', { tracker: state.requestsTracker }), { replace: true });
+      } else if (state.view === 'requests') {
+        loadRequestFilters();
+      }
+    }
     $('#requests-tracker').replaceChildren(
       ...state.trackers.map((t) =>
         el(
           'button',
           {
             type: 'button',
+            'data-tracker': t.code,
             class: state.requestsTracker === t.code ? 'active' : '',
-            onclick: () => {
-              state.requestsTracker = t.code;
-              renderTrackerPickers();
-              loadRequestFilters();
-            },
+            // A different tracker is a different form, a different budget and
+            // a different list, so it is a different address.
+            onclick: () => go(addr('/requests', { tracker: t.code })),
           },
           t.code,
         ),
@@ -329,8 +989,8 @@
             pickClicked(id, item, !state.picked.has(id), e.shiftKey);
             return;
           }
-          if (item.type === 'artist') openArtist(item.id);
-          else if (albumId) openAlbum(albumId);
+          if (item.type === 'artist') goArtist(item.id);
+          else if (albumId) goAlbum(albumId);
         },
       },
       el(
@@ -394,8 +1054,8 @@
             {
               class: 'card-sub card-link',
               title: item.artist,
-              href: '#',
-              onclick: (e) => { e.preventDefault(); e.stopPropagation(); openArtist(item.artist_id); },
+              href: artistHref(item.artist_id),
+              onclick: (e) => { e.preventDefault(); e.stopPropagation(); goArtist(item.artist_id); },
             },
             item.artist,
           )
@@ -550,7 +1210,7 @@
       toast(`Queued ${queued.length} download${queued.length === 1 ? '' : 's'}` +
             (failed.length ? `, ${failed.length} failed` : ''), failed.length ? 'bad' : 'ok');
       clearPicks();
-      setView('downloads');
+      go(addr('/downloading'));
     } catch (e) {
       toast(e.message, 'bad');
     }
@@ -568,7 +1228,7 @@
     const trackers = [...state.uploadTrackers];
     if (!trackers.length) return toast('Pick a tracker to upload to first', 'bad');
     clearPicks();
-    setView('downloads');
+    go(addr('/downloading'));
     toast(`Downloading ${entries.length} together. Uploads start as each one lands.`);
 
     const started = await Promise.all(entries.map(async ({ id, item }) => ({
@@ -585,7 +1245,7 @@
         toast(`${label}: ${job?.error || 'download did not finish'}`, 'bad');
         continue;
       }
-      setView('uploads');
+      go(addr('/uploading'));
       await startUpload(job.folder, trackers, id);
     }
   }
@@ -598,7 +1258,7 @@
       .filter(Boolean);
     if (!urls.length) return toast('Nothing to check', 'bad');
 
-    setView('missing');
+    go(addr('/scan'));
     const box = $('#missing-sources');
     // Only what was just picked. Appending to whatever was left in the box
     // meant pressing Check on four albums could spend budget on forty from a
@@ -636,6 +1296,11 @@
   // whatever the search pane happened to hold and leave you on the wrong tab --
   // or, if you had never searched, push nothing at all and leave no way back.
   function pushPane(label, from) {
+    // Nothing was on screen before this one: a deep link, or the first paint.
+    // There is no pane worth keeping and nowhere inside the app for Back to
+    // go -- and an entry claiming this very address would be restored, empty,
+    // the next time somebody came back to it.
+    if (!leavingUrl) return;
     const pane = $('#search-results');
     state.paneStack.push({
       cls: pane.className,
@@ -645,21 +1310,55 @@
       // "Results" would point at a search the user never ran.
       label: from && from !== 'search' ? viewLabel(from) : label || 'Back',
       view: from || state.view,
+      // The address these nodes belong to, and the tab name that went with
+      // them. Back is a history entry, so the way back to a pane has to be one
+      // too -- otherwise the crumb and the browser's own button disagree about
+      // where back is, which is the bug that made Back skip whole detours.
+      url: leavingUrl,
+      title: leavingTitle,
     });
     if (state.paneStack.length > 12) state.paneStack.shift();
   }
 
-  // Restore the pane at `index`, dropping everything after it. Popping the last
-  // entry is the plain Back; index 0 is the crumb at the far left.
+  /**
+   * Put back the pane an address was left at, if its nodes are still held.
+   *
+   * Searches from the top down because one Back can cross several entries at
+   * once: a crumb three deep is history.go(-3), and the browser reports the
+   * landing address, not the steps.
+   *
+   * @param {string} target - The address being returned to.
+   * @returns {boolean} False when nothing was kept for it -- after a reload,
+   *   or going forward into a page that has since been dropped -- and the
+   *   route should draw it again.
+   */
+  function restorePane(target) {
+    for (let i = state.paneStack.length - 1; i >= 0; i -= 1) {
+      const entry = state.paneStack[i];
+      if (entry.url !== target) continue;
+      state.paneStack.length = i;
+      if (entry.view && entry.view !== state.view) setView(entry.view);
+      const pane = $('#search-results');
+      pane.className = entry.cls;
+      pane.replaceChildren(...entry.nodes);
+      window.scrollTo(0, entry.scroll);
+      if (entry.title) document.title = entry.title;
+      else setTitle();
+      return true;
+    }
+    return false;
+  }
+
+  // Go back to the crumb at `index`. The last one is the plain Back; index 0 is
+  // the crumb at the far left.
+  //
+  // These are history entries, so this is the browser's own Back rather than a
+  // second way of moving. Restoring the nodes here and leaving history alone
+  // was the whole bug: the address bar went on naming a page you were no
+  // longer looking at, and the next Back stepped *forward* into it.
   function popPaneTo(index) {
     if (index < 0 || index >= state.paneStack.length) return;
-    const target = state.paneStack[index];
-    state.paneStack.length = index;
-    if (target.view && target.view !== state.view) setView(target.view);
-    const pane = $('#search-results');
-    pane.className = target.cls;
-    pane.replaceChildren(...target.nodes);
-    window.scrollTo(0, target.scroll);
+    history.go(index - state.paneStack.length);
   }
 
   const popPane = () => popPaneTo(state.paneStack.length - 1);
@@ -713,15 +1412,17 @@
 
   const SECTION_LABEL = { album: 'Albums', track: 'Tracks', artist: 'Artists' };
 
-  async function runSearch(event) {
-    event?.preventDefault();
-    const query = $('#search-input').value.trim();
-    if (!query) return;
+  /**
+   * Fetch and draw one search. Called only by showSearch, which is called only
+   * by the router -- the query comes from the address, never from the box, so
+   * the results on screen and the address that names them cannot drift apart.
+   *
+   * @param {string} query - What to search Deezer for.
+   */
+  async function runSearch(query) {
     // Unfiltered results stack as sections, each holding its own grid; a single
     // kind is just a grid.
     const single = state.searchType !== 'all';
-    // A new search is a new root, so there is nothing behind it any more.
-    state.paneStack.length = 0;
     const results = searchPane(single ? 'grid' : 'search-sections');
     results.replaceChildren(spinner('Searching Deezer'));
     try {
@@ -776,11 +1477,14 @@
     }
   }
 
+  // Narrowing to one kind is a different page of the same search, so it is an
+  // address of its own: it survives a reload, and Back returns to the mixed
+  // list you narrowed from rather than out of the app.
   function selectSearchType(type) {
-    clearPicks();
-    state.searchType = type;
-    $$('#search-type button').forEach((b) => b.classList.toggle('active', b.dataset.type === type));
-    runSearch();
+    go(addr('/search', {
+      q: $('#search-input').value.trim(),
+      type: type === 'all' ? '' : type,
+    }));
   }
 
   // ---------------------------------------------------------------- explore
@@ -788,11 +1492,17 @@
   async function loadExplore() {
     const body = $('#explore-body');
     const filters = $('#explore-filters');
+    // A channel is a page inside Browse, not a state the Channels grid happens
+    // to be in, so the router hands it here the same way it hands over a tab.
+    if (state.exploreChannel) {
+      clearGenreFilter(filters);
+      return loadChannel(state.exploreChannel);
+    }
     body.replaceChildren(spinner('Loading'));
 
     try {
       if (state.exploreTab === 'channels') {
-        filters.replaceChildren();
+        clearGenreFilter(filters);
         const { channels } = await api('/api/explore/channels');
         if (!channels.length) {
           body.replaceChildren(empty('No channels returned. Deezer channels need a valid ARL.'));
@@ -803,7 +1513,7 @@
           ...channels.map((c) =>
             el(
               'div',
-              { class: 'card', onclick: () => openChannel(c.slug) },
+              { class: 'card', onclick: () => go(addr(`/browse/channel/${encodeURIComponent(c.slug)}`)) },
               el('div', {
                 class: 'card-art',
                 style: c.image ? `background-image:url('${c.image}')` : `background:${c.colour || 'var(--bg-input)'}`,
@@ -843,6 +1553,15 @@
     }
   }
 
+  // Emptying the bar has to take the "already built" flag with it. Leaving
+  // Charts for Channels wiped the chips, and coming back found the flag still
+  // set, returned early, and drew no chips at all -- so the genre filter
+  // disappeared for the rest of the session.
+  function clearGenreFilter(container) {
+    container.replaceChildren();
+    delete container.dataset.loaded;
+  }
+
   async function renderGenreFilter(container) {
     if (container.dataset.loaded) {
       $$('.chip', container).forEach((c) => c.classList.toggle('active', c.dataset.genre === state.exploreGenre));
@@ -857,11 +1576,11 @@
           {
             class: `chip ${state.exploreGenre === g.id ? 'active' : ''}`,
             'data-genre': g.id,
-            onclick: () => {
-              state.exploreGenre = g.id;
-              clearPicks();
-              loadExplore();
-            },
+            // Which genre you are reading is where you are, so it is in the
+            // address: a chart worth coming back to can be bookmarked, and
+            // Back returns to the genre before it.
+            onclick: () => go(addr(BROWSE_PATHS[state.exploreTab] || '/browse/charts',
+                                   { genre: g.id === '0' ? '' : g.id })),
           },
           g.title,
         ),
@@ -869,13 +1588,16 @@
     );
   }
 
-  async function openChannel(slug) {
+  /** Draw one channel. Reached only through /browse/channel/<slug>. */
+  async function loadChannel(slug) {
     const body = $('#explore-body');
     body.replaceChildren(spinner(`Loading ${slug}`));
     try {
       const channel = await api(`/api/explore/channel/${encodeURIComponent(slug)}`);
+      if (state.exploreChannel === slug) setTitle(channel.title || slug);
       body.replaceChildren(
-        el('div', { class: 'row toolbar' }, el('button', { class: 'ghost', onclick: loadExplore }, '← Channels')),
+        el('div', { class: 'row toolbar' },
+           el('button', { class: 'ghost', onclick: () => go(addr('/browse/channels')) }, '← Channels')),
         el('h2', { class: 'section-title' }, channel.title),
       );
       for (const section of channel.sections) {
@@ -912,6 +1634,7 @@
     // come back to Explore or Found, not to the search pane it borrowed.
     const from = state.view;
     setView('search');
+    state.openArtistId = String(artistId);
     pushPane(paneLabel(), from);
     // Its own sections, each with an inner grid, so the pane itself is a plain
     // block here.
@@ -919,6 +1642,7 @@
     results.replaceChildren(spinner('Loading artist'));
     try {
       const artist = await api(`/api/artist/${artistId}`);
+      if (state.openArtistId === String(artistId)) setTitle(artist.name || 'Artist');
       const total = artist.groups.reduce((n, g) => n + g.albums.length, 0);
 
       results.replaceChildren(
@@ -963,7 +1687,7 @@
   function sendToMissing(url) {
     const box = $('#missing-sources');
     box.value = box.value ? `${box.value.trim()}\n${url}` : url;
-    setView('missing');
+    go(addr('/scan'));
     toast('Added to the Scan tab. Nothing has touched a tracker yet.');
   }
 
@@ -975,6 +1699,7 @@
   async function openAlbum(albumId) {
     const from = state.view;
     setView('search');
+    state.openAlbumId = String(albumId);
     pushPane(paneLabel(), from);
     const pane = searchPane('album-page');
     pane.replaceChildren(spinner('Loading album'));
@@ -982,7 +1707,13 @@
     try {
       const album = await api(`/api/album/${albumId}`);
       state.album = album;
+      if (state.openAlbumId === String(albumId)) setTitle(album.title || 'Album');
       const availability = album.availability;
+      // Matched on title, because the public track ids and the private ones
+      // do not always agree and the names are what the reader is looking at.
+      const unplayable = new Set(
+        ((availability && availability.unreadable) || []).map((t) => String(t).toLowerCase()),
+      );
       const verdict = availability
         ? availability.uploadable
           ? el('span', { class: 'tag ok' }, 'All FLAC, all streamable')
@@ -991,7 +1722,7 @@
 
       const artistLink = (id, name) =>
         id
-          ? el('a', { href: '#', onclick: (e) => { e.preventDefault(); openArtist(id); } }, name)
+          ? el('a', { href: artistHref(id), onclick: (e) => { e.preventDefault(); goArtist(id); } }, name)
           : el('span', {}, name);
 
       const featured = (album.contributors || []).filter((c) => c.id !== album.artist_id);
@@ -1070,13 +1801,20 @@
               ...(album.tracks || []).map((tr) =>
                 el(
                   'tr',
-                  {},
+                  // A release is only as good as the tracks that will actually
+                  // download. Saying "4 of 11" above the list and then showing
+                  // eleven identical rows leaves the reader to work out which
+                  // seven, from a list that gives them nothing to go on.
+                  { class: unplayable.has((tr.title || '').toLowerCase()) ? 'track-missing' : '' },
                   el('td', { class: 'num-col' }, String(tr.number || '')),
                   el(
                     'td',
                     {},
                     el('span', { class: 'track-title' }, tr.title || ''),
                     tr.explicit ? el('span', { class: 'tag dim explicit-tag' }, 'E') : null,
+                    unplayable.has((tr.title || '').toLowerCase())
+                      ? el('span', { class: 'tag bad' }, 'not on Deezer yet')
+                      : null,
                   ),
                   // The private records name the whole cast and carry their
                   // ids, so each credit goes to that artist. The public ones
@@ -1298,13 +2036,13 @@
     const existing = folders.find((f) => f.name.toLowerCase().startsWith(needle.slice(0, 40)));
 
     if (existing) {
-      setView('uploads');
+      go(addr('/uploading'));
       startUpload(existing.path, trackers);
       return;
     }
 
     await download(album.id);
-    setView('downloads');
+    go(addr('/downloading'));
     toast(`Downloading first. When it finishes, upload it from Uploading — ${trackers.join(' and ')} are preselected.`);
   }
 
@@ -1420,7 +2158,7 @@
     if (!queued) return;
     if (!quiet) {
       toast('Downloading. The upload starts by itself when it finishes.');
-      setView('downloads');
+      go(addr('/downloading'));
     }
 
     const label = `${item?.artist || ''} - ${item?.title || ''}`.trim() || String(albumId);
@@ -1428,7 +2166,7 @@
     if (!job || job.status !== 'done' || !job.folder) {
       return toast(`${label}: ${job?.error || 'download did not finish'}`, 'bad');
     }
-    setView('uploads');
+    go(addr('/uploading'));
     await startUpload(job.folder, trackers, albumId);
   }
 
@@ -1786,7 +2524,10 @@
             el(
               'td',
               {},
-              el('a', { href: '#', onclick: (e) => { e.preventDefault(); openAlbum(c.album_id); } }, `${c.artist} — ${c.title}`),
+              el('a', {
+                href: albumHref(c.album_id),
+                onclick: (e) => { e.preventDefault(); goAlbum(c.album_id); },
+              }, `${c.artist} — ${c.title}`),
             ),
             el('td', {}, c.year || ''),
             el('td', {}, String(c.tracks)),
@@ -1864,39 +2605,79 @@
     );
   }
 
-  // The options come from the tracker, not from us. `strictId` adds that
-  // group's own "Only specified", which the tracker keeps per group and off by
-  // default -- a request that accepts any media names no media at all, so
-  // turning it on hides every one of those rather than narrowing the list.
-  function filterChoices(id, label, options, strictId) {
-    const box = el(
-      'div',
-      { class: 'checkgroup', id },
+  // One row of the search form: a label on the left, controls on the right.
+  // The trackers lay their own form out this way and it is the right shape --
+  // fifteen release types read as a paragraph of options, not as a column you
+  // have to scroll.
+  function formRow(label, ...controls) {
+    return el('div', { class: 'reqrow' },
+      el('div', { class: 'reqlabel' }, label),
+      el('div', { class: 'reqfield' }, ...controls.filter(Boolean)));
+  }
+
+  // A group of ticks, with the All and the "Only specified" the site puts
+  // above it.
+  //
+  // All is not a filter of its own -- it is a shortcut that ticks the rest,
+  // which is what it does on both sites. It also follows along: tick every
+  // option by hand and All shows itself ticked, because a box that says "all"
+  // while all of them are on and it is not is simply wrong. Some groups have
+  // no All at all: RED's categories are seven bare boxes, because leaving them
+  // clear is how you ask RED for every category.
+  function checkGroup(id, options, { withAll = true, checked = [], strictId = '' } = {}) {
+    // `checked` is the tracker's own default selection, not a blanket on/off:
+    // the form opens on the search almost everyone runs rather than on every
+    // box ticked, which matched nothing useful and had to be undone by hand.
+    const on = new Set(checked);
+    const boxes = el('div', { class: 'reqchecks', id },
       ...options.map((name) =>
-        el('label', { class: 'check' }, el('input', { type: 'checkbox', value: name, onchange: requestsCost }), name),
-      ),
-    );
-    return el(
-      'div',
-      { class: 'setting' },
-      el('label', { for: id }, label),
-      box,
-      strictId
-        ? el(
-            'label',
-            { class: 'check strict-check', title: 'Exclude requests that leave this open to anything' },
-            el('input', { type: 'checkbox', id: strictId }),
-            'Must be stated',
-          )
-        : null,
-    );
+        el('label', { class: 'check' },
+          el('input', {
+            type: 'checkbox',
+            value: name,
+            checked: on.has(name),
+            onchange: () => { syncAll(id); requestsCost(); },
+          }),
+          name)));
+
+    const head = [];
+    if (withAll) {
+      head.push(el('label', { class: 'check' },
+        el('input', {
+          type: 'checkbox',
+          id: `${id}-all`,
+          checked: options.length > 0 && options.every((name) => on.has(name)),
+          onchange: (e) => {
+            $$(`#${id} input`).forEach((box) => { box.checked = e.target.checked; });
+            requestsCost();
+          },
+        }),
+        'All'));
+    }
+    if (strictId) {
+      head.push(el('label', { class: 'check', title: 'Exclude requests that leave this open to anything' },
+        el('input', { type: 'checkbox', id: strictId }), 'Only specified'));
+    }
+
+    return el('div', { class: 'reqgroup' },
+      head.length ? el('div', { class: 'reqgroup-head' }, ...head) : null,
+      boxes);
+  }
+
+  /** Keep a group's All in step with the ticks under it. */
+  function syncAll(id) {
+    const all = $(`#${id}-all`);
+    if (!all) return;
+    const boxes = [...$$(`#${id} input`)];
+    all.checked = boxes.length > 0 && boxes.every((b) => b.checked);
   }
 
   const chosen = (id) => [...$$(`#${id} input:checked`)].map((i) => i.value);
 
-  // Rebuilt whenever the tracker changes: RED and OPS do not offer the same
-  // filters, and showing one tracker's options while the other is selected
-  // would be showing something that cannot be sent.
+  // Rebuilt whenever the tracker changes. The tracker describes its own form
+  // -- which groups, in what order, called what, ticked or not -- because the
+  // two sites disagree about all four and the page should look like whichever
+  // one is selected.
   async function loadRequestFilters() {
     const host = $('#requests-filters');
     if (!state.requestsTracker) {
@@ -1911,108 +2692,95 @@
       return;
     }
     state.requestFilters = spec;
+    if (typeof spec.recheck_after_days === 'number') state.recheckDays = spec.recheck_after_days;
 
-    const fields = [
-      el(
-        'div',
-        { class: 'setting' },
-        el('label', { for: 'requests-search' }, 'Search'),
-        el('input', { type: 'search', id: 'requests-search', placeholder: 'Artist, album or both' }),
-        // RED keeps this beside its own search box, and it only widens what the
-        // search string is matched against -- with the box empty it does
-        // nothing at all, which is impossible to guess from a lone toggle
-        // sitting under "Options".
-        spec.descriptions
-          ? el(
-              'label',
-              { class: 'check strict-check', title: 'Only affects what the search text above matches' },
-              el('input', { type: 'checkbox', id: 'requests-descriptions' }),
-              'Also search descriptions and comments',
-            )
-          : null,
-        el('p', { class: 'hint setting-help' },
-           'Matched against artist and title. Blank lists everything open.'),
-      ),
-      filterField(
-        'requests-tags',
-        'Tags',
-        el('input', { type: 'search', id: 'requests-tags', placeholder: 'hip.hop, jazz' }),
-        "Comma separated, in the tracker's own spelling — dots, not spaces.",
-      ),
-      filterField(
-        'requests-tags-mode',
-        'Tag match',
-        el(
-          'select',
-          { id: 'requests-tags-mode' },
-          el('option', { value: 'any' }, 'Any of these tags'),
-          el('option', { value: 'all' }, 'All of these tags'),
-        ),
-      ),
-    ];
+    const GROUP_IDS = {
+      categories: 'requests-category',
+      release_types: 'requests-release-type',
+      formats: 'requests-format',
+      encodings: 'requests-encoding',
+      media: 'requests-media',
+    };
+    const STRICT_IDS = {
+      'strict-format': 'requests-strict-format',
+      'strict-encoding': 'requests-strict-encoding',
+      'strict-media': 'requests-strict-media',
+    };
 
-    if (spec.formats.length) {
-      fields.push(filterChoices('requests-format', 'Format', spec.formats, 'requests-strict-format'));
-    }
-    if (spec.media.length) {
-      fields.push(filterChoices('requests-media', 'Media', spec.media, 'requests-strict-media'));
-    }
-    if (spec.encodings.length) {
-      fields.push(filterChoices('requests-encoding', 'Encoding', spec.encodings, 'requests-strict-encoding'));
-    }
-    if (spec.release_types.length) {
-      fields.push(filterChoices('requests-release-type', 'Release type', spec.release_types, ''));
-    }
-    if (spec.bounty) {
-      fields.push(
-        filterField(
-          'requests-bounty-min',
-          'Bounty (GiB)',
-          el(
-            'div',
-            { class: 'row' },
-            el('input', { type: 'text', id: 'requests-bounty-min', placeholder: 'min' }),
-            el('input', { type: 'text', id: 'requests-bounty-max', placeholder: 'max' }),
-          ),
-          'In GiB. Add M or T for MiB or TiB.',
-        ),
-      );
-    }
+    const rows = (spec.form || []).map((item) => {
+      if (item.kind === 'search') {
+        return formRow('Search terms',
+          el('input', { type: 'search', id: 'requests-search', placeholder: 'Artist, album or both' }),
+          spec.descriptions
+            ? el('label', { class: 'check', title: 'Only affects what the search text above matches' },
+                el('input', { type: 'checkbox', id: 'requests-descriptions' }),
+                'Include desc/comments')
+            : null);
+      }
+      if (item.kind === 'tags') {
+        return formRow('Tags',
+          el('input', { type: 'search', id: 'requests-tags', placeholder: 'hip.hop, jazz' }),
+          // Two radios, the way the form has it.
+          el('label', { class: 'check' },
+            el('input', { type: 'radio', name: 'requests-tags-mode', value: 'any', checked: true }), 'Any'),
+          el('label', { class: 'check' },
+            el('input', { type: 'radio', name: 'requests-tags-mode', value: 'all' }), 'All'));
+      }
+      if (item.kind === 'toggle') {
+        return formRow(item.label,
+          el('input', {
+            type: 'checkbox',
+            id: `requests-${item.key.replace(/_/g, '-')}`,
+            checked: !!item.default,
+          }));
+      }
+      if (item.kind === 'bounty') {
+        return formRow(item.label,
+          el('input', { type: 'text', id: 'requests-bounty-min', class: 'reqsmall', placeholder: 'min' }),
+          el('input', { type: 'text', id: 'requests-bounty-max', class: 'reqsmall', placeholder: 'max' }),
+          el('span', { class: 'hint reqhint' }, 'add M or T for MiB or TiB'));
+      }
+      if (item.kind === 'group' && item.options.length) {
+        return formRow(item.label, checkGroup(GROUP_IDS[item.key], item.options, {
+          withAll: item.all,
+          checked: item.checked || [],
+          strictId: STRICT_IDS[item.strict] || '',
+        }));
+      }
+      return null;
+    }).filter(Boolean);
 
-    fields.push(
-      // Pages, not a row count. One page is one call against the budget, so
-      // pages are the unit the cost is actually measured in -- picking "200"
-      // and being told it costs 8 calls was arithmetic the page could do.
-      // Typed, not picked from a list. The list stopped at 20 for no reason
-      // anyone could act on -- a tracker with 872 pages of open requests does
-      // not care that the dropdown ran out, and the only way to fetch more was
-      // to fetch 20 again. The cost line underneath is what keeps this honest.
-      filterField(
-        'requests-limit',
-        'Pages to fetch',
-        el('input', {
-          id: 'requests-limit',
-          type: 'number',
-          min: '1',
-          step: '1',
-          value: '4',
-          oninput: requestsCost,
-        }),
-        `${state.requestsTracker} serves ${spec.page_size} per page, and each page is one call.`,
-      ),
-    );
+    // The same setting as Settings > Queue, offered where it bites. Deciding
+    // how long an answer is good for is part of setting up a search, and
+    // sending someone to another page to change it and back again is how a
+    // setting ends up never being changed.
+    rows.push(formRow('Look up again if checked more than',
+      ...durationControl({
+        id: 'requests-recheck',
+        days: state.recheckDays,
+        never: true,
+        onChange: async (days) => {
+          state.recheckDays = days;
+          try {
+            await api('/api/settings', {
+              method: 'PUT',
+              body: { changes: { 'checker.request_recheck_after_days': String(days) } },
+            });
+          } catch (err) {
+            toast(err.message, 'bad');
+          }
+        },
+      }),
+      el('span', { class: 'hint reqhint' }, 'ago')));
 
-    const toggles = [
-      el('label', { class: 'check' }, el('input', { type: 'checkbox', id: 'requests-show-filled' }), 'Include filled'),
-    ];
-    if (spec.include_old) {
-      toggles.push(
-        el('label', { class: 'check' }, el('input', { type: 'checkbox', id: 'requests-include-old' }), 'Include old'),
-      );
-    }
+    rows.push(formRow('Pages to fetch',
+      // Pages, not a row count. One page is one call against the budget.
+      el('input', { id: 'requests-limit', type: 'number', class: 'reqsmall', min: '1', step: '1',
+                    value: '4', oninput: requestsCost }),
+      el('span', { class: 'hint reqhint' },
+         `${state.requestsTracker} serves ${spec.page_size} per page — one call each`)));
 
-    host.replaceChildren(...fields, el('div', { class: 'setting filter-toggles' }, el('label', {}, 'Options'),
-      el('div', { class: 'row' }, ...toggles)));
+    host.replaceChildren(el('div', { class: 'reqform' }, ...rows));
     if (!spec.mapped && spec.note) {
       host.append(el('p', { class: 'hint setting-help filter-note' }, spec.note));
     }
@@ -2023,75 +2791,378 @@
     requestsCost();
   }
 
-  // What a fetch will cost, before you spend it.
+  // The running cost used to be printed beside the button and again under it,
+  // on every visit, whether or not anything was about to be spent. The budget
+  // is on screen permanently in the sidebar, so this now speaks only when
+  // asking for more pages than the tracker has calls left -- the one case the
+  // sidebar cannot tell you about, because it is about what you just typed.
   function requestsCost() {
     const limitEl = $('#requests-limit');
-    if (!limitEl) return;
+    const cost = $('#requests-cost');
+    if (!limitEl || !cost) return;
     const pages = Number(limitEl.value) || 1;
     const budget = state.trackers.find((t) => t.code === state.requestsTracker);
-    const note = `Costs up to ${pages} call${pages === 1 ? '' : 's'}`;
-    const cost = $('#requests-cost');
-    cost.textContent = budget ? `${note} of ${budget.remaining} left on ${budget.code}.` : `${note}.`;
-    // With the page count typed rather than picked, asking for more than the
-    // budget holds is now possible, so it says so rather than letting the fetch
-    // stop halfway through and look broken.
     const over = budget && pages > budget.remaining;
     cost.classList.toggle('cost-over', !!over);
-    if (over) {
-      cost.textContent = `${note}, but only ${budget.remaining} left on ${budget.code} — it will stop when they run out.`;
+    cost.textContent = over
+      ? `Only ${budget.remaining} call${budget.remaining === 1 ? '' : 's'} left on ${budget.code} — the search will stop when they run out.`
+      : '';
+  }
+
+  // Durations are a number and a unit.
+  //
+  // They were a dropdown of seven guesses -- a day, a week, a month, three
+  // months, a year -- which is fine until someone wants two months or three
+  // years, and then there is nothing to pick. Everything is stored as days;
+  // this is only how it is typed and read back.
+  const UNITS = [['days', 1], ['weeks', 7], ['months', 30], ['years', 365]];
+
+  /** Days as the largest whole unit that fits, so 30 reads back as 1 month. */
+  function daysToParts(days) {
+    const total = Number(days) || 0;
+    if (total <= 0) return { amount: 0, unit: 'days' };
+    for (let i = UNITS.length - 1; i >= 0; i--) {
+      const [unit, size] = UNITS[i];
+      if (total % size === 0) return { amount: total / size, unit };
     }
+    return { amount: total, unit: 'days' };
+  }
+
+  function partsToDays(amount, unit) {
+    const size = (UNITS.find(([name]) => name === unit) || UNITS[0])[1];
+    return Math.max(0, Math.round(Number(amount) || 0)) * size;
+  }
+
+  /**
+   * A number box and a unit picker.
+   *
+   * @param {object} opts - `id` prefixes both controls, `days` is the current
+   *   value, `onChange` receives the new value in days, and `never` adds a
+   *   unit that means "no limit" rather than making zero mean it silently.
+   * @returns {Array} The two elements, to spread into a row.
+   */
+  function durationControl({ id, days, onChange, never = false }) {
+    const { amount, unit } = daysToParts(days);
+    const isNever = never && (Number(days) || 0) <= 0;
+
+    const amountBox = el('input', {
+      id: `${id}-amount`,
+      class: 'reqsmall',
+      type: 'number',
+      min: '1',
+      step: '1',
+      value: String(isNever ? '' : amount || 1),
+      disabled: isNever,
+      onchange: () => { pluralise(); emit(); },
+      oninput: pluralise,
+    });
+
+    const unitBox = el('select', {
+      id: `${id}-unit`,
+      onchange: () => {
+        amountBox.disabled = unitBox.value === 'never';
+        emit();
+      },
+    },
+    ...UNITS.map(([name]) =>
+      el('option', { value: name, selected: !isNever && name === unit }, name)),
+    never ? el('option', { value: 'never', selected: isNever }, 'never') : null);
+
+    // "1 months" is the sort of thing that makes a page look unfinished.
+    function pluralise() {
+      const one = Number(amountBox.value) === 1;
+      for (const option of unitBox.options) {
+        if (option.value === 'never') continue;
+        option.textContent = one ? option.value.slice(0, -1) : option.value;
+      }
+    }
+
+    function emit() {
+      onChange(unitBox.value === 'never' ? 0 : partsToDays(amountBox.value, unitBox.value));
+    }
+
+    pluralise();
+
+    return [amountBox, unitBox];
   }
 
   const ticked = (id) => !!$(`#${id}`)?.checked;
 
-  async function requestsFetch() {
+  // The search bar and its Cancel. Both are hidden until something is running,
+  // because a progress bar sitting at zero with nothing behind it is furniture.
+  function requestsProgress(done, total, label) {
+    const box = $('#requests-progress');
+    const bar = $('#requests-progress-bar');
+    if (!box || !bar) return;
+    box.hidden = false;
+    $('#requests-cancel').hidden = false;
+    $('#requests-fetch').disabled = true;
+    $('#requests-fetch-check').disabled = true;
+    bar.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+    $('#requests-progress-label').textContent = label;
+  }
+
+  // How much of the search is on screen, and how much there was.
+  //
+  // This was a toast: it said "25 requests from 1 of 871 pages -- about 21,775
+  // match in total" and then vanished, which for the one number that decides
+  // whether to fetch more pages is the wrong place to put it. It stays until
+  // the next search replaces it.
+  function requestsSummary({ shown, pages, totalPages, estimate, filtered, cancelled, running }) {
+    const host = $('#requests-summary');
+    if (!host) return;
+    if (shown === null) { host.hidden = true; host.replaceChildren(); return; }
+
+    const partial = totalPages > pages;
+    const parts = [];
+    parts.push(partial
+      ? `Showing ${shown.toLocaleString()} of about ${estimate.toLocaleString()} matching requests.`
+      : `Showing all ${shown.toLocaleString()} matching request${shown === 1 ? '' : 's'}.`);
+    if (totalPages) {
+      parts.push(`Read ${pages.toLocaleString()} of ${totalPages.toLocaleString()} page${totalPages === 1 ? '' : 's'}.`);
+    }
+    if (filtered) parts.push(`${filtered} already filled, left out.`);
+    if (cancelled) parts.push('Stopped early.');
+    if (running) parts.push('Still reading…');
+
+    host.hidden = false;
+    host.className = `requests-summary${partial ? ' partial' : ''}`;
+    host.replaceChildren(
+      el('span', {}, parts.join(' ')),
+      // The number is only useful next to the thing that acts on it.
+      partial && !running
+        ? el('button', {
+            class: 'ghost',
+            onclick: () => {
+              const box = $('#requests-limit');
+              if (box) { box.value = String(Math.min(totalPages, pages * 2)); box.focus(); requestsCost(); }
+            },
+          }, 'Read more pages')
+        : null);
+  }
+
+  function requestsProgressDone() {
+    const box = $('#requests-progress');
+    if (box) box.hidden = true;
+    const cancel = $('#requests-cancel');
+    if (cancel) cancel.hidden = true;
+    for (const id of ['requests-fetch', 'requests-fetch-check']) {
+      const button = $(`#${id}`);
+      if (button) button.disabled = false;
+    }
+    state.requestsAbort = null;
+  }
+
+  /** Everything the form is asking for, minus which page. */
+  function requestsParams() {
+    const params = new URLSearchParams({
+      tracker: state.requestsTracker,
+      search: $('#requests-search').value,
+      tags: $('#requests-tags').value,
+      tags_all: $('input[name="requests-tags-mode"]:checked')?.value === 'all' ? '1' : '0',
+      show_filled: ticked('requests-show-filled') ? '1' : '0',
+      strict_format: ticked('requests-strict-format') ? '1' : '0',
+      strict_media: ticked('requests-strict-media') ? '1' : '0',
+      strict_encoding: ticked('requests-strict-encoding') ? '1' : '0',
+      include_old: ticked('requests-include-old') ? '1' : '0',
+      descriptions: ticked('requests-descriptions') ? '1' : '0',
+      bounty_min: $('#requests-bounty-min')?.value || '',
+      bounty_max: $('#requests-bounty-max')?.value || '',
+    });
+    // Repeated keys, one per ticked box.
+    for (const [key, id] of [
+      ['format', 'requests-format'],
+      ['media', 'requests-media'],
+      ['encoding', 'requests-encoding'],
+      ['release_type', 'requests-release-type'],
+      ['category', 'requests-category'],
+    ]) {
+      for (const value of chosen(id)) params.append(key, value);
+    }
+    return params;
+  }
+
+  // One page per call, rather than one call for the lot.
+  //
+  // The page count is a budget the user typed, and a fetch of it used to be a
+  // single request that could not be watched or stopped: ask for forty pages
+  // and the only options were to wait for all forty or reload the page, having
+  // spent forty tracker calls either way. Now each page is its own call, the
+  // bar moves as they land, results appear as they arrive, and Cancel stops
+  // before the next one is paid for.
+  async function requestsFetch({ thenCheck = false } = {}) {
     if (!state.requestsTracker) return toast('No tracker configured', 'bad');
+    if (state.requestsAbort) return;
+
     const pages = Number($('#requests-limit')?.value) || 1;
-    const limit = pages * (state.requestFilters?.page_size || 25);
+    const pageSize = state.requestFilters?.page_size || 25;
+    const params = requestsParams();
     const container = $('#requests-results');
-    container.replaceChildren(
-      spinner(`Fetching ${pages} page${pages === 1 ? '' : 's'} of open requests`));
+    const tracker = state.requestsTracker;
+
+    // Only a run that was going to look things up looks things up. The box
+    // below decides *when* -- it used to decide *whether*, which meant ticking
+    // it turned "show me the list" into a run that spent budget on every row.
+    const pipeline = thenCheck && ticked('requests-pipeline');
+
+    const abort = new AbortController();
+    state.requestsAbort = abort;
+    let cancelled = false;
+    abort.signal.addEventListener('abort', () => {
+      cancelled = true;
+      // Stop the lookup this search started, not just the pages. Leaving it
+      // running after Cancel is what "cancel" is supposed to prevent.
+      state.checkCancelButton?.click();
+    });
+
+    const rows = [];
+    const seen = new Set();
+    let calls = 0;
+    let filtered = 0;
+    let totalPages = 0;
+    let estimate = 0;
+    let ranDry = false;
+
+    // --- the pipelined half ------------------------------------------------
+    // Reading a page is a tracker call with a pause either side of it; looking
+    // a request up is a tracker call, a Deezer search and some matching. Doing
+    // all the reading and then all the looking up means the second half starts
+    // when the first is completely finished, and on a twenty-page search that
+    // is a long time to watch a list of rows that say "not checked".
+    //
+    // So each page's requests go off to be looked up as soon as that page
+    // lands. Chained rather than parallel: two check jobs at once race the
+    // budget guard, and the tracker end is serialised by the gateway anyway,
+    // so the gain is in overlapping the Deezer half with the next page's wait.
+    const log = $('#requests-log');
+    let chain = Promise.resolve();
+    let pipelineChecked = 0;
+    const pipelineSkipped = [];
+    let pipelineWindow = 0;
+
+    if (pipeline) {
+      log.hidden = false;
+      log.textContent = 'Starting…';
+      $$('.requests-check-btn').forEach((b) => { b.disabled = true; });
+    }
+
+    const lookUpLater = (ids) => {
+      if (!ids.length) return;
+      chain = chain
+        .then(async () => {
+          if (cancelled) return;
+          const job = await runCheckJob(tracker, ids, {
+            onSkipped: (note) => {
+              // Collected rather than shown per page: twenty pages would be
+              // twenty panels saying the same thing.
+              pipelineSkipped.push(...(note.requests || []));
+              pipelineWindow = note.recheck_after_days;
+            },
+          });
+          pipelineChecked += job.result_count || 0;
+        })
+        .catch((e) => { if (!cancelled) toast(e.message, 'bad'); });
+    };
+
+    // --- reading the pages -------------------------------------------------
+    container.replaceChildren(spinner(`Reading page 1 of ${pages}`));
+    requestsProgress(0, pages, `Page 1 of ${pages}`);
+    requestsSummary({ shown: null });
+
     try {
-      const params = new URLSearchParams({
-        tracker: state.requestsTracker,
-        search: $('#requests-search').value,
-        tags: $('#requests-tags').value,
-        tags_all: $('#requests-tags-mode').value === 'all' ? '1' : '0',
-        show_filled: ticked('requests-show-filled') ? '1' : '0',
-        strict_format: ticked('requests-strict-format') ? '1' : '0',
-        strict_media: ticked('requests-strict-media') ? '1' : '0',
-        strict_encoding: ticked('requests-strict-encoding') ? '1' : '0',
-        include_old: ticked('requests-include-old') ? '1' : '0',
-        descriptions: ticked('requests-descriptions') ? '1' : '0',
-        bounty_min: $('#requests-bounty-min')?.value || '',
-        bounty_max: $('#requests-bounty-max')?.value || '',
-        limit: String(limit),
-      });
-      // Repeated keys, one per ticked box.
-      for (const [key, id] of [
-        ['format', 'requests-format'],
-        ['media', 'requests-media'],
-        ['encoding', 'requests-encoding'],
-        ['release_type', 'requests-release-type'],
-      ]) {
-        for (const value of chosen(id)) params.append(key, value);
+      for (let page = 1; page <= pages; page++) {
+        if (cancelled) break;
+        requestsProgress(page - 1, pages, `Page ${page} of ${pages}`);
+        const query = new URLSearchParams(params);
+        query.set('limit', String(pageSize));
+        query.set('start_page', String(page));
+
+        let data;
+        try {
+          data = await api(`/api/requests/list?${query}`, { signal: abort.signal });
+        } catch (e) {
+          if (cancelled || e.name === 'AbortError') break;
+          throw e;
+        }
+
+        calls += data.calls || 0;
+        filtered += data.filtered || 0;
+        totalPages = data.pages || totalPages;
+        estimate = data.total_estimate || estimate;
+
+        const fresh = [];
+        for (const row of data.requests || []) {
+          if (seen.has(row.id)) continue;
+          seen.add(row.id);
+          rows.push(row);
+          fresh.push(row.id);
+        }
+
+        // Show what has landed rather than making the whole thing wait.
+        state.requestRows = rows;
+        state.selectedRequests = new Set(rows.map((r) => r.id));
+        renderRequestRows();
+        requestsProgress(page, pages, `Page ${page} of ${pages} — ${rows.length} so far`);
+        requestsSummary({
+          shown: rows.length, pages: page, totalPages, estimate, filtered,
+          cancelled: false, running: true,
+        });
+        if (pipeline) lookUpLater(fresh);
+
+        // The tracker has no more to give: stop rather than paying for pages
+        // of nothing. An empty page that only dropped filled rows is not the
+        // end, so both have to be zero.
+        if (!(data.requests || []).length && !data.filtered) { ranDry = true; break; }
+        if (totalPages && page >= totalPages) { ranDry = true; break; }
       }
-      const { requests, calls, complete, filtered } = await api(`/api/requests/list?${params}`);
-      state.requestRows = requests;
-      state.selectedRequests = new Set(requests.map((r) => r.id));
-      renderRequestRows();
-      // Say what was actually spent and whether the tracker ran dry, so a short
-      // list is not mistaken for a failed fetch.
-      //
-      // `filtered` counts rows dropped as already filled. It should be zero now
-      // that show_filled is sent the way the form sends it, so a non-zero count
-      // is worth seeing: it means a tracker returned closed requests anyway.
-      const spent = `${requests.length} request(s) from ${calls} call${calls === 1 ? '' : 's'}`;
-      const dropped = filtered ? ` — ${filtered} already filled, dropped` : '';
-      toast(complete ? spent + dropped : `${spent}${dropped} — that is everything matching`, 'ok');
-      refreshStatus();
     } catch (e) {
+      requestsProgressDone();
       container.replaceChildren(empty(e.message));
+      requestsSummary({ shown: null });
+      return;
+    }
+
+    requestsProgressDone();
+    if (!rows.length && cancelled) {
+      container.replaceChildren(empty('Search cancelled.'));
+      requestsSummary({ shown: null });
+      refreshStatus();
+      return;
+    }
+
+    // How much of the search this is. A four-page read of a search the tracker
+    // answers with four hundred pages used to report "100 requests" and look
+    // like the whole result, so a search matching ten thousand and one
+    // matching a hundred were indistinguishable.
+    const read = ranDry ? calls : Math.min(calls, totalPages || calls);
+    requestsSummary({
+      shown: rows.length,
+      pages: read,
+      totalPages: ranDry ? read : totalPages,
+      estimate,
+      filtered,
+      cancelled,
+      running: false,
+    });
+    refreshStatus();
+
+    if (pipeline) {
+      await chain;
+      if (pipelineSkipped.length) {
+        showSkipped(tracker, {
+          count: pipelineSkipped.length,
+          requests: pipelineSkipped,
+          recheck_after_days: pipelineWindow,
+        });
+      }
+      $$('.requests-check-btn').forEach((b) => { b.disabled = false; });
+      jobFinished(log, `Done. ${pipelineChecked} request(s) checked.`);
+      refreshStatus();
+      return;
+    }
+
+    if (!cancelled && rows.length && thenCheck) {
+      await requestsCheck(rows.map((r) => r.id));
     }
   }
 
@@ -2149,7 +3220,11 @@
                 class: 'rowlink',
                 href: r.url,
                 title: 'Open the request beside the Deezer release',
-                onclick: (e) => { e.preventDefault(); openRequest(r); },
+                onclick: (e) => {
+                  e.preventDefault();
+                  go(addr(`/requests/${encodeURIComponent(state.requestsTracker || '')}`
+                          + `/${encodeURIComponent(r.id)}`));
+                },
               }, `${r.artist} — ${r.title}`)),
               el('td', {}, r.year || ''),
               el('td', {}, r.bounty || ''),
@@ -2177,7 +3252,45 @@
   // sat above an empty list and was pressable with nothing to press it on. The
   // caller says what to check now, and each caller only exists where there is
   // something to check.
-  async function requestsCheck(entries, { placeholders = false } = {}) {
+  // One check job, start to finish.
+  //
+  // Pulled out of requestsCheck because there are now two ways to run one: all
+  // the requests once the search has finished, or a page at a time while the
+  // search is still going. Both want the same job, the same log line and the
+  // same Stop button; only the batching differs.
+  async function runCheckJob(tracker, ids, { recheck = false, prefix = '', onSkipped = null } = {}) {
+    const log = $('#requests-log');
+    const { job_id: jobId } = await api('/api/requests/check', {
+      method: 'POST',
+      body: { tracker, request_ids: ids, recheck },
+    });
+    const cancel = jobCancel(jobId, 'Stop checking');
+    log.after(cancel);
+    // So the search's own Cancel can stop the lookup it started, rather than
+    // only stopping the pages and leaving the lookup running behind it.
+    state.checkCancelButton = cancel;
+
+    let reported = false;
+    const job = await new Promise((resolve) => {
+      followJob(jobId, {
+        onUpdate: (j) => {
+          jobProgress(log, j, prefix);
+          j.results.forEach(applyRequestResult);
+          const note = j.events.find((e) => e.event === 'skipped' && e.count);
+          if (note && !reported) {
+            reported = true;
+            if (onSkipped) onSkipped(note);
+          }
+        },
+        onDone: resolve,
+      });
+    });
+    cancel.remove();
+    state.checkCancelButton = null;
+    return job;
+  }
+
+  async function requestsCheck(entries, { placeholders = false, recheck = false } = {}) {
     // Callers used to hand over bare ids; they hand over {id, tracker} now,
     // and a bare id still works so a caller that has only an id is not forced
     // to invent a tracker for it.
@@ -2193,6 +3306,11 @@
     // They carry their tracker so a mixed paste says which is which before a
     // single call is spent.
     if (placeholders) {
+      // These rows did not come from a page search, so the line saying how
+      // much of one is on screen is now about a list that is not there. It
+      // outlived the results it described: paste ten ids and it still said
+      // "showing 25 of about 42,925".
+      requestsSummary({ shown: null });
       state.requestRows = items.map(({ id, tracker }) => ({
         id,
         tracker: tracker || state.requestsTracker,
@@ -2223,24 +3341,13 @@
     let stoppedEarly = null;
     try {
       for (const [tracker, ids] of groups) {
-        const { job_id: jobId } = await api('/api/requests/check', {
-          method: 'POST',
-          body: { tracker, request_ids: ids },
-        });
-        const cancel = jobCancel(jobId, 'Stop checking');
-        log.after(cancel);
         // eslint-disable-next-line no-await-in-loop -- deliberately serial:
         // two trackers at once would race the budget guard on both.
-        const job = await new Promise((resolve) => {
-          followJob(jobId, {
-            onUpdate: (j) => {
-              jobProgress(log, j, groups.size > 1 ? `${tracker}: ` : '');
-              j.results.forEach(applyRequestResult);
-            },
-            onDone: resolve,
-          });
+        const job = await runCheckJob(tracker, ids, {
+          recheck,
+          prefix: groups.size > 1 ? `${tracker}: ` : '',
+          onSkipped: (note) => showSkipped(tracker, note),
         });
-        cancel.remove();
         checked += job.result_count || 0;
         stoppedEarly = stoppedEarly || job.events.find((e) => e.event === 'budget_exhausted');
         if (stoppedEarly) break;
@@ -2253,6 +3360,440 @@
     } catch (e) {
       done();
       toast(e.message, 'bad');
+    }
+  }
+
+  // What a run did not do, and why.
+  //
+  // Skipping requests that already have an answer is the point -- a check is a
+  // tracker call and a Deezer search each -- but a run that silently did a
+  // tenth of what was asked is indistinguishable from one that broke. So it
+  // says how many it passed over, on what grounds, and offers to do them
+  // anyway.
+  function showSkipped(tracker, note) {
+    const rows = note.requests || [];
+    const host = $('#requests-log');
+    const window_ = note.recheck_after_days;
+    const summary = window_
+      ? `${note.count} already checked in the last ${window_} day${window_ === 1 ? '' : 's'} — skipped.`
+      : `${note.count} already checked — skipped.`;
+
+    host.after(el('div', { class: 'panel skipped-note' },
+      el('div', { class: 'row' },
+        el('strong', {}, summary),
+        el('button', {
+          onclick: async (e) => {
+            e.target.closest('.skipped-note').remove();
+            await requestsCheck(rows.map((r) => ({ id: r.id, tracker: r.tracker })),
+                                { placeholders: true, recheck: true });
+          },
+        }, 'Check them anyway'),
+        el('button', {
+          onclick: (e) => {
+            e.target.closest('.skipped-note').remove();
+            showRequestTab('history');
+          },
+        }, 'Show me what they said')),
+      // The first few by name, so the number is not the only thing on offer.
+      el('ul', { class: 'skipped-list' },
+        ...rows.slice(0, 8).map((r) =>
+          el('li', {}, `${r.artist || '?'} — ${r.album || 'Request ' + r.id}: ${r.reason}`)),
+        rows.length > 8 ? el('li', { class: 'hint' }, `and ${rows.length - 8} more`) : null)));
+  }
+
+  // ------------------------------------------------------------------
+  // Scanning: its filters, and what it has already looked up
+  // ------------------------------------------------------------------
+
+  function showScanTab(name) {
+    state.scanTab = name;
+    $('#scan-tab-run').hidden = name !== 'run';
+    $('#scan-tab-history').hidden = name !== 'history';
+    $$('#scan-tabs button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.scantab === name);
+    });
+    if (name === 'history') loadScanHistory();
+  }
+
+  /**
+   * Save one scan filter.
+   *
+   * @param {string} key - The config key under `checker.`.
+   * @param {string} value - What to store; blank disables the filter.
+   */
+  async function saveScanFilter(key, value) {
+    try {
+      await api('/api/settings', {
+        method: 'PUT',
+        body: { changes: { [`checker.${key}`]: String(value) } },
+      });
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
+  // The filters a scan applies before contacting a tracker. They govern
+  // scanning and nothing else -- the request checker, the album page and the
+  // search results never consult them -- so they sit with the scan rather
+  // than on the settings page, where they read as rules the whole app obeys.
+  function renderScanFilters(filters, window_) {
+    const host = $('#scan-filters');
+    const textRow = (key, label, placeholder, hint) => formRow(label,
+      el('input', {
+        id: `scan-${key}`,
+        type: 'text',
+        class: 'reqsmall',
+        placeholder,
+        value: filters[key] || '',
+        onchange: (e) => saveScanFilter(key, e.target.value.trim()),
+      }),
+      el('span', { class: 'hint reqhint' }, hint));
+
+    host.replaceChildren(
+      formRow('Ignore albums with fewer tracks than',
+        el('input', {
+          id: 'scan-min-tracks',
+          type: 'number',
+          class: 'reqsmall',
+          min: '0',
+          step: '1',
+          value: String(filters.min_tracks || 0),
+          onchange: (e) => saveScanFilter('min_tracks', e.target.value || '0'),
+        }),
+        el('span', { class: 'hint reqhint' }, '0 checks every album')),
+      textRow('min_date', 'Ignore releases before', '2025-01-01', 'YYYY-MM-DD, or blank'),
+      textRow('max_date', 'Ignore releases after', '2026-12-31', 'YYYY-MM-DD, or blank'),
+      formRow('Look up again if checked more than',
+        ...durationControl({
+          id: 'scan-recheck',
+          days: window_,
+          never: true,
+          onChange: (days) => saveScanFilter('album_recheck_after_days', days),
+        }),
+        el('span', { class: 'hint reqhint' }, 'ago')),
+    );
+  }
+
+  const scanKey = (r) => r.album_id;
+
+  function scanHistoryPick() {
+    const shown = tableView('scanhistory').shown || state.scanHistory;
+    const n = countSelected(shown, state.scanHistorySelected, scanKey);
+    $('#scanhistory-rerun').disabled = n === 0;
+    $('#scanhistory-rerun').textContent = n ? `Check ${n} again` : 'Check again';
+    $('#scanhistory-forget').disabled = n === 0;
+  }
+
+  /**
+   * Draw the scan filters from the config the page already has.
+   *
+   * The panel is on the run tab, so it cannot wait for the history tab to be
+   * opened before it exists.
+   */
+  async function loadScanFilters() {
+    if (!$('#scan-filters')) return;
+    try {
+      const config = await api('/api/config');
+      const checker = config.checker || {};
+      renderScanFilters(
+        {
+          min_tracks: checker.min_tracks,
+          min_date: checker.min_date || '',
+          max_date: checker.max_date || '',
+        },
+        checker.album_recheck_after_days ?? 30,
+      );
+    } catch (e) {
+      $('#scan-filters').replaceChildren(empty(e.message));
+    }
+  }
+
+  async function loadScanHistory() {
+    const host = $('#scanhistory-results');
+    host.replaceChildren(spinner('Loading'));
+    try {
+      const data = await api('/api/scan/history');
+      state.scanHistory = data.albums;
+      state.scanWindow = data.recheck_after_days;
+      state.scanHistorySelected = new Set();
+      renderScanFilters(data.filters, data.recheck_after_days);
+      $('#scanhistory-count').textContent = data.total === data.shown
+        ? `${data.total} looked up`
+        : `showing ${data.shown} of ${data.total} looked up`;
+      renderScanHistoryRows();
+      scanHistoryPick();
+    } catch (e) {
+      host.replaceChildren(empty(e.message));
+    }
+  }
+
+  function renderScanHistoryRows() {
+    $('#scanhistory-results').replaceChildren(dataTable({
+      name: 'scanhistory',
+      rows: state.scanHistory,
+      selection: { set: state.scanHistorySelected, onChange: scanHistoryPick },
+      onShown: scanHistoryPick,
+      idOf: scanKey,
+      empty: 'No scan has looked anything up yet.',
+      columns: [
+        {
+          label: 'Release',
+          value: (r) => `${r.artist || ''} ${r.title || ''}`.trim(),
+          filter: 'text',
+          cell: (r) => el('a', {
+            href: albumHref(r.album_id),
+            onclick: (e) => { e.preventDefault(); goAlbum(r.album_id); },
+          }, `${r.artist || '?'} — ${r.title || r.album_id}`),
+        },
+        {
+          label: 'Outcome',
+          value: (r) => r.outcome,
+          filter: 'choice',
+          cell: (r) => el('span', {},
+            el('span', { class: 'pill' }, r.outcome),
+            r.reason ? el('div', { class: 'hint' }, r.reason) : null),
+        },
+        {
+          label: 'Trackers',
+          class: 'found-trackers',
+          value: trackerSummary,
+          filter: 'choice',
+          cell: (r) => el('span', {}, ...trackerTags(r)),
+        },
+        {
+          label: 'Source',
+          value: (r) => r.source || '',
+          filter: 'choice',
+          cell: (r) => el('span', { class: 'tag dim' }, r.source || '—'),
+        },
+        {
+          label: 'Added',
+          value: (r) => r.added_at || 0,
+          filter: false,
+          class: 'nowrap',
+          cell: (r) => el('span', {}, r.added_at ? ago(r.added_at) : '—'),
+        },
+        {
+          label: 'Days since lookup',
+          value: (r) => (r.checked_days_ago === null ? -1 : r.checked_days_ago),
+          filter: 'range',
+          class: 'nowrap',
+          cell: (r) => {
+            const days = r.checked_days_ago;
+            const stale = state.scanWindow > 0 && days !== null && days >= state.scanWindow;
+            return el('span', {},
+              el('div', {}, days === null ? 'unknown' : days < 1 ? 'today' : `${Math.round(days)}d ago`),
+              el('span', { class: 'hint' },
+                 [checkedOn(r.checked_at), stale ? 'due a re-check' : ''].filter(Boolean).join(' · ')));
+          },
+        },
+      ],
+    }));
+  }
+
+  /** Re-check the ticked albums against the trackers, window or no window. */
+  async function scanHistoryRerun() {
+    const shown = tableView('scanhistory').shown || state.scanHistory;
+    const picked = shown.filter((r) => state.scanHistorySelected.has(scanKey(r)));
+    if (!picked.length) return;
+    showScanTab('run');
+    await recheckReleases(picked);
+  }
+
+  /** Forget the stored answers, so the next scan looks them up again. */
+  async function scanHistoryForget() {
+    const shown = tableView('scanhistory').shown || state.scanHistory;
+    const ids = shown.filter((r) => state.scanHistorySelected.has(scanKey(r))).map(scanKey);
+    if (!ids.length) return;
+    try {
+      await api('/api/found/dismiss', { method: 'POST', body: { ids, blacklist: false } });
+      toast(`${ids.length} forgotten. The next scan will look them up again.`, 'ok');
+      state.scanHistorySelected = new Set();
+      await loadScanHistory();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Lookup history
+  // ------------------------------------------------------------------
+  // Every request that has been looked up, and what came of it. The answers
+  // were already being kept -- they are what stops a second run paying for the
+  // same tracker calls -- but nothing showed them, so a request checked last
+  // week was indistinguishable from one that had never been touched.
+
+  const HISTORY_STATUS = {
+    fillable: ['Can be filled', 'ok'],
+    filled: ['Already filled', ''],
+    skipped: ['Nothing usable', ''],
+    error: ['Check failed', 'bad'],
+  };
+
+  function showRequestTab(name) {
+    state.requestTab = name;
+    $('#requests-tab-find').hidden = name !== 'find';
+    $('#requests-tab-history').hidden = name !== 'history';
+    $$('#requests-tabs button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.reqtab === name);
+    });
+    if (name === 'history') loadHistory();
+  }
+
+  /**
+   * A stored epoch time as a plain date, or "" when there is not one.
+   *
+   * @param {number} stamp - Epoch seconds.
+   * @returns {string} YYYY-MM-DD.
+   */
+  function checkedOn(stamp) {
+    const seconds = Number(stamp);
+    if (!seconds) return '';
+    return new Date(seconds * 1000).toISOString().slice(0, 10);
+  }
+
+  async function loadHistory() {
+    const host = $('#history-results');
+    host.replaceChildren(spinner('Loading'));
+    try {
+      const data = await api('/api/requests/history');
+      state.history = data.requests;
+      state.historyWindow = data.recheck_after_days;
+      state.historySelected = new Set();
+      historyPick();
+      $('#history-count').textContent = data.total === data.shown
+        ? `${data.total} looked up`
+        : `showing ${data.shown} of ${data.total} looked up`;
+      renderHistoryRows();
+    } catch (e) {
+      host.replaceChildren(empty(e.message));
+    }
+  }
+
+  /** What identifies one looked-up request. */
+  const historyKey = (r) => r.key || `${r.tracker}:${r.id}`;
+
+  function historyPick() {
+    const shown = tableView('history').shown || state.history;
+    const n = countSelected(shown, state.historySelected, historyKey);
+    const button = $('#history-rerun');
+    button.disabled = n === 0;
+    button.textContent = n ? `Check ${n} again` : 'Check again';
+  }
+
+  function renderHistoryRows() {
+    // Same table as the queue, so the filters sit in the columns they filter
+    // and the numeric ones take a lower and an upper limit. It used to be a
+    // form of its own above the list, with a fixed dropdown of ages, which
+    // could not express "between 1990 and 1995" or "more than 2 GB".
+    const dateCell = (relative, exact, note) => el('span', {},
+      el('div', {}, relative),
+      exact || note
+        ? el('span', { class: 'hint' }, [exact, note].filter(Boolean).join(' · '))
+        : null);
+
+    $('#history-results').replaceChildren(dataTable({
+      name: 'history',
+      rows: state.history,
+      selection: { set: state.historySelected, onChange: historyPick },
+      onShown: historyPick,
+      idOf: (r) => r.key || `${r.tracker}:${r.id}`,
+      empty: 'Nothing has been looked up yet.',
+      columns: [
+        {
+          label: 'Request',
+          value: (r) => `${r.artist || ''} ${r.album || ''} ${r.id}`.trim(),
+          filter: 'text',
+          cell: (r) => {
+            const name = `${r.artist || '?'} — ${r.album || 'Request ' + r.id}`;
+            return el('span', {},
+              el('div', {}, r.request_url
+                ? el('a', { href: r.request_url, target: '_blank', rel: 'noreferrer' }, name)
+                : name),
+              el('span', { class: 'hint' }, `${r.tracker || '?'} #${r.id}`));
+          },
+        },
+        {
+          label: 'Tracker',
+          value: (r) => r.tracker || '',
+          filter: 'choice',
+          cell: (r) => el('span', {}, r.tracker || '—'),
+        },
+        {
+          label: 'Outcome',
+          value: (r) => (HISTORY_STATUS[r.status] || [r.status || 'Unknown'])[0],
+          filter: 'choice',
+          cell: (r) => {
+            const pair = HISTORY_STATUS[r.status] || [r.status || 'Unknown', ''];
+            return el('span', {},
+              el('span', { class: `pill ${pair[1]}` }, pair[0]),
+              r.reason ? el('div', { class: 'hint' }, r.reason) : null);
+          },
+        },
+        {
+          label: 'Year',
+          value: (r) => Number(String(r.year || '').slice(0, 4)) || 0,
+          filter: 'range',
+          lowLabel: 'from',
+          highLabel: 'to',
+          class: 'nowrap',
+          cell: (r) => el('span', {}, String(r.year || '—')),
+        },
+        {
+          // Compared in GB, which is the unit the number is written in on the
+          // tracker. Stored as a string, so sorting it as text put 900 MB
+          // above 1 TB.
+          label: 'Bounty (GB)',
+          value: (r) => (Number(r.bounty_bytes) || 0) / (1024 ** 3),
+          filter: 'range',
+          class: 'nowrap',
+          cell: (r) => el('span', {}, r.bounty || '—'),
+        },
+        {
+          label: 'Opened',
+          value: (r) => r.created || '',
+          filter: false,
+          class: 'nowrap',
+          cell: (r) => (r.created_age
+            ? dateCell(`${r.created_age} ago`, (r.created || '').slice(0, 10), '')
+            : el('span', {}, '—')),
+        },
+        {
+          label: 'Days since lookup',
+          value: (r) => (r.checked_days_ago === null ? -1 : r.checked_days_ago),
+          filter: 'range',
+          class: 'nowrap',
+          cell: (r) => {
+            const days = r.checked_days_ago;
+            const window_ = state.historyWindow;
+            const stale = window_ > 0 && days !== null && days >= window_;
+            return dateCell(
+              days === null ? 'unknown' : days < 1 ? 'today' : `${Math.round(days)}d ago`,
+              checkedOn(r.checked_at),
+              stale ? 'due a re-check' : '',
+            );
+          },
+        },
+      ],
+    }));
+  }
+
+  /** Re-run the ticked rows, whatever their stored answer says. */
+  async function historyRerun() {
+    const shown = tableView('history').shown || state.history;
+    const picked = shown.filter((r) => state.historySelected.has(historyKey(r))).map(historyKey);
+    if (!picked.length) return;
+    const byTracker = new Map();
+    for (const key of picked) {
+      const parts = key.split(':');
+      if (!byTracker.has(parts[0])) byTracker.set(parts[0], []);
+      byTracker.get(parts[0]).push(parts[1]);
+    }
+    showRequestTab('find');
+    for (const [tracker, ids] of byTracker) {
+      // eslint-disable-next-line no-await-in-loop -- serial on purpose: two
+      // trackers at once race the same budget guard.
+      await requestsCheck(ids.map((id) => ({ id, tracker })), { placeholders: true, recheck: true });
     }
   }
 
@@ -2366,8 +3907,11 @@
       ' ',
       // Opens both sides rather than throwing you at Deezer: deciding whether
       // this fills that request means reading them together.
-      el('button', { class: 'link', onclick: () => openRequest({ id: match.request_id, url: match.request_url }) },
-         match.deezer_title || 'Compare'),
+      el('button', {
+        class: 'link',
+        onclick: () => go(addr(`/requests/${encodeURIComponent(match.tracker || state.requestsTracker || '')}`
+                               + `/${encodeURIComponent(match.request_id)}`)),
+      }, match.deezer_title || 'Compare'),
       ' ',
       el('button', { class: 'ghost', onclick: () => download(match.deezer_id) }, 'Download'),
     );
@@ -2383,26 +3927,43 @@
   // request is fetched and drawn instead -- the same record the tracker builds
   // its page from, description and comments included -- and the link out is
   // still there for the parts only the live page has, like voting.
-  async function openRequest(row) {
-    const match = state.requestMatches.get(String(row.id));
+  /**
+   * One request beside the release that might fill it.
+   *
+   * Takes a tracker and an id rather than a row, because that is all an
+   * address carries: the page has to draw itself for somebody arriving on a
+   * link, with no list behind it and nothing in memory. Anything already
+   * known about the request is a shortcut to a nicer first paint, not a
+   * requirement.
+   *
+   * @param {string} tracker - Which tracker holds it.
+   * @param {string} id - The request id on that tracker.
+   */
+  async function openRequest(tracker, id) {
+    const match = state.requestMatches.get(String(id));
+    const row = state.requestRows.find((r) => String(r.id) === String(id)) || {};
     const url = row.url || match?.request_url || '';
-    const tracker = match?.tracker || state.requestsTracker || '';
+    const code = tracker || match?.tracker || state.requestsTracker || '';
     const from = state.view;
 
+    // Borrowing the search pane to draw in, not going to Search: the address
+    // says Requests, which is where the reader still is.
     setView('search');
     pushPane(paneLabel(), from);
     const pane = searchPane('split-page');
+    const named = `${row.artist || match?.artist || ''} — ${row.title || match?.album || `Request ${id}`}`;
+    setTitle(named.replace(/^\s*—\s*/, ''));
 
     const left = el('div', { class: 'split-side' });
     const right = el('div', { class: 'split-side' });
     pane.replaceChildren(
-      breadcrumbs(`${row.artist || match?.artist || ''} — ${row.title || match?.album || 'Request'}`),
+      breadcrumbs(named),
       el('div', { class: 'split' }, left, right),
     );
 
     left.replaceChildren(
       el('div', { class: 'row split-head' },
-        el('h3', { class: 'section-title' }, `Request on ${tracker || 'the tracker'}`),
+        el('h3', { class: 'section-title' }, `Request on ${code || 'the tracker'}`),
         url ? el('a', { class: 'filebtn', href: url, target: '_blank', rel: 'noopener noreferrer' },
                  'Open in a tab ↗') : null),
       spinner('Loading the request'),
@@ -2426,13 +3987,21 @@
     })();
 
     const head = left.firstChild;
-    if (!tracker || !row.id) {
+    if (!code || !id) {
       left.replaceChildren(head, empty('This request has no tracker or id to look up.'));
     } else {
       try {
         const detail = await api(
-          `/api/requests/detail?tracker=${encodeURIComponent(tracker)}&id=${encodeURIComponent(row.id)}`);
+          `/api/requests/detail?tracker=${encodeURIComponent(code)}&id=${encodeURIComponent(id)}`);
         left.replaceChildren(head, requestPanel(detail));
+        // Somebody who arrived on the link had nothing to name the page with
+        // until now. The tracker's own record has it, so use it.
+        const title = [detail.artist, detail.title].filter(Boolean).join(' — ');
+        if (title) {
+          const crumb = $('.crumb.current', pane);
+          if (crumb) crumb.textContent = title;
+          setTitle(title);
+        }
       } catch (e) {
         left.replaceChildren(head, empty(e.message));
       }
@@ -2552,7 +4121,7 @@
   function albumPanel(album) {
     const availability = album.availability;
     const artistLink = (id, name) =>
-      id ? el('a', { href: '#', onclick: (e) => { e.preventDefault(); openArtist(id); } }, name)
+      id ? el('a', { href: artistHref(id), onclick: (e) => { e.preventDefault(); goArtist(id); } }, name)
          : el('span', {}, name);
     const facts = [
       album.nb_tracks ? `${album.nb_tracks} tracks` : null,
@@ -2606,7 +4175,9 @@
     const body = $('#found-body');
     body.replaceChildren(spinner('Loading'));
     try {
-      const { found, blacklisted, held, held_count: heldCount, rule } = await api('/api/found');
+      const { found, blacklisted, held, held_count: heldCount, rule,
+              held_groups: heldGroups = [], settled_count: settledCount = 0,
+              settled_groups: settledGroups = [] } = await api('/api/found');
       state.found = found;
       state.foundHeld = held || [];
       state.foundRule = rule || '';
@@ -2614,17 +4185,34 @@
       $('#found-restore').hidden = !blacklisted;
       $('#found-restore').textContent = `Clear blacklist (${blacklisted})`;
 
-      // What the Settings rules kept out. A count and a way to look, so a
-      // narrowed rule never reads as "the scan found nothing".
+      state.heldGroups = heldGroups;
+
+      // Releases dropped for good are not listed -- there is nothing to do
+      // with them -- but the number is still said, so a queue that went quiet
+      // is explained rather than just short.
+      const dropped = settledCount
+        ? `${settledCount} dropped: ${settledGroups.map((g) => `${g.count} ${g.label}`).join('; ')}.`
+        : '';
+      state.droppedNote = dropped;
+
+      // What was kept out, and whether any of it can still be acted on. The
+      // toggle only appears when there is a list behind it.
       const heldRow = $('#found-held-row');
-      heldRow.hidden = !heldCount;
+      heldRow.hidden = !heldCount && !settledCount;
+      $('#found-held-toggle').hidden = !heldCount;
+      if (!heldCount && settledCount) $('#found-held').textContent = dropped;
       if (heldCount) {
-        $('#found-held').textContent =
-          `${heldCount} held back by your queue rules — letting through ${state.foundRule}.`;
-        $('#found-held-toggle').textContent = state.showHeld ? 'Hide them' : 'Show them';
+        // Only one of these groups is a setting, and it is usually the small
+        // one. Calling all of them "your queue rules" sent people to Settings
+        // to widen a rule that had nothing to do with it.
+        const parts = heldGroups.map((g) => {
+          if (g.key === 'rules') return `${g.count} by your queue rules, which let through ${state.foundRule}`;
+          return `${g.count} ${g.label}`;
+        });
+        $('#found-held').textContent = `${heldCount} excluded: ${parts.join('; ')}. ${dropped}`.trim();
+        $('#found-held-toggle').textContent = state.showHeld ? 'Hide excluded' : 'Show excluded';
       }
 
-      fillTrackerFilter();
       renderFound();
     } catch (e) {
       body.replaceChildren(empty(e.message));
@@ -2633,134 +4221,187 @@
 
   // The tracker options come from the rows themselves rather than a fixed
   // list, so a filter is never offered for a tracker this install does not use.
-  function fillTrackerFilter() {
-    const select = $('#found-tracker');
-    const codes = new Set();
-    [...state.found, ...state.foundHeld].forEach((f) => {
-      (f.missing_from || []).forEach((t) => codes.add(t));
-      (f.found_on || []).forEach((t) => codes.add(t));
-    });
-    const wanted = [...codes].sort();
-    if (select.dataset.codes === wanted.join(',')) return;
-    select.dataset.codes = wanted.join(',');
-    const keep = select.value;
-    select.replaceChildren(
-      el('option', { value: '' }, 'Any tracker'),
-      ...wanted.map((t) => el('option', { value: `missing:${t}` }, `Missing on ${t}`)),
-      ...wanted.map((t) => el('option', { value: `present:${t}` }, `Already on ${t}`)),
-      ...(wanted.length > 1 ? [el('option', { value: 'missing:*' }, 'Missing on every tracker checked')] : []),
-    );
-    select.value = keep;
-  }
+  // The list used to be filtered twice: a bar above the table with a search
+  // box and two dropdowns, and then the table's own per-column filters. Two
+  // controls for one job, and the bar could not say which column it narrowed.
+  // The columns do it.
 
-  // The filter narrows what is on screen. It is deliberately not the same
-  // thing as the queue rules in Settings: those decide what belongs in the
-  // queue at all and persist, this forgets itself when you leave the tab.
-  function filteredFound() {
-    const { text, tracker, source } = state.foundFilter;
-    const needle = text.trim().toLowerCase();
-    return state.found.filter((f) => {
-      if (source && f.kind !== source) return false;
-      if (needle) {
-        const hay = `${f.artist || ''} ${f.title || ''}`.toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
-      if (tracker) {
-        const [want, code] = tracker.split(':');
-        const missing = f.missing_from || [];
-        const present = f.found_on || [];
-        if (code === '*') return missing.length > 0 && present.length === 0;
-        return want === 'missing' ? missing.includes(code) : present.includes(code);
-      }
-      return true;
-    });
+  /** The count line, from the rows the table is showing. */
+  function updateFoundCount() {
+    const shown = tableView('queue').shown || [];
+    $('#found-count').textContent =
+      `${countSelected(shown, state.selectedFound)} of ${shown.length} selected`;
   }
 
   function renderFound() {
     const body = $('#found-body');
     railCount('#found-count-rail', state.found.length);
-    const filtering = Boolean(
-      state.foundFilter.text || state.foundFilter.tracker || state.foundFilter.source,
-    );
-    $('#found-filter-clear').hidden = !filtering;
     if (!state.found.length) {
       body.replaceChildren(
         state.foundHeld.length
-          ? empty(`Nothing matches your queue rules. ${state.foundHeld.length} released were held back — `
-              + 'widen the rules in Settings, or show them above.')
-          : empty('Nothing yet. Run a scan or check some requests.'),
+          ? empty(`The queue is empty. ${state.foundHeld.length} release(s) were excluded — `
+              + 'see the list below, or widen the queue rule in Settings.')
+          : empty(state.droppedNote
+              ? `The queue is empty. ${state.droppedNote}`
+              : 'The queue is empty. Run a scan, or look up some requests.'),
       );
       $('#found-count').textContent = '';
-      $('#found-filtered').textContent = '';
       if (state.showHeld) body.append(heldTable());
       return;
     }
-    const rows = filteredFound();
-    $('#found-filtered').textContent = filtering
-      ? `${rows.length} of ${state.found.length} shown`
-      : '';
-    if (!rows.length) {
-      body.replaceChildren(empty('Nothing in the queue matches that filter.'));
-      $('#found-count').textContent = '';
-      if (state.showHeld) body.append(heldTable());
-      return;
-    }
-    // Counted against what is on screen, because the buttons act on what is
-    // on screen: selecting all while filtered then downloading a hidden row
-    // would be a nasty surprise.
-    const shownSelected = rows.filter((f) => state.selectedFound.has(f.id)).length;
-    $('#found-count').textContent = `${shownSelected} of ${rows.length} selected`;
-    body.replaceChildren(
-      el(
-        'table',
-        { class: 'table' },
-        el('thead', {}, el('tr', {},
-          el('th', {}, selectAllBox(rows.map((f) => f.id), state.selectedFound, renderFound)),
-          el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'How it got here'),
-          el('th', {}, 'Last checked'))),
-        el('tbody', {}, ...rows.map((f) =>
-          el('tr', {},
-            el('td', {}, el('input', {
-              type: 'checkbox',
-              checked: state.selectedFound.has(f.id),
-              onclick: (e) => pickFound(f.id, e),
-            })),
-            el('td', {}, el('a', {
-              href: '#',
-              onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
-            }, `${f.artist || ''} — ${f.title || ''}`)),
-            // One tag per tracker, saying what the last check found there.
-            // A single "not on RED, OPS" line could not say that a re-check had
-            // since found it on one of them, which is how a release that is on
-            // both sat here looking like it was on neither.
-            el('td', { class: 'found-trackers' }, ...trackerTags(f)),
-            el('td', { class: 'found-sources' }, ...sourceTags(f)),
-            el('td', { class: 'card-sub' }, ago(f.checked_at)),
-          ))),
-      ),
-    );
+    const rows = state.found;
+    // Counted from the rows, not the checkboxes, and against what is on
+    // screen: the buttons act on what is on screen, so selecting all while
+    // filtered and then downloading a hidden row would be indefensible.
+    body.replaceChildren(dataTable({
+      name: 'queue',
+      rows,
+      selection: { set: state.selectedFound, onChange: updateFoundCount },
+      onShown: (shown) => {
+        $('#found-count').textContent =
+          `${countSelected(shown, state.selectedFound)} of ${shown.length} selected`;
+      },
+      empty: 'Nothing in the queue.',
+      columns: [
+        {
+          label: 'Release',
+          value: (f) => `${f.artist || ''} ${f.title || ''}`.trim(),
+          filter: 'text',
+          cell: (f) => el('a', {
+            href: albumHref(f.album_id),
+            onclick: (e) => { e.preventDefault(); goAlbum(f.album_id); },
+          }, `${f.artist || ''} — ${f.title || ''}`),
+        },
+        {
+          label: 'Trackers',
+          class: 'found-trackers',
+          value: trackerSummary,
+          filter: 'choice',
+          cell: (f) => el('span', {}, ...trackerTags(f)),
+        },
+        {
+          label: 'Source',
+          value: (f) => (f.sources || [f.kind]).join(', '),
+          filter: 'choice',
+          cell: (f) => el('span', {}, ...sourceTags(f)),
+        },
+        {
+          label: 'Added',
+          value: (f) => f.added_at || 0,
+          filter: false,
+          class: 'nowrap',
+          cell: (f) => el('span', {}, f.added_at ? ago(f.added_at) : '—'),
+        },
+        {
+          label: 'Last checked',
+          value: (f) => f.checked_at || 0,
+          filter: false,
+          class: 'nowrap',
+          cell: (f) => el('span', {}, f.checked_at ? ago(f.checked_at) : '—'),
+        },
+      ],
+    }));
     if (state.showHeld) body.append(heldTable());
   }
 
-  // The rows the Settings rules kept out, each saying which rule kept it and
-  // what was actually true on the tracker -- "RED must be missing there, but
-  // it has not been checked there" is a different problem from "it is already
-  // there", and only one of them is fixed by re-checking.
+  // Releases that were checked and are not in the queue, each saying what is
+  // actually keeping it out.
+  //
+  // This used to be headed "Held back by your queue rules", which was wrong
+  // for most of it: only one of the reasons is a setting, and a release that
+  // every tracker already has is not being held by anything -- there is
+  // nothing to upload. It also had no way to act on a row, so a list of
+  // things you did not want was a list you could only look at.
+  function heldPick() {
+    // Counts come from the rows the table is showing, not from the boxes: a
+    // row with no id used to add `undefined` to the set, so "17 selected" was
+    // one more than the list held and clearing left that one behind.
+    const n = countSelected(tableView('held').shown || state.foundHeld, state.selectedHeld);
+    $$('.held-action').forEach((b) => { b.disabled = n === 0; });
+    const label = $('#held-selected');
+    if (label) label.textContent = n ? `${n} selected` : '';
+  }
+
+  async function heldAct(what) {
+    const shown = tableView('held').shown || state.foundHeld;
+    const ids = shown.filter((r) => state.selectedHeld.has(r.id)).map((r) => r.id);
+    if (!ids.length) return;
+    try {
+      if (what === 'recheck') {
+        const rows = shown.filter((r) => ids.includes(r.id));
+        state.selectedHeld = new Set();
+        await recheckReleases(rows);
+        return;
+      }
+      await api('/api/found/dismiss', { method: 'POST', body: { ids, blacklist: what === 'blacklist' } });
+      toast(what === 'blacklist'
+        ? `${ids.length} blacklisted. No scan will list them again.`
+        : `${ids.length} removed.`, 'ok');
+      state.selectedHeld = new Set();
+      await loadFound();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
   function heldTable() {
-    if (!state.foundHeld.length) return empty('Nothing is being held back.');
+    if (!state.foundHeld.length) return empty('Every checked release is in the queue.');
+
+    // What each group needs, said once rather than repeated down a column.
+    const advice = (state.heldGroups || []).map((g) => {
+      if (g.fix === 'recheck') {
+        return el('li', {}, `${g.count} ${g.label}. Select them and re-check.`);
+      }
+      if (g.fix === 'settings') {
+        return el('li', {}, `${g.count} excluded by your queue rules. Widen the rule in Settings to admit them.`);
+      }
+      return el('li', {}, `${g.count} ${g.label}.`);
+    });
+
     return el('div', { class: 'held-block' },
-      el('h3', { class: 'section-head-plain' }, `Held back by your queue rules (${state.foundHeld.length})`),
-      el('table', { class: 'table' },
-        el('thead', {}, el('tr', {},
-          el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'Why it is not in the queue'))),
-        el('tbody', {}, ...state.foundHeld.map((f) =>
-          el('tr', { class: 'held-row' },
-            el('td', {}, el('a', {
-              href: '#',
-              onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
-            }, `${f.artist || ''} — ${f.title || ''}`)),
-            el('td', { class: 'found-trackers' }, ...trackerTags(f)),
-            el('td', { class: 'card-sub' }, f.held_reason || ''))))));
+      el('h3', { class: 'section-head-plain' },
+         `Excluded from the queue (${state.foundHeld.length})`),
+      advice.length ? el('ul', { class: 'held-why' }, ...advice) : null,
+      el('div', { class: 'row held-actions' },
+        el('button', { class: 'held-action', disabled: true, onclick: () => heldAct('recheck') },
+           'Re-check on trackers'),
+        el('button', { class: 'held-action', disabled: true, onclick: () => heldAct('remove') },
+           'Remove'),
+        el('button', { class: 'held-action danger', disabled: true, onclick: () => heldAct('blacklist') },
+           'Blacklist'),
+        el('span', { class: 'hint', id: 'held-selected' })),
+      dataTable({
+        name: 'held',
+        rows: state.foundHeld,
+        selection: { set: state.selectedHeld, onChange: heldPick },
+        onShown: heldPick,
+        empty: 'Every checked release is in the queue.',
+        columns: [
+          {
+            label: 'Release',
+            value: (f) => `${f.artist || ''} ${f.title || ''}`.trim(),
+            filter: 'text',
+            cell: (f) => el('a', {
+              href: albumHref(f.album_id),
+              onclick: (e) => { e.preventDefault(); goAlbum(f.album_id); },
+            }, `${f.artist || ''} — ${f.title || ''}`),
+          },
+          {
+            label: 'Trackers',
+            class: 'found-trackers',
+            value: (f) => trackerSummary(f),
+            filter: 'choice',
+            cell: (f) => el('span', {}, ...trackerTags(f)),
+          },
+          {
+            label: 'Exclusion reason',
+            value: (f) => f.held_reason || '',
+            filter: 'choice',
+            class: 'card-sub',
+            cell: (f) => el('span', {}, f.held_reason || ''),
+          },
+        ],
+      }));
   }
 
   // How a release got into the queue. Both can be true at once -- a scan found
@@ -2786,6 +4427,23 @@
 
   // What the last check found, per tracker. Green means there is something to
   // upload there; dim means that one already has it.
+  /**
+   * The tracker state as one comparable string.
+   *
+   * The tags are pills, which sort and filter as markup. This is the same
+   * fact in a form a column can group by, so "everything OPS is missing" is a
+   * choice in the header rather than something to read row by row.
+   *
+   * @param {object} row - A queue row.
+   * @returns {string} e.g. "OPS missing, RED has it".
+   */
+  function trackerSummary(row) {
+    const missing = (row.missing_from || []).map((t) => `${t} missing`);
+    const found = (row.found_on || []).map((t) => `${t} has it`);
+    if (!missing.length && !found.length) return 'not checked on any tracker';
+    return [...missing, ...found].join(', ');
+  }
+
   function trackerTags(row) {
     const missing = row.missing_from || [];
     const found = row.found_on || [];
@@ -2798,9 +4456,12 @@
     ];
   }
 
-  // Filtered rows only: a row you cannot see is a row you did not choose, and
-  // "Download selected" acting on one would be indefensible.
-  const foundSelection = () => filteredFound().filter((f) => state.selectedFound.has(f.id));
+  // Rows on screen only: a row you cannot see is a row you did not choose,
+  // and "Download selected" acting on one would be indefensible. That means
+  // the table's own column filters as well as the search above it, which is
+  // why this asks the table rather than re-deriving the list.
+  const foundSelection = () =>
+    (tableView('queue').shown || state.found).filter((f) => state.selectedFound.has(f.id));
 
   // Off the list, one of two ways.
   //
@@ -2845,13 +4506,22 @@ They will not be listed again, even if a later scan finds them.`)) {
   async function recheckFound() {
     const picked = foundSelection();
     if (!picked.length) return toast('Nothing selected', 'bad');
+    return recheckReleases(picked);
+  }
+
+  // Re-check a set of releases against the trackers.
+  //
+  // The same job whether the rows came from the queue or from the list of
+  // things that did not make it into the queue -- and the second is where it
+  // matters most, because "not checked against Deezer yet" is the one reason
+  // on that list a re-check actually fixes.
+  async function recheckReleases(picked) {
     const trackers = checkTrackers();
     if (!trackers.length) return toast('No tracker configured', 'bad');
 
     const candidates = picked.map((f) => ({
       album_id: f.album_id, title: f.title, artist: f.artist, source: 'found',
     }));
-    const body = $('#found-body');
     try {
       const { job_id } = await api('/api/missing/check', { method: 'POST', body: { candidates, trackers } });
       const log = $('#found-log');
@@ -4137,6 +5807,62 @@ They will not be listed again, even if a later scan finds them.`)) {
     return [...groups.entries()];
   }
 
+  /**
+   * A settings heading that is also its own address.
+   *
+   * The page is one long scroll, so a section is a place on it, and a place
+   * you cannot name is one you cannot bookmark, link to, or be returned to on
+   * a reload. The heading is the link because it is already the thing you
+   * point at when you tell somebody where a setting lives.
+   *
+   * @param {string} tag - h2 or h3.
+   * @param {string} name - What this part is called in an address.
+   * @param {string} text - What it is called on screen.
+   * @param {string} [cls] - A class for the heading itself.
+   */
+  function settingsHeading(tag, name, text, cls = '') {
+    const target = addr(`/settings/${name}`);
+    return el(tag, { class: cls || null, id: `settings-${name}` },
+      el('a', {
+        class: 'anchor',
+        href: target,
+        onclick: (event) => { event.preventDefault(); go(target); },
+      }, text));
+  }
+
+  // The parts of the page that are not schema sections. They have their own
+  // ids for other reasons, so the address names are mapped rather than
+  // guessed -- and "users" rather than "accounts", which is already the name
+  // of the category holding the tracker credentials.
+  const SETTINGS_ELSEWHERE = { 'debug-log': '#debug-panel', users: '#accounts-panel' };
+
+  /**
+   * Bring the addressed part of the settings page into view.
+   *
+   * Landing halfway down a long page with nothing marked leaves you hunting
+   * for the section you asked for, so it is flashed once.
+   *
+   * @param {boolean} [glide] - Scroll smoothly. Only for a heading pressed on
+   *   a page that is already on screen and has stopped moving. Arriving is a
+   *   jump: three of these panels fill themselves in afterwards, and each one
+   *   replaces the node a smooth scroll is animating towards, which cancels
+   *   it -- so landing on /settings/users stayed at the top of the page.
+   */
+  function revealSettingsSection(glide = false) {
+    const name = state.settingsSection;
+    if (!name) return;
+    const named = $(`#settings-${name}`);
+    // The save bar's own controls are #settings-save and #settings-dirty, so
+    // the id alone is not enough: a place on this page is a heading.
+    const heading = named && /^H[1-6]$/.test(named.tagName) ? named : null;
+    const target = heading || $(SETTINGS_ELSEWHERE[name] || '#none');
+    if (!target) return;
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    target.scrollIntoView({ behavior: glide && !still ? 'smooth' : 'auto', block: 'start' });
+    target.classList.add('addressed');
+    setTimeout(() => target.classList.remove('addressed'), 1800);
+  }
+
   function renderSettings() {
     const { sections, values, secrets_set: secretsSet, bootstrap, config_path: configPath } = state.settings;
     const body = $('#settings-body');
@@ -4154,7 +5880,7 @@ They will not be listed again, even if a later scan finds them.`)) {
         'Changes apply immediately, no restart. Tests use what is on screen, so a credential can be checked before it is saved.',
       ),
       ...categoriesOf(sections).flatMap(([name, group]) => [
-        el('h2', { class: 'settings-category', id: `settings-${slug(name)}` }, name),
+        settingsHeading('h2', slug(name), name, 'settings-category'),
         ...group.map((section) =>
           el(
             'section',
@@ -4162,7 +5888,7 @@ They will not be listed again, even if a later scan finds them.`)) {
             el(
               'div',
               { class: 'row settings-head' },
-              el('h3', {}, section.title),
+              settingsHeading('h3', section.id, section.title),
               section.test
                 ? el(
                     'button',
@@ -4184,7 +5910,7 @@ They will not be listed again, even if a later scan finds them.`)) {
       el(
         'section',
         { class: 'panel' },
-        el('h2', {}, 'Set in config.toml'),
+        settingsHeading('h2', 'config-file', 'Set in config.toml'),
         el(
           'p',
           { class: 'hint' },
@@ -4192,11 +5918,12 @@ They will not be listed again, even if a later scan finds them.`)) {
         ),
         el('ul', { class: 'bootstrap-list' }, ...bootstrap.map((k) => el('li', {}, el('code', {}, k)))),
       ),
-      el('section', { class: 'panel', id: 'debug-panel' }, el('h2', {}, 'Debug log'), spinner('Loading')),
+      el('section', { class: 'panel', id: 'debug-panel' },
+         settingsHeading('h2', 'debug-log', 'Debug log'), spinner('Loading')),
       el(
         'section',
         { class: 'panel' },
-        el('h2', {}, 'Appearance'),
+        settingsHeading('h2', 'appearance', 'Appearance'),
         el(
           'div',
           { class: 'row' },
@@ -4209,7 +5936,7 @@ They will not be listed again, even if a later scan finds them.`)) {
           ),
         ),
         el('p', { class: 'hint' }, 'Auto follows your operating system. The sidebar icon flips between dark and light.'),
-        el('h2', {}, 'Scan history'),
+        settingsHeading('h2', 'scan-history', 'Scan history'),
         el(
           'div',
           { class: 'row' },
@@ -4218,9 +5945,12 @@ They will not be listed again, even if a later scan finds them.`)) {
         ),
         el('p', { class: 'hint' }, 'Clearing history makes the next scan re-check everything, costing tracker budget again.'),
       ),
-      el('section', { class: 'panel', id: 'accounts-panel' }, el('h2', {}, 'Accounts'), spinner('Loading')),
+      el('section', { class: 'panel', id: 'accounts-panel' },
+         settingsHeading('h2', 'users', 'Accounts'), spinner('Loading')),
     );
     loadAccounts();
+    // Whatever the address named, once there is a page to scroll through.
+    revealSettingsSection();
   }
 
   // Who can sign in. Changing a password ends every session it had, including
@@ -4233,7 +5963,7 @@ They will not be listed again, even if a later scan finds them.`)) {
     try {
       data = await api('/api/accounts');
     } catch (e) {
-      panel.replaceChildren(el('h2', {}, 'Accounts'), empty(e.message));
+      panel.replaceChildren(settingsHeading('h2', 'users', 'Accounts'), empty(e.message));
       return;
     }
 
@@ -4246,7 +5976,7 @@ They will not be listed again, even if a later scan finds them.`)) {
     const newPass = field('acct-pass', `Password (at least ${data.min_password})`, 'password');
 
     panel.replaceChildren(
-      el('h2', {}, 'Accounts'),
+      settingsHeading('h2', 'users', 'Accounts'),
       el('p', { class: 'hint' },
          data.you
            ? `Signed in as ${data.you}. Changing a password signs out every other browser using it.`
@@ -4284,6 +6014,9 @@ They will not be listed again, even if a later scan finds them.`)) {
       el('div', { class: 'row accounts-row' },
          el('button', { onclick: signOut }, 'Sign out of this browser')),
     );
+    // Same as the debug log: this panel lands after the page around it, so an
+    // address naming it has to be honoured once it is here.
+    if (state.settingsSection === 'users') revealSettingsSection();
   }
 
   async function accountAction(button, path, body, done) {
@@ -4308,7 +6041,7 @@ They will not be listed again, even if a later scan finds them.`)) {
         el(
           'div',
           { class: 'row' },
-          el('h2', {}, 'Debug log'),
+          settingsHeading('h2', 'debug-log', 'Debug log'),
           el('span', { class: `tag ${data.enabled ? 'ok' : 'dim'}` }, data.enabled ? 'debug on' : 'debug off'),
           el('button', { onclick: loadDebug }, 'Refresh'),
           el('button', { onclick: clearDebug }, 'Clear'),
@@ -4331,8 +6064,11 @@ They will not be listed again, even if a later scan finds them.`)) {
         ),
         el('pre', { class: 'console' }, data.log.join('\n') || '(nothing logged yet)'),
       );
+      // This panel arrives after the page is drawn, so an address naming it
+      // had nothing to scroll to when the rest of the page was ready.
+      if (state.settingsSection === 'debug-log') revealSettingsSection();
     } catch (e) {
-      panel.replaceChildren(el('h2', {}, 'Debug log'), empty(e.message));
+      panel.replaceChildren(settingsHeading('h2', 'debug-log', 'Debug log'), empty(e.message));
     }
   }
 
@@ -4667,27 +6403,69 @@ They will not be listed again, even if a later scan finds them.`)) {
     applyTheme();
     $('#theme-toggle')?.addEventListener('click', toggleTheme);
 
-    $$('.nav-item').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
-    $('#search-form').addEventListener('submit', runSearch);
+    $$('.nav-item').forEach((b) => {
+      // The nav is buttons, not links, so give each one the address it goes
+      // to. It is what a screen reader reads out and what the status bar
+      // shows.
+      const path = VIEW_PATHS[b.dataset.view];
+      if (path) b.setAttribute('data-path', path);
+      b.addEventListener('click', () => go(navAddr(b.dataset.view)));
+    });
+    // Searching is going somewhere, so it is a navigation like any other: the
+    // results have an address, they survive a reload, and Back leaves them for
+    // whatever you were looking at before rather than for the app's front door.
+    $('#search-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      go(addr('/search', { q: $('#search-input').value.trim(), type: typeParam() }));
+    });
     $$('#search-type button').forEach((b) =>
       b.addEventListener('click', () => selectSearchType(b.dataset.type)),
     );
     $$('#explore-tabs button').forEach((b) =>
-      b.addEventListener('click', () => {
-        state.exploreTab = b.dataset.explore;
-        $$('#explore-tabs button').forEach((x) => x.classList.toggle('active', x === b));
-        // A batch belongs to the list it was picked from. Carrying it into
-        // another tab leaves you holding releases you can no longer see, and
-        // the count in the bar stops matching anything on screen.
-        clearPicks();
-        loadExplore();
-      }),
+      b.addEventListener('click', () => go(addr(BROWSE_PATHS[b.dataset.explore] || '/browse/channels', {
+        // Channels has no genre filter, so carrying one there would put a
+        // parameter in the address that nothing on screen answers to.
+        genre: b.dataset.explore === 'channels' ? '' : genreParam(),
+      }))),
     );
     $('#missing-scan').addEventListener('click', missingScan);
     // Re-checks whatever is ticked in the results, which is the only place a
     // subset makes sense.
     $('#missing-check').addEventListener('click', () => missingCheck());
-    $('#requests-fetch').addEventListener('click', requestsFetch);
+    $$('#scan-tabs button').forEach((b) => {
+      b.addEventListener('click', () =>
+        go(addr(b.dataset.scantab === 'history' ? '/scan/history' : '/scan')));
+    });
+    $('#scanhistory-rerun').addEventListener('click', scanHistoryRerun);
+    $('#scanhistory-forget').addEventListener('click', scanHistoryForget);
+    $('#scanhistory-clear-filters').addEventListener('click', () => {
+      const view = tableView('scanhistory');
+      view.filters = {};
+      view.sort = null;
+      renderScanHistoryRows();
+    });
+
+    $$('#requests-tabs button').forEach((b) => {
+      b.addEventListener('click', () => go(b.dataset.reqtab === 'history'
+        ? addr('/requests/history')
+        : addr('/requests', { tracker: state.requestsTracker || '' })));
+    });
+    $('#history-rerun').addEventListener('click', historyRerun);
+    // The filters live in the columns now, so clearing them is clearing the
+    // table's own state rather than emptying a form above it.
+    $('#history-clear-filters').addEventListener('click', () => {
+      const view = tableView('history');
+      view.filters = {};
+      view.sort = null;
+      renderHistoryRows();
+    });
+
+    // The default does the whole job; the other one stops at the list.
+    $('#requests-fetch-check').addEventListener('click', () => requestsFetch({ thenCheck: true }));
+    $('#requests-fetch').addEventListener('click', () => requestsFetch());
+    // Stops before the next page is paid for, rather than after all of them.
+    // The check that may follow has its own Stop button, next to its log.
+    $('#requests-cancel').addEventListener('click', () => state.requestsAbort?.abort());
     $('#requests-check-pasted').addEventListener('click', () => {
       const ids = idsFrom($('#requests-ids').value);
       if (!ids.length) return toast('Paste at least one request ID or URL', 'bad');
@@ -4722,30 +6500,11 @@ They will not be listed again, even if a later scan finds them.`)) {
 
     // Filtering is local: it never refetches, so it stays instant on a long
     // queue and costs no tracker budget.
-    $('#found-search').addEventListener('input', (e) => {
-      state.foundFilter.text = e.target.value;
-      renderFound();
-    });
-    $('#found-tracker').addEventListener('change', (e) => {
-      state.foundFilter.tracker = e.target.value;
-      renderFound();
-    });
-    $('#found-source').addEventListener('change', (e) => {
-      state.foundFilter.source = e.target.value;
-      renderFound();
-    });
-    $('#found-filter-clear').addEventListener('click', () => {
-      state.foundFilter = { text: '', tracker: '', source: '' };
-      $('#found-search').value = '';
-      $('#found-tracker').value = '';
-      $('#found-source').value = '';
-      renderFound();
-    });
-    $('#found-held-toggle').addEventListener('click', () => {
-      state.showHeld = !state.showHeld;
-      $('#found-held-toggle').textContent = state.showHeld ? 'Hide them' : 'Show them';
-      renderFound();
-    });
+    // Showing the excluded rows changes what the list is, so it is part of
+    // where you are: a queue read with them shown survives a reload, and the
+    // toggle is something Back can undo.
+    $('#found-held-toggle').addEventListener('click', () =>
+      go(addr('/queue', { held: state.showHeld ? '' : '1' })));
     $('#folders-refresh').addEventListener('click', loadFolders);
     $('#upload-dry-run').addEventListener('change', (e) =>
       setUploadFlag('upload.dry_run', e.target, 'Dry run'));
@@ -4753,6 +6512,17 @@ They will not be listed again, even if a later scan finds them.`)) {
       setUploadFlag('upload.yes_all', e.target, 'Auto-answer prompts'));
     refreshStatus();
     setInterval(refreshStatus, 15000);
+
+    // Back and Forward move through the app rather than out of it. The
+    // address is already the browser's by the time this fires, so it is only
+    // ever drawn, never pushed.
+    window.addEventListener('popstate', () => renderRoute(here()));
+
+    // Open on whatever the address says. Reloading anywhere used to land on
+    // Search, because nothing had ever read the address. The first entry is
+    // replaced rather than pushed, so Back from the page you opened on leaves
+    // the app instead of stepping through a duplicate of it.
+    go(location.pathname === '/' ? addr('/search') : here(), { replace: true });
   }
 
   document.addEventListener('DOMContentLoaded', init);

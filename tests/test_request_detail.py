@@ -120,9 +120,13 @@ class FakeGateway:
     def __init__(self, raw):
         self.raw = raw
         self.asked = None
+        self.interactive = None
 
-    async def get_request(self, code, request_id):
+    async def get_request(self, code, request_id, *, interactive=False):
+        # Recorded, because opening one request must not queue behind a running
+        # batch: someone clicked a row and is watching a spinner.
         self.asked = (code, request_id)
+        self.interactive = interactive
         return self.raw
 
     def api(self, _code):
@@ -202,6 +206,12 @@ async def main() -> int:
     d = await request_detail(gateway, "RED", 41688)
 
     check("the tracker was asked for that request", gateway.asked == ("RED", 41688), str(gateway.asked))
+    # The pacing lock is held across the sleep and the HTTP call, and asyncio
+    # hands it out in order, so a detail click during a hundred-request check
+    # waited for the hundred -- two or three seconds each -- and the panel just
+    # sat there. This one call goes ahead of that queue; the budget and the
+    # breaker still apply.
+    check("and asked as a call someone is waiting on", gateway.interactive is True, str(gateway.interactive))
     check("the title is unescaped", d["title"] == "Divadlo Archa ´97", d["title"])
     check("the artist is pulled from musicInfo", d["artist"] == "Some Artist", d["artist"])
     check("the year is kept", d["year"] == "1997", d["year"])

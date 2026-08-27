@@ -37,6 +37,12 @@ jobs:
         # the wrong one answers a different question and says nothing about it.
         run: node tests/test_request_paste.js
 
+      - name: Every screen, tab and page has an address
+        # Runs the real router out of the shipped app.js against a stand-in for
+        # location and history. A string match can say a route exists; only
+        # this says where it goes, and that Back walks the way it came.
+        run: node tests/test_routing.js
+
       - name: Check for builtins shadowed in annotations
         # Ruff and compileall both miss this: a method named `list` makes a
         # later `-> list[X]` annotation resolve to the method, which only fails
@@ -86,6 +92,82 @@ jobs:
       - name: Request collection and filters
         run: uv run python tests/test_requests.py
 
+      - name: Deezer must be able to supply a release before it counts as one
+        # The streamable half of the availability check read a key the gw-light
+        # song records do not have, so the default won on every track of every
+        # album and a pre-release with four of eleven tracks playable was
+        # reported as "11/11 FLAC, all streamable" and queued.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5021"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+        run: |
+          mkdir -p /tmp/lox/downloads
+          uv run python tests/test_availability.py
+
+      - name: The queue lists releases, not the scanner's notes to itself
+        # Two thirds of one real queue was scan bookkeeping: albums Deezer
+        # refused, listed as nameless rows under a heading blaming the queue
+        # rules, which had nothing to do with any of them.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5020"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+          LOX_STATE_DIR: /tmp/lox/held-state
+          LOX_SETTINGS_DIR: /tmp/lox/held-config
+        run: |
+          mkdir -p /tmp/lox/downloads /tmp/lox/held-state /tmp/lox/held-config
+          uv run python tests/test_held_rows.py
+
+      - name: A request already answered is not paid for twice
+        # check_many asked should_skip, which compares against the album
+        # scanner's final statuses. A request's status is never one of those,
+        # so nothing was ever skipped and every run started from nothing.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5019"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+          LOX_STATE_DIR: /tmp/lox/recheck-state
+          LOX_SETTINGS_DIR: /tmp/lox/recheck-config
+        run: |
+          mkdir -p /tmp/lox/downloads /tmp/lox/recheck-state /tmp/lox/recheck-config
+          uv run python tests/test_recheck.py
+
+      - name: Nothing reaches the queue that Deezer cannot supply
+        # A release that is not all FLAC is not an upload unless a request
+        # says lossy will do. Only the request path ever checked, so albums
+        # checked from Search or Browse joined the queue unproven.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5018"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+        run: |
+          mkdir -p /tmp/lox/downloads
+          uv run python tests/test_flac_gate.py
+
+      - name: HTTPS roots, and a tracker failure that says what went wrong
+        # aiohttp builds its default SSL context at import, so lox has to add
+        # certifi's roots before that happens or a machine with a stale
+        # certificate store cannot reach a tracker at all -- and used to say so
+        # with an empty error message.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5016"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+        run: |
+          mkdir -p /tmp/lox/downloads
+          uv run python tests/test_network_trust.py
+
       - name: Upload prompts, folder rename and integrity
         # The upload's questions have to reach the browser rather than answer
         # themselves. Includes a source scan, so a call site no test reaches is
@@ -118,6 +200,11 @@ jobs:
 
       - name: Dry run shows everything and writes nothing
         run: uv run python tests/test_dry_run.py
+
+      - name: A request search matches the tracker's own form
+        # Compared against URLs captured off the live RED and OPS search forms.
+        # The two sites number the same seven categories differently.
+        run: uv run python tests/test_request_parity.py
 
       - name: What reaches the queue
         # The rules are applied when the queue is read, so narrowing hides rows

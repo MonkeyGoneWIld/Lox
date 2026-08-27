@@ -329,6 +329,43 @@ async def main() -> int:
                 check("authenticated / serves the app shell",
                       r.status == 200 and 'id="sidebar"' in body)
 
+            # Every screen has an address, so reloading on one keeps you on
+            # it. The app never changed the address bar, so a reload always
+            # landed on Search and the browser's own buttons did nothing.
+            from lox.web import APP_PATHS
+
+            for path in APP_PATHS:
+                async with s.get(f"{BASE}{path}", headers=h) as r:
+                    body = await r.text()
+                    check(f"{path} serves the app shell",
+                          r.status == 200 and 'id="sidebar"' in body, f"got {r.status}")
+
+            # The four that name something rather than somewhere: a release, an
+            # artist, a Deezer channel and one request on one tracker.
+            for path in (
+                "/album/1000982941",
+                "/artist/12345",
+                "/browse/channel/rap-fr",
+                "/requests/red/80755",
+            ):
+                async with s.get(f"{BASE}{path}", headers=h) as r:
+                    check(f"{path} serves the app shell", r.status == 200, f"got {r.status}")
+
+            # A place on the settings page is a place you can be sent to. The
+            # names come from the schema, so a section added there gets an
+            # address without anybody remembering to add one.
+            for path in ("/settings/accounts", "/settings/torrent", "/settings/users"):
+                check(f"{path} is an address", path in APP_PATHS, "not in APP_PATHS")
+
+            # Listed rather than a catch-all: a typo is still a typo, and an
+            # /api path that does not exist must not come back as HTML.
+            for path in ("/nonsense", "/settings/nonsense", "/browse/nonsense"):
+                async with s.get(f"{BASE}{path}", headers=h) as r:
+                    check(f"{path} is still a 404", r.status == 404, f"got {r.status}")
+            async with s.get(f"{BASE}/api/nonsense", headers=h) as r:
+                check("and an unknown API path does not serve a page",
+                      r.status == 404, f"got {r.status}")
+
             async with s.get(f"{BASE}/static/scripts/app.js") as r:
                 check("static assets served", r.status == 200)
     finally:

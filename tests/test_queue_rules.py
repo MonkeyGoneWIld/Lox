@@ -51,8 +51,20 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"{'PASS' if ok else 'FAIL'}  {name}{'  ' + detail if detail else ''}")
 
 
-def row(missing=(), found=(), sources=("scan",)):
-    return {"missing_from": list(missing), "found_on": list(found), "sources": list(sources)}
+def row(missing=(), found=(), sources=("scan",), all_flac=True):
+    """A queue row.
+
+    ``all_flac`` defaults to True because these checks are about the admission
+    rules, not about what Deezer can supply -- the lossless gate is its own
+    test. A row without it is held before any rule is reached, which is the
+    point of the gate and would make every case here look the same.
+    """
+    return {
+        "missing_from": list(missing),
+        "found_on": list(found),
+        "sources": list(sources),
+        "all_flac": all_flac,
+    }
 
 
 def main_predicate() -> None:
@@ -145,12 +157,15 @@ async def main_endpoint() -> None:
     runner = await create_app_async()
     store = runner.app["store"]
     # The same release, found by a scan AND matched to a request: one row.
-    store.put("albums", "1", {"title": "Twice", "artist": "A", "missing_from": ["OPS"], "found_on": ["RED"]})
+    store.put("albums", "1", {"title": "Twice", "artist": "A", "missing_from": ["OPS"], "found_on": ["RED"],
+                              "all_flac": True})
     store.put("requests", "r1", {"deezer_id": "1", "album": "Twice", "artist": "A", "tracker": "OPS",
                                  "missing_from": ["OPS"], "found_on": ["RED"],
                                  "request_url": "https://example.invalid/r1"})
-    store.put("albums", "2", {"title": "Alone", "artist": "B", "missing_from": ["RED", "OPS"], "found_on": []})
-    store.put("albums", "3", {"title": "Everywhere", "artist": "C", "missing_from": [], "found_on": ["RED", "OPS"]})
+    store.put("albums", "2", {"title": "Alone", "artist": "B", "missing_from": ["RED", "OPS"], "found_on": [],
+                              "all_flac": True})
+    store.put("albums", "3", {"title": "Everywhere", "artist": "C", "missing_from": [], "found_on": ["RED", "OPS"],
+                              "all_flac": True})
     store.flush()
 
     session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
@@ -184,7 +199,14 @@ async def main_endpoint() -> None:
             payload = await r.json()
         titles = sorted(f["title"] for f in payload["found"])
         check("a narrowed rule narrows the queue", titles == ["Alone"], str(titles))
-        check("the rest are held, not dropped", payload["held_count"] == 2, str(payload["held_count"]))
+        # "Twice" is already on RED, which nothing will change, so it leaves
+        # the page rather than sitting in a list nobody can act on. "Everywhere"
+        # is on both, likewise. Only rows a rule or a re-check can still move
+        # stay listed; the rest are counted as dropped.
+        listed = payload["held_count"] + payload["settled_count"]
+        check("the rest are accounted for, listed or dropped", listed == 2, str(listed))
+        check("and the ones nothing can change are the dropped ones",
+              payload["settled_count"] >= 1, str(payload["settled_count"]))
         check("each held row says why", all(h.get("held_reason") for h in payload["held"]), "")
         check("and the page can name the rule in words",
               "missing from every tracker" in payload["rule"].lower(), str(payload.get("rule")))

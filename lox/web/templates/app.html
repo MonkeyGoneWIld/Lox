@@ -128,6 +128,14 @@
       </section>
 
       <section class="view" id="view-missing">
+        <!-- Two halves, as on Requests: setting a scan up, and looking back at
+             what has already been checked. -->
+        <div class="segmented reqtabs" id="scan-tabs">
+          <button type="button" class="active" data-scantab="run">Scan</button>
+          <button type="button" data-scantab="history">Lookup History</button>
+        </div>
+
+        <div id="scan-tab-run">
         <div class="panel">
           <h2>Saved searches</h2>
           <p class="hint">Re-runnable Deezer queries. Running one is free &mdash; it feeds albums into the collect step below.</p>
@@ -154,12 +162,23 @@
           <textarea id="missing-sources" rows="4" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-..."></textarea>
           <div class="row">
             <div class="segmented" id="missing-trackers"></div>
-            <label class="check"><input type="checkbox" id="missing-skip-known" checked> Skip albums already resolved</label>
+            <label class="check"><input type="checkbox" id="missing-skip-known" checked> Skip albums already looked up</label>
             <button class="primary" id="missing-scan">Scan</button>
           </div>
           <p class="hint" id="missing-cost"></p>
           <div class="joblog" id="missing-collect-log" hidden></div>
           <div class="joblog" id="missing-check-log" hidden></div>
+        </div>
+
+        <!-- These narrow what a scan looks at, before any tracker is
+             contacted. They apply to scanning and to nothing else, so they
+             live here rather than on the settings page, where they read as
+             rules the whole app obeys. -->
+        <div class="panel">
+          <h2>Scan filters</h2>
+          <p class="hint">Applied while a scan expands its sources, before any tracker is contacted.
+            They do not affect requests, searches or anything you check by hand.</p>
+          <div class="reqform" id="scan-filters"></div>
         </div>
 
         <div class="panel" id="missing-candidates-panel" hidden>
@@ -169,9 +188,36 @@
           </div>
           <table class="table" id="missing-table"></table>
         </div>
+        </div>
+
+        <div id="scan-tab-history" hidden>
+          <div class="panel">
+            <h2>Lookup History</h2>
+            <p class="hint">Every album a scan has looked up. A scan skips what is listed here, so the same
+              tracker calls are not paid for twice &mdash; select rows and re-check to look again.</p>
+            <div class="row">
+              <button class="primary" id="scanhistory-rerun" disabled>Check again</button>
+              <button id="scanhistory-clear-filters">Clear filters</button>
+              <button id="scanhistory-forget">Forget</button>
+              <span class="hint" id="scanhistory-count"></span>
+            </div>
+          </div>
+          <div id="scanhistory-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-requests">
+        <!-- Two halves of the same job: finding requests to fill, and looking
+             back at the ones already looked up. The second used to have no
+             page at all -- the answers were stored, because they are what stops
+             a second run paying for the same lookups, but there was nowhere to
+             read them. -->
+        <div class="segmented reqtabs" id="requests-tabs">
+          <button type="button" class="active" data-reqtab="find">Find requests</button>
+          <button type="button" data-reqtab="history">Lookup History</button>
+        </div>
+
+        <div id="requests-tab-find">
         <div class="panel">
           <h2>Find requests</h2>
           <div class="row">
@@ -183,37 +229,64 @@
                IDs behind the ones they share, so this cannot be a fixed list. -->
           <div class="filters" id="requests-filters"></div>
 
-          <div class="row">
-            <button id="requests-fetch">Fetch open requests</button>
+          <!-- The default fetches and looks up; the other stops at the list. -->
+          <div class="row" id="requests-actions-row">
+            <button class="primary" id="requests-fetch-check">Fetch and Deezer Lookup</button>
+            <button id="requests-fetch">Fetch Requests</button>
+            <!-- When the lookups happen, not whether. A list-only fetch
+                 looks nothing up regardless of this box. -->
+            <label class="check">
+              <input type="checkbox" id="requests-pipeline" checked>
+              Look up on Deezer as requests arrive
+            </label>
+            <button class="danger" id="requests-cancel" hidden>Cancel</button>
             <span class="hint" id="requests-cost"></span>
           </div>
-          <p class="hint">Checking each request costs one more call on top of the fetch.</p>
 
-          <!-- Checking is an action on a list, so it lives with the list rather
-               than above an empty box. The button that starts it sits under the
-               results; this half is only about getting requests into the list in
-               the first place. -->
+          <!-- Shown only while a search or a check is running. -->
+          <div class="reqprogress" id="requests-progress" hidden>
+            <div class="bar"><div class="bar-fill" id="requests-progress-bar" style="width:0%"></div></div>
+            <span class="hint" id="requests-progress-label"></span>
+          </div>
+
           <details class="paste-ids">
-            <summary>Check specific requests instead</summary>
+            <summary>Or paste specific requests</summary>
             <textarea id="requests-ids" rows="3" placeholder="Request IDs or URLs, one per line"></textarea>
             <div class="row">
-              <button class="primary" id="requests-check-pasted">Check these</button>
+              <button class="primary" id="requests-check-pasted">Deezer Lookup</button>
               <label class="check filebtn">
                 <input type="file" id="requests-file" accept=".txt,.csv,.log,text/plain" hidden>
-                Check a list from a file&hellip;
+                Import from File
               </label>
-              <span class="hint">A file starts checking as soon as you pick it.</span>
             </div>
           </details>
           <div class="joblog" id="requests-log" hidden></div>
         </div>
+
+        <!-- How much of the search is on screen and how much there was. This
+             was a toast, which vanished -- for the one number that decides
+             whether to read more pages, the wrong place to put it. -->
+        <div class="requests-summary" id="requests-summary" hidden></div>
         <div id="requests-results"></div>
+        </div>
+
+        <div id="requests-tab-history" hidden>
+          <div class="panel">
+            <h2>Lookup History</h2>
+            <div class="row">
+              <button class="primary" id="history-rerun" disabled>Check again</button>
+              <button id="history-clear-filters">Clear filters</button>
+              <span class="hint" id="history-count"></span>
+            </div>
+          </div>
+          <div id="history-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-found">
         <div class="panel">
-          <h2>Releases worth uploading</h2>
-          <p class="hint">Everything a scan or a request check matched to a Deezer release and did not find on a
+          <h2>Upload Queue</h2>
+          <p class="hint">Releases matched to a Deezer source and not found on a
             tracker. Kept so the budget you already spent is not spent again.</p>
           <div class="row">
             <button class="primary" id="found-download">Download selected</button>
@@ -227,28 +300,11 @@
             <button id="found-restore" hidden>Clear blacklist</button>
             <span class="hint" id="found-count"></span>
           </div>
-          <!-- Filtering the list you already have, which is a different
-               question from what the settings decide reaches it at all. This
-               one is throwaway: it narrows what is on screen and forgets it
-               when you leave. -->
-          <div class="row queue-filter">
-            <input type="search" id="found-search" placeholder="Artist or title">
-            <select id="found-tracker">
-              <option value="">Any tracker</option>
-            </select>
-            <select id="found-source">
-              <option value="">Scans and requests</option>
-              <option value="scan">Scans only</option>
-              <option value="request">Request fills only</option>
-            </select>
-            <button id="found-filter-clear" hidden>Clear filter</button>
-            <span class="hint" id="found-filtered"></span>
-          </div>
           <!-- What the queue rules in Settings kept out. Shown as a count with
                a way to look, never as a silently shorter list. -->
           <div class="row held-note" id="found-held-row" hidden>
             <span class="hint" id="found-held"></span>
-            <button class="linkbtn" id="found-held-toggle">Show them</button>
+            <button class="linkbtn" id="found-held-toggle">Show excluded</button>
           </div>
           <!-- A re-check spends a tracker call per release and used to show
                nothing but a Stop button while it did. -->

@@ -906,6 +906,39 @@ select {
   scroll-margin-top: 104px;
 }
 
+/* Every heading on this page is its own address, so every one of them is a
+   link -- but it is a heading first, and a page of blue underlined section
+   titles reads as a menu of things to press rather than as a page. It looks
+   like the heading it is until the pointer is on it. */
+.settings-category .anchor,
+.settings-section h3 .anchor,
+#settings-body h2 .anchor {
+  color: inherit;
+  text-decoration: none;
+}
+.settings-category .anchor:hover,
+.settings-section h3 .anchor:hover,
+#settings-body h2 .anchor:hover { text-decoration: underline; }
+
+/* The sticky save bar sits over the top of the page, so a heading scrolled to
+   the very top lands underneath it. */
+.settings-section h3,
+#settings-body h2 { scroll-margin-top: 104px; }
+
+/* Where the address just took you, for as long as it takes to see it. Landing
+   halfway down a long page with nothing marked leaves you hunting for the
+   section you asked for. */
+.addressed { animation: addressed 1.8s ease-out; border-radius: var(--radius); }
+@keyframes addressed {
+  0%, 30% { background: var(--accent-edge); box-shadow: 0 0 0 6px var(--accent-edge); }
+  100% { background: transparent; box-shadow: 0 0 0 6px transparent; }
+}
+
+/* Somebody who asked not to be moved about is not moved about. */
+@media (prefers-reduced-motion: reduce) {
+  .addressed { animation-duration: 0.01ms; }
+}
+
 /* A credential that stands on its own gets its own test beside its label. */
 .setting-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .setting-head > label { flex: 1; min-width: 0; }
@@ -940,12 +973,7 @@ select {
 
 /* Same field layout as the settings page, reused wherever a form needs to say
    what it accepts rather than expecting you to remember. */
-.filters {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
-  margin: 12px 0 14px;
-}
+.filters { margin: 12px 0 14px; }
 
 /* The card fills its panel, and everything in it fills the card.
    It used to be capped at 1100px and then each thing inside it capped again --
@@ -1002,26 +1030,206 @@ select {
 
 /* Tick lists inside a filter field: scrollable so a 16-entry encoding list does
    not push everything else off the panel. */
-.checkgroup {
+/* The request search, laid out the way the trackers lay theirs out: a label
+   on the left, its controls flowing across the rest of the row.
+
+   Two things this gets wrong if left alone. The form does not want the whole
+   width of a wide screen -- a search box stretched to 1700px looks like a
+   mistake, and the sites cap theirs -- so it is held to a readable measure.
+   And the groups need air between them: run "Release types" straight into
+   "Formats" with a single gap and fifty checkboxes read as one field. */
+.reqform {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  max-height: 132px;
-  overflow-y: auto;
-  padding: 7px 9px;
-  background: var(--bg-input);
+  margin: 14px 0 18px;
+  max-width: 1120px;
+}
+
+/* Each row is a band with a rule under it, rather than rows floating in one
+   field of whitespace. Eighteen pixels of gap was not enough to tell where
+   "Release types" ended and "Formats" began -- fifty checkboxes in a column of
+   air read as one list, and the labels down the left were the only thing
+   suggesting otherwise. A line does that job at a glance and costs no height.
+
+   The last row has no rule, because a rule under the final row is a border
+   around nothing. */
+.reqrow {
+  display: grid;
+  grid-template-columns: 136px 1fr;
+  gap: 16px;
+  align-items: start;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.reqrow:first-child { padding-top: 4px; }
+.reqrow:last-child { border-bottom: 0; }
+
+/* A group of ticks is taller than a text box, so it gets more room around it
+   than a one-line row needs. */
+.reqrow:has(.reqgroup) { padding: 16px 0; }
+
+.reqlabel { font-size: 13px; font-weight: 600; padding-top: 4px; color: var(--text-dim); }
+.reqfield { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
+
+/* Text boxes are as wide as the thing you type in them, not as wide as the
+   window.
+
+   The selector carries the same :not() chain as the global "inputs fill their
+   field" rule further up, because that rule scores four attribute selectors
+   and a plain `.reqfield input[type=search]` loses to it -- which is why the
+   search box was still stretching to 800px with a 420px rule sitting right
+   here. Specificity, not cascade order. */
+.reqfield input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
+  width: 420px;
+  max-width: 100%;
+}
+
+.reqfield input.reqsmall:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
+  width: 110px;
+}
+.reqhint { margin: 0; font-size: 11.5px; }
+
+/* The search's own bar, under the buttons that start it. Its .bar comes from
+   the download list, so a page of requests being read looks like anything else
+   in the app that takes a while. */
+.reqprogress {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 10px 0 4px;
+  max-width: 1120px;
+}
+
+.reqprogress .bar { flex: 1; margin-top: 0; }
+
+/* The two halves of Requests: finding them, and looking back at the ones
+   already looked up. */
+.reqtabs { margin-bottom: 14px; }
+
+/* What the search actually covered. Stays on screen: it was a toast, and the
+   number that decides whether to read more pages is not a thing to show for
+   four seconds and take away. */
+.requests-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 
-.checkgroup .check { font-size: 12.5px; }
+/* A partial read is worth noticing, because more of it is one click away. */
+.requests-summary.partial { border-left: 3px solid var(--accent); color: var(--text); }
 
-/* Each group's own "Only specified", sitting under the list it applies to
-   rather than as one switch for all three -- which is what the tracker does,
-   and what stops it silently hiding every request that left the choice open. */
-.strict-check { font-size: 11.5px; color: var(--text-dim); margin-top: 5px; }
-.filter-toggles { grid-column: 1 / -1; }
-.filter-note { grid-column: 1 / -1; color: var(--warn); }
+/* What is keeping each group out, said once at the top instead of repeated
+   down the "why" column, and only where something can be done about it. */
+.held-why {
+  margin: 8px 0 14px;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.held-why li { margin-bottom: 4px; }
+.held-actions { margin-bottom: 10px; }
+
+/* Dates do not read well broken over two lines. */
+.table td.nowrap { white-space: nowrap; }
+
+/* ---------- sortable, filterable tables ---------- */
+/* The filter belongs in the column it filters. In a bar above the table,
+   nothing said which control narrowed which column. */
+.datatable { width: 100%; }
+.datatable .col-pick { width: 34px; vertical-align: middle; }
+
+/* Two rows in every header cell, whether or not the column has a filter.
+   Sized cells and unsized ones together made the labels sit at different
+   heights across the row. */
+.datatable thead th {
+  vertical-align: top;
+  padding-bottom: 10px;
+}
+
+.datatable thead th > .th-label {
+  display: flex;
+  align-items: flex-end;
+  min-height: 20px;
+}
+
+.datatable thead th > .th-filter-slot {
+  display: block;
+  min-height: 30px;
+  padding-top: 6px;
+}
+
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  padding: 0 0 6px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.th-sort:hover { color: var(--text); }
+.th-sort.active { color: var(--accent); }
+.th-arrow { font-size: 9px; }
+
+/* A track Deezer will not hand over. The row stays legible -- it is still
+   part of the release -- but it should not read as available. */
+.track-missing { opacity: 0.55; }
+.track-missing .track-title { text-decoration: line-through; }
+
+.th-filter {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  min-width: 0;
+  font-size: 12px;
+  padding: 4px 7px;
+}
+
+/* A lower and an upper limit, side by side and equally wide. */
+.th-range-pair { display: flex; gap: 5px; max-width: 220px; }
+.th-range-pair .th-range { flex: 1 1 0; min-width: 0; }
+
+/* What a run passed over. Sits under the log it belongs to, and goes when it
+   is acted on. */
+.skipped-note { margin-top: 12px; border-left: 3px solid var(--accent); }
+.skipped-list { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--text-dim); }
+.skipped-list li { margin-bottom: 3px; }
+.reqprogress .hint { white-space: nowrap; }
+
+.reqgroup { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+/* All and "Only specified" sit above the ticks they govern, as on the site,
+   and are separated from them so the group reads as a heading and a list
+   rather than one run of boxes where the first two mean something different. */
+.reqgroup-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.reqgroup-head .check { font-weight: 600; }
+.reqchecks { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.reqchecks .check { font-size: 12.5px; }
+
+.filter-note { color: var(--warn); }
 
 .setting { display: flex; flex-direction: column; gap: 5px; }
 .setting > label { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
