@@ -319,6 +319,23 @@ def main() -> int:
     # that one behind.
     check("counts come from the rows, never the checkboxes",
           "function countSelected" in js, "")
+
+    # Every header cell has the same two rows whether or not the column has a
+    # filter, and the column's class dresses the data cell only -- applied to
+    # the header too it put `display: flex` on the trackers column, which laid
+    # its label and filter side by side while the rest stacked them, and the
+    # header row stepped up and down across the table.
+    check("every header cell has a label row and a filter row",
+          "th-label" in js and "th-filter-slot" in js, "")
+    check("the filter slot is there even with no filter in it",
+          "min-height" in rule(css, ".datatable thead th > .th-filter-slot"), "")
+    check("and the column's class does not reach the header",
+          "class dresses the DATA cell" in js, "")
+
+    # A release found in June and re-checked this morning read as found this
+    # morning: only checked_at was stamped, and every write overwrote it.
+    check("the queue says when a release was added, not only when last checked",
+          "label: 'Added'" in js and "f.added_at" in js, "")
     check("the selection follows what the table is showing, filters included",
           "tableView('queue').shown" in js, "")
     check("and the buttons act on that same list",

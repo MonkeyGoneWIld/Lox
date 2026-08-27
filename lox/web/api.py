@@ -856,9 +856,16 @@ async def api_found(request: web.Request) -> web.Response:
                 existing[key] = row[key]
         existing["title"] = existing.get("title") or row.get("title") or ""
         existing["artist"] = existing.get("artist") or row.get("artist") or ""
-        # The newest check is the one the "last checked" column should quote.
+        # The newest check is the one the "last checked" column should quote,
+        # and the oldest sighting is the one "added" should: a release a scan
+        # found in June and a request check matched today has been waiting
+        # since June.
         if (row.get("checked_at") or 0) > (existing.get("checked_at") or 0):
             existing["checked_at"] = row.get("checked_at")
+        if row.get("added_at") and (
+            not existing.get("added_at") or row["added_at"] < existing["added_at"]
+        ):
+            existing["added_at"] = row["added_at"]
 
     for album_id, entry in (store.load("albums") or {}).items():
         # Whether "missing from nothing" is worth showing is a queue rule now,
@@ -891,6 +898,7 @@ async def api_found(request: web.Request) -> web.Response:
                 "missing_from": entry.get("missing_from") or [],
                 "found_on": entry.get("found_on") or [],
                 "checked_at": entry.get("checked_at"),
+                "added_at": entry.get("first_seen") or entry.get("checked_at"),
                 "url": f"https://www.deezer.com/album/{album_id}",
                 # What Deezer can actually supply. None means nobody looked,
                 # which the queue treats as unproven rather than as fine.
@@ -937,6 +945,7 @@ async def api_found(request: web.Request) -> web.Response:
                 "confidence": entry.get("confidence"),
                 "request_url": entry.get("request_url") or "",
                 "checked_at": entry.get("checked_at"),
+                "added_at": entry.get("first_seen") or entry.get("checked_at"),
                 "url": entry.get("deezer_url") or "",
                 "all_flac": entry.get("all_flac"),
                 "deezer_tracks": entry.get("deezer_tracks"),

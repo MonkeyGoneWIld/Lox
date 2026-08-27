@@ -1114,8 +1114,27 @@ select {
 /* The filter belongs in the column it filters. In a bar above the table,
    nothing said which control narrowed which column. */
 .datatable { width: 100%; }
-.datatable thead th { vertical-align: top; padding-bottom: 8px; }
-.datatable .col-pick { width: 34px; }
+.datatable .col-pick { width: 34px; vertical-align: middle; }
+
+/* Two rows in every header cell, whether or not the column has a filter.
+   Sized cells and unsized ones together made the labels sit at different
+   heights across the row. */
+.datatable thead th {
+  vertical-align: top;
+  padding-bottom: 10px;
+}
+
+.datatable thead th > .th-label {
+  display: flex;
+  align-items: flex-end;
+  min-height: 20px;
+}
+
+.datatable thead th > .th-filter-slot {
+  display: block;
+  min-height: 30px;
+  padding-top: 6px;
+}
 
 .th-sort {
   display: inline-flex;
@@ -1145,6 +1164,7 @@ select {
   display: block;
   width: 100%;
   max-width: 220px;
+  min-width: 0;
   font-size: 12px;
   padding: 4px 7px;
 }

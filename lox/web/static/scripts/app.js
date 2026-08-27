@@ -207,31 +207,33 @@
         : null,
       ...columns.map((column) => {
         const active = view.sort === column.label;
-        const head = [
-          el('button', {
-            class: `th-sort${active ? ' active' : ''}`,
-            title: `Sort by ${column.label.toLowerCase()}`,
-            onclick: () => {
-              if (view.sort === column.label) view.dir = -view.dir;
-              else { view.sort = column.label; view.dir = 1; }
-              rerender();
-            },
-          }, column.label, active ? el('span', { class: 'th-arrow' }, view.dir > 0 ? '▲' : '▼') : null),
-        ];
+        const sortButton = el('button', {
+          class: `th-sort${active ? ' active' : ''}`,
+          title: `Sort by ${column.label.toLowerCase()}`,
+          onclick: () => {
+            if (view.sort === column.label) view.dir = -view.dir;
+            else { view.sort = column.label; view.dir = 1; }
+            rerender();
+          },
+        }, column.label, active ? el('span', { class: 'th-arrow' }, view.dir > 0 ? '▲' : '▼') : null);
 
-        // The filter lives in the column it filters. It used to sit in a bar
-        // above the table, where nothing said which column it applied to.
+        // The filter lives in the column it filters -- it used to sit in a bar
+        // above the table, where nothing said which column it applied to --
+        // and every cell gets the same two rows whether or not it has one.
+        // Without the empty slot, columns with no filter were a row shorter
+        // and the header stepped up and down across the table.
+        let control = null;
         if (column.filter === 'choice') {
           const options = [...new Set(rows.map((r) => String(valueOf(column, r) ?? '')).filter(Boolean))].sort();
-          head.push(el('select', {
+          control = el('select', {
             class: 'th-filter',
             onchange: (e) => { view.filters[column.label] = e.target.value; rerender(); },
           },
           el('option', { value: '', selected: !view.filters[column.label] }, 'all'),
           ...options.map((option) =>
-            el('option', { value: option, selected: view.filters[column.label] === option }, option))));
+            el('option', { value: option, selected: view.filters[column.label] === option }, option)));
         } else if (column.filter) {
-          head.push(el('input', {
+          control = el('input', {
             class: 'th-filter',
             type: 'search',
             placeholder: 'filter',
@@ -242,9 +244,16 @@
               // Typing should not rebuild the table on every keystroke.
               view.timer = setTimeout(rerender, 220);
             },
-          }));
+          });
         }
-        return el('th', { class: column.class || '' }, ...head);
+
+        // The column's class dresses the DATA cell, not the header. Applying
+        // it to both put `display: flex` on the trackers header, which laid
+        // the label and its filter out side by side while every other header
+        // stacked them -- the row stepped up and down across the table.
+        return el('th', {},
+          el('div', { class: 'th-label' }, sortButton),
+          el('div', { class: 'th-filter-slot' }, control));
       }));
 
     if (!sorted.length) {
@@ -3606,6 +3615,13 @@
           value: (f) => (f.sources || [f.kind]).join(', '),
           filter: 'choice',
           cell: (f) => el('span', {}, ...sourceTags(f)),
+        },
+        {
+          label: 'Added',
+          value: (f) => f.added_at || 0,
+          filter: false,
+          class: 'nowrap',
+          cell: (f) => el('span', {}, f.added_at ? ago(f.added_at) : '—'),
         },
         {
           label: 'Last checked',

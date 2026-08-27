@@ -209,6 +209,24 @@ async def run() -> None:
     await client.close()
 
 
+def store_checks() -> None:
+    """When a release was first seen survives every later write."""
+    import time
+
+    from lox.checker.store import CheckerStore
+
+    store = CheckerStore(os.path.join(BASE, "state-firstseen"))
+    store.put("albums", "a", {"title": "First"}, flush=True)
+    first = store.get("albums", "a")["first_seen"]
+    check("a new entry records when it was first seen", first > 0, str(first))
+
+    time.sleep(0.01)
+    store.put("albums", "a", {"title": "First", "status": "missing_red"}, flush=True)
+    again = store.get("albums", "a")
+    check("a later write keeps it", again["first_seen"] == first, str(again["first_seen"]))
+    check("while the checked time moves on", again["checked_at"] > first, "")
+
+
 def page_checks() -> None:
     """The page has to offer something to do with what it shows."""
     with open(os.path.join(os.path.dirname(ROOT), "lox", "web", "static", "scripts", "app.js"),
@@ -233,6 +251,7 @@ def page_checks() -> None:
 
 def main() -> int:
     asyncio.run(run())
+    store_checks()
     page_checks()
 
     failed = [n for n, ok, _ in results if not ok]
