@@ -490,7 +490,7 @@ def main() -> int:
           "document.querySelectorAll(`.card[data-album=" in js, "")
 
     # --- leaving the list drops the batch -----------------------------
-    view = js[js.index("function setView(view)"):]
+    view = js[js.index("function setView(view, {"):]
     view = view[: view.index(chr(10) + "  }" + chr(10))]
     check("changing view drops the batch", "clearPicks();" in view, "")
     check("only when the view actually changes", "state.view !== view" in view, "")
@@ -673,6 +673,27 @@ def main() -> int:
           "function checkedOn" in js, "")
     check("and the date is not dropped when a row is due again",
           "stale ? 'due a re-check' : ''" in js, "")
+
+    # --- every screen has an address --------------------------------------
+    # The app never touched the address bar. Every screen was the same URL, so
+    # Back and Forward did nothing, a reload always landed on Search, and no
+    # page could be linked to.
+    check("views map to paths", "const VIEW_PATHS" in js, "")
+    check("named for the screen, not the internal view",
+          "found: '/queue'" in js and "missing: '/scan'" in js, "")
+    check("a second tab is part of the address too",
+          "'/requests/history'" in js and "'/scan/history'" in js, "")
+    check("and so is an album or an artist",
+          "`/album/${albumId}`" in js and "`/artist/${artistId}`" in js, "")
+    check("the address is read on the way in", "routeTo(landing)" in js, "")
+    check("Back and Forward move through the app",
+          "addEventListener('popstate'" in js, "")
+    check("the first entry is replaced, so Back leaves rather than repeating",
+          "setPath(landing, true)" in js, "")
+    check("the query string survives a navigation, or a ?token= link signs out",
+          "path + location.search" in js, "")
+    check("and the tab is named after what is on screen",
+          "function setTitle" in js, "")
 
     # --- what the second tab is called ------------------------------------
     check("the lookup history has a name that says what it is",

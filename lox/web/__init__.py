@@ -97,6 +97,24 @@ async def create_app_async() -> web.AppRunner:
     return runner
 
 
+#: Every address the single-page UI can show, so the server answers each of
+#: them with the shell and the script picks the view back up from the path.
+#: The sub-tab paths are here too -- Requests and Scan each have a second tab,
+#: and returning to the first one on reload is the same bug in miniature.
+APP_PATHS: tuple[str, ...] = (
+    "/search",
+    "/browse",
+    "/scan",
+    "/scan/history",
+    "/requests",
+    "/requests/history",
+    "/queue",
+    "/downloading",
+    "/uploading",
+    "/settings",
+)
+
+
 def add_routes(app: web.Application) -> None:
     """Add routes to the web application.
 
@@ -112,6 +130,17 @@ def add_routes(app: web.Application) -> None:
     # an upgrade looked like the feature had been removed.
     app["asset_version"] = _asset_version()
     app.router.add_route("GET", "/", handle_app)
+    # The same shell at every address the app navigates to, so reloading on a
+    # page keeps you on it and Back means what it means everywhere else. The
+    # app never changed the address bar at all, so a reload always landed on
+    # Search and the browser's own buttons did nothing.
+    #
+    # Listed rather than a catch-all: a typo should still be a 404, and an
+    # /api path that does not exist must not come back as a page of HTML.
+    for path in APP_PATHS:
+        app.router.add_route("GET", path, handle_app)
+    app.router.add_route("GET", "/album/{album_id}", handle_app)
+    app.router.add_route("GET", "/artist/{artist_id}", handle_app)
     app.router.add_route("GET", "/login", handle_login)
     app.router.add_route("GET", "/legacy", handle_index)
     app.router.add_route("GET", "/spectrals", spectrals.handle_spectrals)

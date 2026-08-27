@@ -54,6 +54,9 @@
     requestsAbort: null,
     requestTab: 'find',
     scanTab: 'run',
+    // Which detail page is open, so the address can say so and Back can leave.
+    openAlbumId: null,
+    openArtistId: null,
     scanHistory: [],
     scanHistorySelected: new Set(),
     scanWindow: 30,
@@ -392,7 +395,104 @@
     $(`.nav-item[data-view="uploads"]`)?.classList.toggle('needs-you', n > 0);
   }
 
-  function setView(view) {
+  // ------------------------------------------------------------------
+  // Addresses
+  // ------------------------------------------------------------------
+  // The app never touched the address bar. Every screen was the same URL, so
+  // Back and Forward did nothing, a reload always landed on Search, and a
+  // page could not be linked to or bookmarked.
+  //
+  // The view names are internal and half of them are wrong from outside --
+  // "missing" is the Scan tab, "found" is the Queue -- so the path is what the
+  // screen is called, and this maps between the two.
+
+  const VIEW_PATHS = {
+    search: '/search',
+    explore: '/browse',
+    missing: '/scan',
+    requests: '/requests',
+    found: '/queue',
+    downloads: '/downloading',
+    uploads: '/uploading',
+    settings: '/settings',
+  };
+
+  const PATH_VIEWS = Object.fromEntries(
+    Object.entries(VIEW_PATHS).map(([view, path]) => [path, view]),
+  );
+
+  // A second tab is part of where you are, so it is part of the address.
+  const TAB_PATHS = {
+    '/requests/history': { view: 'requests', tab: 'history' },
+    '/scan/history': { view: 'missing', tab: 'history' },
+  };
+
+  /** Where the app currently is, as a path. */
+  function currentPath() {
+    if (state.openAlbumId) return `/album/${state.openAlbumId}`;
+    if (state.openArtistId) return `/artist/${state.openArtistId}`;
+    if (state.view === 'requests' && state.requestTab === 'history') return '/requests/history';
+    if (state.view === 'missing' && state.scanTab === 'history') return '/scan/history';
+    return VIEW_PATHS[state.view] || '/search';
+  }
+
+  /**
+   * Put a path in the address bar without reloading.
+   *
+   * The query string is carried over: a ?token= link is how the dev harness
+   * and a bookmark both authenticate, and dropping it on the first click
+   * would sign the page out.
+   *
+   * @param {string} path - The new path.
+   * @param {boolean} [replace] - Overwrite the current entry rather than
+   *   adding one, for the first paint and for corrections.
+   */
+  function setPath(path, replace = false) {
+    const url = path + location.search;
+    if (location.pathname === path && !replace) return;
+    if (replace) history.replaceState({ path }, '', url);
+    else history.pushState({ path }, '', url);
+  }
+
+  /**
+   * Name the tab after whatever is on screen.
+   *
+   * Kept out of setPath, which runs before the view has changed on the way in
+   * -- the first paint of a deep link set the title from the view the app had
+   * not left yet, so opening /requests/history said "Search".
+   *
+   * @param {string} [name] - An override, for a detail page that knows what it
+   *   is showing.
+   */
+  function setTitle(name) {
+    document.title = name ? `lox — ${name}` : `lox — ${navLabel(state.view)}`;
+  }
+
+  /** Go wherever a path points, without touching history. */
+  async function routeTo(path) {
+    const album = path.match(/^\/album\/([^/]+)$/);
+    if (album) return openAlbum(album[1], { push: false });
+    const artist = path.match(/^\/artist\/([^/]+)$/);
+    if (artist) return openArtist(artist[1], { push: false });
+
+    const tabbed = TAB_PATHS[path];
+    if (tabbed) {
+      setView(tabbed.view, { push: false });
+      if (tabbed.view === 'requests') showRequestTab('history', { push: false });
+      else showScanTab('history', { push: false });
+      return undefined;
+    }
+
+    const view = PATH_VIEWS[path];
+    if (!view) return setView('search', { push: false });
+    setView(view, { push: false });
+    // A bare /requests or /scan means the first tab, whatever was open before.
+    if (view === 'requests') showRequestTab('find', { push: false });
+    if (view === 'missing') showScanTab('run', { push: false });
+    return undefined;
+  }
+
+  function setView(view, { push = true } = {}) {
     // A batch belongs to the list it was picked from. Leaving the list --
     // to the Queue, to Downloading, to anywhere -- leaves you holding
     // releases you can no longer see, and a count that matches nothing on
@@ -409,6 +509,11 @@
     if (view === 'downloads') pollDownloads(true);
     if (view === 'uploads') { loadFolders(); resumeFlows(); }
     if (view === 'settings') loadSettings();
+    // Leaving a detail page for a list is leaving the detail page.
+    state.openAlbumId = null;
+    state.openArtistId = null;
+    if (push) setPath(VIEW_PATHS[view] || '/search');
+    setTitle();
   }
 
   // ---------------------------------------------------------------- status
@@ -1174,11 +1279,13 @@
     }
   }
 
-  async function openArtist(artistId) {
+  async function openArtist(artistId, { push = true } = {}) {
     // Read before the switch: an artist opened from Explore or Found has to
     // come back to Explore or Found, not to the search pane it borrowed.
     const from = state.view;
-    setView('search');
+    setView('search', { push: false });
+    state.openArtistId = String(artistId);
+    if (push) setPath(`/artist/${artistId}`);
     pushPane(paneLabel(), from);
     // Its own sections, each with an inner grid, so the pane itself is a plain
     // block here.
@@ -1186,6 +1293,7 @@
     results.replaceChildren(spinner('Loading artist'));
     try {
       const artist = await api(`/api/artist/${artistId}`);
+      if (state.openArtistId === String(artistId)) setTitle(artist.name || 'Artist');
       const total = artist.groups.reduce((n, g) => n + g.albums.length, 0);
 
       results.replaceChildren(
@@ -1239,9 +1347,11 @@
   // A page, not a drawer. A release is the thing you are deciding about, and
   // deciding needs the tracklist, the credits and the tracker verdict side by
   // side rather than a 380px column you scroll through a slot at a time.
-  async function openAlbum(albumId) {
+  async function openAlbum(albumId, { push = true } = {}) {
     const from = state.view;
-    setView('search');
+    setView('search', { push: false });
+    state.openAlbumId = String(albumId);
+    if (push) setPath(`/album/${albumId}`);
     pushPane(paneLabel(), from);
     const pane = searchPane('album-page');
     pane.replaceChildren(spinner('Loading album'));
@@ -1249,6 +1359,7 @@
     try {
       const album = await api(`/api/album/${albumId}`);
       state.album = album;
+      if (state.openAlbumId === String(albumId)) setTitle(album.title || 'Album');
       const availability = album.availability;
       // Matched on title, because the public track ids and the private ones
       // do not always agree and the names are what the reader is looking at.
@@ -2939,8 +3050,9 @@
   // Scanning: its filters, and what it has already looked up
   // ------------------------------------------------------------------
 
-  function showScanTab(name) {
+  function showScanTab(name, { push = true } = {}) {
     state.scanTab = name;
+    if (push) setPath(name === 'history' ? '/scan/history' : '/scan');
     $('#scan-tab-run').hidden = name !== 'run';
     $('#scan-tab-history').hidden = name !== 'history';
     $$('#scan-tabs button').forEach((b) => {
@@ -3164,8 +3276,9 @@
     error: ['Check failed', 'bad'],
   };
 
-  function showRequestTab(name) {
+  function showRequestTab(name, { push = true } = {}) {
     state.requestTab = name;
+    if (push) setPath(name === 'history' ? '/requests/history' : '/requests');
     $('#requests-tab-find').hidden = name !== 'find';
     $('#requests-tab-history').hidden = name !== 'history';
     $$('#requests-tabs button').forEach((b) => {
@@ -3464,7 +3577,9 @@
     const tracker = match?.tracker || state.requestsTracker || '';
     const from = state.view;
 
-    setView('search');
+    // Borrowing the search pane to draw in, not going to Search: the address
+    // should keep saying Requests, which is where the reader still is.
+    setView('search', { push: false });
     pushPane(paneLabel(), from);
     const pane = searchPane('split-page');
 
@@ -5844,6 +5959,12 @@ They will not be listed again, even if a later scan finds them.`)) {
     $('#theme-toggle')?.addEventListener('click', toggleTheme);
 
     $$('.nav-item').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+    // The nav is buttons, not links, so give each one the address it goes to.
+    // It is what a screen reader reads out and what the status bar shows.
+    $$('.nav-item').forEach((b) => {
+      const path = VIEW_PATHS[b.dataset.view];
+      if (path) b.setAttribute('data-path', path);
+    });
     $('#search-form').addEventListener('submit', runSearch);
     $$('#search-type button').forEach((b) =>
       b.addEventListener('click', () => selectSearchType(b.dataset.type)),
@@ -5940,6 +6061,17 @@ They will not be listed again, even if a later scan finds them.`)) {
       setUploadFlag('upload.yes_all', e.target, 'Auto-answer prompts'));
     refreshStatus();
     setInterval(refreshStatus, 15000);
+
+    // Back and Forward move through the app rather than out of it.
+    window.addEventListener('popstate', () => routeTo(location.pathname));
+
+    // Open on whatever the address says. Reloading anywhere used to land on
+    // Search, because nothing had ever read the path. The first entry is
+    // replaced rather than pushed, so Back from the page you opened on leaves
+    // the app instead of stepping through a duplicate of it.
+    const landing = location.pathname === '/' ? '/search' : location.pathname;
+    setPath(landing, true);
+    routeTo(landing);
   }
 
   document.addEventListener('DOMContentLoaded', init);
