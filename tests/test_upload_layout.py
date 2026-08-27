@@ -562,6 +562,14 @@ def main() -> int:
           "border-left" in rule(css, ".requests-summary.partial"),
           rule(css, ".requests-summary.partial").strip()[:60])
     check("with more pages one click away", "Read more pages" in js, "")
+
+    # It outlived the results it described: paste ten ids and the line still
+    # said "showing 25 of about 42,925", about a list no longer on screen.
+    check("and it goes when the results stop being a page search",
+          "requestsSummary({ shown: null });" in js
+          and "did not come from a page search" in js, "")
+    check("or when a different tracker is picked",
+          js.count("requestsSummary({ shown: null })") >= 4, str(js.count("requestsSummary({ shown: null })")))
     check("and so is the note under the file picker",
           "starts checking as soon as you pick it" not in shell, "")
 

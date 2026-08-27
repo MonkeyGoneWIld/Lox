@@ -282,6 +282,8 @@
               state.requestsTracker = t.code;
               renderTrackerPickers();
               loadRequestFilters();
+              // The counts belonged to the other tracker's search.
+              requestsSummary({ shown: null });
             },
           },
           t.code,
@@ -2570,6 +2572,11 @@
     // They carry their tracker so a mixed paste says which is which before a
     // single call is spent.
     if (placeholders) {
+      // These rows did not come from a page search, so the line saying how
+      // much of one is on screen is now about a list that is not there. It
+      // outlived the results it described: paste ten ids and it still said
+      // "showing 25 of about 42,925".
+      requestsSummary({ shown: null });
       state.requestRows = items.map(({ id, tracker }) => ({
         id,
         tracker: tracker || state.requestsTracker,
