@@ -706,12 +706,69 @@ async def api_album(request: web.Request) -> web.Response:
 #: this bounds the sample the page can show beside it.
 HELD_SAMPLE = 200
 
+#: Why a release is not in the queue, in the order the page should say it.
+#: The key is matched against the reason the rule produced; ``fix`` is what the
+#: user can actually do about it, and None means nothing -- which is worth
+#: saying rather than implying a setting exists.
+HELD_KINDS: tuple[tuple[str, str, str, str | None], ...] = (
+    ("nothing_to_do", "already on every tracker",
+     "already on every tracker that was checked", None),
+    ("unproven", "not checked yet",
+     "not checked against Deezer yet", "recheck"),
+    ("lossy", "not all FLAC",
+     "no lossless source on Deezer, and no open request accepts lossy", None),
+)
+
+
+def _held_groups(held: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Count the held rows by what is keeping them out.
+
+    Args:
+        held: Rows the rules excluded, each carrying ``held_reason``.
+
+    Returns:
+        One entry per non-empty group, plus whatever is left over, which is the
+        only group the settings page can change.
+    """
+    counts: dict[str, int] = {}
+    for row in held:
+        reason = row.get("held_reason") or ""
+        for key, needle, _label, _fix in HELD_KINDS:
+            if needle in reason:
+                counts[key] = counts.get(key, 0) + 1
+                break
+        else:
+            counts["rules"] = counts.get("rules", 0) + 1
+
+    groups = [
+        {"key": key, "label": label, "count": counts[key], "fix": fix}
+        for key, _needle, label, fix in HELD_KINDS
+        if counts.get(key)
+    ]
+    if counts.get("rules"):
+        groups.append({"key": "rules", "label": "your queue rules",
+                       "count": counts["rules"], "fix": "settings"})
+    return groups
+
+
 HISTORY_LIMIT = 2000
 """How many checked requests one page of history returns. The count is always
 the real one; this caps what travels."""
 
 #: Suffix to multiplier, for turning "1.49 GB" back into a number to compare.
 _UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4, "PB": 1024**5}
+
+
+def _reached_a_tracker(entry: dict[str, Any]) -> bool:
+    """Whether a scan record got as far as asking a tracker about it.
+
+    Args:
+        entry: A stored album record.
+
+    Returns:
+        True when some tracker gave a verdict -- has it, or does not.
+    """
+    return bool(entry.get("found_on") or entry.get("missing_from"))
 
 
 def _bounty_bytes(bounty: Any) -> float:
@@ -802,6 +859,19 @@ async def api_found(request: web.Request) -> web.Response:
         # that floor off unable to do anything.
         if entry.get("uploaded_at") or album_id in dismissed:
             continue
+        # The album collection is two things wearing one name: releases that
+        # were checked against a tracker, and a note-to-self for every album
+        # the scanner gave up on so it does not try again. The second kind has
+        # no title, no artist and no verdict -- an album Deezer answered
+        # DATA_ERROR for is not a release anybody can act on -- and it was
+        # being listed here anyway, as a row with an em dash where the name
+        # goes and "not checked against any tracker yet" as the explanation.
+        #
+        # Two thirds of one real queue was that. Those records belong to the
+        # scan, which reports them; a release reaches this page when a tracker
+        # has actually answered about it.
+        if not _reached_a_tracker(entry):
+            continue
         merge(
             album_id,
             {
@@ -888,8 +958,11 @@ async def api_found(request: web.Request) -> web.Response:
             # thing to tell someone whose rows are held because nobody has
             # checked what Deezer can supply. One is a setting they chose; the
             # other is work waiting to be done, and they read very differently.
-            "held_unproven": sum(1 for r in held if "not checked yet" in r["held_reason"]),
-            "held_lossy": sum(1 for r in held if "not all FLAC" in r["held_reason"]),
+            # Grouped by what is actually keeping each one out, because only
+            # one of these groups is a setting. Calling all of them "your queue
+            # rules" sent people to Settings to widen a rule that had nothing
+            # to do with it -- and for most of them there is no setting at all.
+            "held_groups": _held_groups(held),
             "rule": rules.describe(),
             "blacklisted": sum(1 for d in dismissed.values() if d.get("blacklist")),
         }
@@ -945,6 +1018,20 @@ async def api_found_dismiss(request: web.Request) -> web.Response:
     blacklist = bool(body.get("blacklist"))
 
     store: CheckerStore = request.app["store"]
+
+    # A row on this page is a RELEASE, identified by its Deezer album id, and
+    # what is known about it can live in either collection or both -- a scan
+    # found it, a request check matched it, one row. The requests collection is
+    # keyed "OPS:80755" though, so deleting by album id deleted the scan half
+    # and left the request half behind: the release came straight back as a row
+    # with one source and a different reason, and removing it again did the
+    # same thing. This maps the release back to whatever is filed under it.
+    request_keys: dict[str, list[str]] = {}
+    for request_key, entry in (store.load("requests") or {}).items():
+        deezer_id = str(entry.get("deezer_id") or "")
+        if deezer_id:
+            request_keys.setdefault(deezer_id, []).append(request_key)
+
     for key in keys:
         if blacklist:
             store.put("dismissed", key, {"blacklist": True, "at": time.time()}, flush=False)
@@ -952,7 +1039,11 @@ async def api_found_dismiss(request: web.Request) -> web.Response:
             # Forgotten rather than remembered as unwanted: dropping the check
             # result is what lets the next scan surface it again.
             store.delete("albums", key, flush=False)
+            # Both spellings: the id as given, in case the caller had the
+            # request's own key, and every request that matched this release.
             store.delete("requests", key, flush=False)
+            for request_key in request_keys.get(key, ()):
+                store.delete("requests", request_key, flush=False)
     store.flush()
     return json_response({"dismissed": len(keys), "blacklisted": blacklist})
 

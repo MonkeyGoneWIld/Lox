@@ -86,6 +86,22 @@ jobs:
       - name: Request collection and filters
         run: uv run python tests/test_requests.py
 
+      - name: The queue lists releases, not the scanner's notes to itself
+        # Two thirds of one real queue was scan bookkeeping: albums Deezer
+        # refused, listed as nameless rows under a heading blaming the queue
+        # rules, which had nothing to do with any of them.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5020"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+          LOX_STATE_DIR: /tmp/lox/held-state
+          LOX_SETTINGS_DIR: /tmp/lox/held-config
+        run: |
+          mkdir -p /tmp/lox/downloads /tmp/lox/held-state /tmp/lox/held-config
+          uv run python tests/test_held_rows.py
+
       - name: A request already answered is not paid for twice
         # check_many asked should_skip, which compares against the album
         # scanner's final statuses. A request's status is never one of those,

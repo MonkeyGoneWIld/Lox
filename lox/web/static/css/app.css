@@ -1095,6 +1095,18 @@ select {
 /* A partial read is worth noticing, because more of it is one click away. */
 .requests-summary.partial { border-left: 3px solid var(--accent); color: var(--text); }
 
+/* What is keeping each group out, said once at the top instead of repeated
+   down the "why" column, and only where something can be done about it. */
+.held-why {
+  margin: 8px 0 14px;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.held-why li { margin-bottom: 4px; }
+.held-actions { margin-bottom: 10px; }
+
 /* What a run passed over. Sits under the log it belongs to, and goes when it
    is acted on. */
 .skipped-note { margin-top: 12px; border-left: 3px solid var(--accent); }

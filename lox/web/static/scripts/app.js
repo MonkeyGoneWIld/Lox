@@ -34,6 +34,8 @@
     selectedFound: new Set(),
     // Rows the Settings queue rules kept out, and the rule in words.
     foundHeld: [],
+    selectedHeld: new Set(),
+    heldGroups: [],
     foundRule: '',
     showHeld: false,
     // Narrowing what is on screen. Not persisted: it is a way of reading the
@@ -3136,7 +3138,7 @@
     body.replaceChildren(spinner('Loading'));
     try {
       const { found, blacklisted, held, held_count: heldCount, rule,
-              held_unproven: unproven = 0, held_lossy: lossy = 0 } = await api('/api/found');
+              held_groups: heldGroups = [] } = await api('/api/found');
       state.found = found;
       state.foundHeld = held || [];
       state.foundRule = rule || '';
@@ -3148,16 +3150,16 @@
       // narrowed rule never reads as "the scan found nothing".
       const heldRow = $('#found-held-row');
       heldRow.hidden = !heldCount;
+      state.heldGroups = heldGroups;
       if (heldCount) {
-        // Three different reasons, and only one of them is a setting. Saying
-        // "your queue rules" for all of them sends someone to Settings to
-        // widen a rule that was never the reason.
-        const byRule = heldCount - unproven - lossy;
-        const parts = [];
-        if (byRule > 0) parts.push(`${byRule} by your queue rules — letting through ${state.foundRule}`);
-        if (lossy > 0) parts.push(`${lossy} because Deezer has no lossless source and no request accepts lossy`);
-        if (unproven > 0) parts.push(`${unproven} not checked against Deezer yet — re-check to see if they are all FLAC`);
-        $('#found-held').textContent = `${heldCount} held back: ${parts.join('; ')}.`;
+        // Only one of these groups is a setting, and it is usually the small
+        // one. Calling all of them "your queue rules" sent people to Settings
+        // to widen a rule that had nothing to do with it.
+        const parts = heldGroups.map((g) => {
+          if (g.key === 'rules') return `${g.count} by your queue rules, which let through ${state.foundRule}`;
+          return `${g.count} ${g.label}`;
+        });
+        $('#found-held').textContent = `${heldCount} not in the queue: ${parts.join('; ')}.`;
         $('#found-held-toggle').textContent = state.showHeld ? 'Hide them' : 'Show them';
       }
 
@@ -3223,7 +3225,7 @@
     if (!state.found.length) {
       body.replaceChildren(
         state.foundHeld.length
-          ? empty(`Nothing matches your queue rules. ${state.foundHeld.length} released were held back — `
+          ? empty(`Nothing to upload yet. ${state.foundHeld.length} release(s) were left out — `
               + 'widen the rules in Settings, or show them above.')
           : empty('Nothing yet. Run a scan or check some requests.'),
       );
@@ -3279,19 +3281,93 @@
     if (state.showHeld) body.append(heldTable());
   }
 
-  // The rows the Settings rules kept out, each saying which rule kept it and
-  // what was actually true on the tracker -- "RED must be missing there, but
-  // it has not been checked there" is a different problem from "it is already
-  // there", and only one of them is fixed by re-checking.
+  // Releases that were checked and are not in the queue, each saying what is
+  // actually keeping it out.
+  //
+  // This used to be headed "Held back by your queue rules", which was wrong
+  // for most of it: only one of the reasons is a setting, and a release that
+  // every tracker already has is not being held by anything -- there is
+  // nothing to upload. It also had no way to act on a row, so a list of
+  // things you did not want was a list you could only look at.
+  function heldPick(id, on) {
+    if (on) state.selectedHeld.add(id); else state.selectedHeld.delete(id);
+    const n = state.selectedHeld.size;
+    $$('.held-action').forEach((b) => { b.disabled = n === 0; });
+    const label = $('#held-selected');
+    if (label) label.textContent = n ? `${n} selected` : '';
+  }
+
+  async function heldAct(what) {
+    const ids = [...state.selectedHeld];
+    if (!ids.length) return;
+    try {
+      if (what === 'recheck') {
+        const rows = state.foundHeld.filter((f) => ids.includes(f.id));
+        await recheckReleases(rows);
+        return;   // the job reloads the list when it finishes
+      } else {
+        await api('/api/found/dismiss', { method: 'POST', body: { ids, blacklist: what === 'blacklist' } });
+        toast(what === 'blacklist'
+          ? `${ids.length} blacklisted — no scan will list them again.`
+          : `${ids.length} removed.`, 'ok');
+      }
+      state.selectedHeld = new Set();
+      await loadFound();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+
   function heldTable() {
-    if (!state.foundHeld.length) return empty('Nothing is being held back.');
+    if (!state.foundHeld.length) return empty('Everything checked so far is in the queue.');
+
+    // What each group needs, said once at the top rather than repeated down
+    // the "why" column, and only where something can actually be done.
+    const advice = (state.heldGroups || []).map((g) => {
+      if (g.fix === 'recheck') {
+        return el('li', {}, `${g.count} ${g.label} — select them below and re-check.`);
+      }
+      if (g.fix === 'settings') {
+        return el('li', {}, `${g.count} by your queue rules — widen the rule in Settings to let them through.`);
+      }
+      return el('li', {}, `${g.count} ${g.label} — nothing to change; remove them if you do not want them listed.`);
+    });
+
     return el('div', { class: 'held-block' },
-      el('h3', { class: 'section-head-plain' }, `Held back by your queue rules (${state.foundHeld.length})`),
+      el('h3', { class: 'section-head-plain' },
+         `Checked, but not in the queue (${state.foundHeld.length})`),
+      advice.length ? el('ul', { class: 'held-why' }, ...advice) : null,
+      el('div', { class: 'row held-actions' },
+        el('button', {
+          class: 'held-action', disabled: true, onclick: () => heldAct('recheck'),
+        }, 'Re-check on trackers'),
+        el('button', {
+          class: 'held-action', disabled: true, onclick: () => heldAct('remove'),
+        }, 'Remove'),
+        el('button', {
+          class: 'held-action danger', disabled: true, onclick: () => heldAct('blacklist'),
+        }, 'Blacklist'),
+        el('span', { class: 'hint', id: 'held-selected' })),
       el('table', { class: 'table' },
         el('thead', {}, el('tr', {},
+          el('th', {}, el('input', {
+            type: 'checkbox',
+            onchange: (e) => {
+              $$('.held-row input[type="checkbox"]').forEach((box) => {
+                box.checked = e.target.checked;
+                heldPick(box.dataset.id, e.target.checked);
+              });
+            },
+          })),
           el('th', {}, 'Release'), el('th', {}, 'Trackers'), el('th', {}, 'Why it is not in the queue'))),
         el('tbody', {}, ...state.foundHeld.map((f) =>
           el('tr', { class: 'held-row' },
+            el('td', {}, el('input', {
+              type: 'checkbox',
+              'data-id': f.id,
+              checked: state.selectedHeld.has(f.id),
+              onchange: (e) => heldPick(f.id, e.target.checked),
+            })),
             el('td', {}, el('a', {
               href: '#',
               onclick: (e) => { e.preventDefault(); openAlbum(f.album_id); },
@@ -3382,13 +3458,22 @@ They will not be listed again, even if a later scan finds them.`)) {
   async function recheckFound() {
     const picked = foundSelection();
     if (!picked.length) return toast('Nothing selected', 'bad');
+    return recheckReleases(picked);
+  }
+
+  // Re-check a set of releases against the trackers.
+  //
+  // The same job whether the rows came from the queue or from the list of
+  // things that did not make it into the queue -- and the second is where it
+  // matters most, because "not checked against Deezer yet" is the one reason
+  // on that list a re-check actually fixes.
+  async function recheckReleases(picked) {
     const trackers = checkTrackers();
     if (!trackers.length) return toast('No tracker configured', 'bad');
 
     const candidates = picked.map((f) => ({
       album_id: f.album_id, title: f.title, artist: f.artist, source: 'found',
     }));
-    const body = $('#found-body');
     try {
       const { job_id } = await api('/api/missing/check', { method: 'POST', body: { candidates, trackers } });
       const log = $('#found-log');
