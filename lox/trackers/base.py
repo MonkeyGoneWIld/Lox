@@ -92,6 +92,35 @@ class RetryableError(Exception):
     pass
 
 
+def _why_it_failed(status: int) -> str:
+    """Something to show when the tracker fails without saying why.
+
+    A Gazelle API call that is not authenticated does not answer with an
+    error -- it answers 302 to the login page, with an empty body. That
+    arrived here as ``RequestFailedError("")`` and reached the user as an
+    empty message: a request that did nothing, blamed nobody, and gave them
+    nothing to act on. The HTTP status is the only thing the response
+    actually said, so say that.
+
+    Args:
+        status: The HTTP status the tracker replied with.
+
+    Returns:
+        A sentence naming the likely cause.
+    """
+    if status in (301, 302, 303, 307, 308):
+        return (
+            f"The tracker redirected the API call (HTTP {status}) instead of answering it, "
+            f"which is what it does when the API key is missing, wrong or expired. "
+            f"Check the key in Settings."
+        )
+    if status in (401, 403):
+        return f"The tracker refused the API key (HTTP {status}). Check the key in Settings."
+    if status >= 500:
+        return f"The tracker is having trouble (HTTP {status}). Nothing to fix here -- try again later."
+    return f"The tracker rejected the request (HTTP {status}) without saying why."
+
+
 class BaseGazelleApi:
     """Base API client for Gazelle-based trackers."""
 
@@ -204,13 +233,14 @@ class BaseGazelleApi:
                 except (msgspec.DecodeError, ValueError):
                     resp_json = {"status": "error", "error": resp_text}
                 retry_after_header = resp.headers.get("Retry-After", "20")
+                http_status = resp.status
         except msgspec.DecodeError as err:
             raise LoginError from err
         except (TimeoutError, aiohttp.ClientError) as err:
             raise RetryableError(f"Network error: {err}") from err
 
         if resp_json.get("status") != "success":
-            error_msg = resp_json.get("error", resp_text)
+            error_msg = resp_json.get("error", resp_text) or _why_it_failed(http_status)
             if "rate limit" in str(error_msg).lower():
                 retry_after = float(retry_after_header)
                 click.secho(f"Rate limit exceeded, waiting {retry_after} seconds...", fg="yellow")

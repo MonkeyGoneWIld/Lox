@@ -1874,36 +1874,48 @@
       el('div', { class: 'reqfield' }, ...controls.filter(Boolean)));
   }
 
-  // A group of ticks with its own All, and optionally the tracker's own
-  // "Only specified".
+  // A group of ticks, with the All and the "Only specified" the site puts
+  // above it.
   //
   // All is not a filter of its own -- it is a shortcut that ticks the rest,
-  // which is what it does on both sites. It also has to follow along: tick
-  // every option by hand and All shows itself ticked, because a box that says
-  // "all" while all of them are on and it is not is just wrong.
-  function checkGroup(id, options, strictId) {
+  // which is what it does on both sites. It also follows along: tick every
+  // option by hand and All shows itself ticked, because a box that says "all"
+  // while all of them are on and it is not is simply wrong. Some groups have
+  // no All at all: RED's categories are seven bare boxes, because leaving them
+  // clear is how you ask RED for every category.
+  function checkGroup(id, options, { withAll = true, checked = true, strictId = '' } = {}) {
     const boxes = el('div', { class: 'reqchecks', id },
       ...options.map((name) =>
         el('label', { class: 'check' },
-          el('input', { type: 'checkbox', value: name, onchange: () => { syncAll(id); requestsCost(); } }),
+          el('input', {
+            type: 'checkbox',
+            value: name,
+            checked,
+            onchange: () => { syncAll(id); requestsCost(); },
+          }),
           name)));
 
-    const all = el('input', {
-      type: 'checkbox',
-      id: `${id}-all`,
-      onchange: (e) => {
-        $$(`#${id} input`).forEach((box) => { box.checked = e.target.checked; });
-        requestsCost();
-      },
-    });
+    const head = [];
+    if (withAll) {
+      head.push(el('label', { class: 'check' },
+        el('input', {
+          type: 'checkbox',
+          id: `${id}-all`,
+          checked,
+          onchange: (e) => {
+            $$(`#${id} input`).forEach((box) => { box.checked = e.target.checked; });
+            requestsCost();
+          },
+        }),
+        'All'));
+    }
+    if (strictId) {
+      head.push(el('label', { class: 'check', title: 'Exclude requests that leave this open to anything' },
+        el('input', { type: 'checkbox', id: strictId }), 'Only specified'));
+    }
 
     return el('div', { class: 'reqgroup' },
-      el('div', { class: 'reqgroup-head' },
-        el('label', { class: 'check' }, all, 'All'),
-        strictId
-          ? el('label', { class: 'check', title: 'Exclude requests that leave this open to anything' },
-              el('input', { type: 'checkbox', id: strictId }), 'Only specified')
-          : null),
+      head.length ? el('div', { class: 'reqgroup-head' }, ...head) : null,
       boxes);
   }
 
@@ -1917,9 +1929,10 @@
 
   const chosen = (id) => [...$$(`#${id} input:checked`)].map((i) => i.value);
 
-  // Rebuilt whenever the tracker changes: RED and OPS do not offer the same
-  // filters, and showing one tracker's options while the other is selected
-  // would be showing something that cannot be sent.
+  // Rebuilt whenever the tracker changes. The tracker describes its own form
+  // -- which groups, in what order, called what, ticked or not -- because the
+  // two sites disagree about all four and the page should look like whichever
+  // one is selected.
   async function loadRequestFilters() {
     const host = $('#requests-filters');
     if (!state.requestsTracker) {
@@ -1935,65 +1948,61 @@
     }
     state.requestFilters = spec;
 
-    const rows = [
-      formRow('Search terms',
-        el('input', { type: 'search', id: 'requests-search', placeholder: 'Artist, album or both' }),
-        // RED keeps this beside its own search box, and it only widens what the
-        // search string is matched against -- with the box empty it does
-        // nothing at all.
-        spec.descriptions
-          ? el('label', { class: 'check', title: 'Only affects what the search text above matches' },
-              el('input', { type: 'checkbox', id: 'requests-descriptions' }),
-              'Include desc/comments')
-          : null),
+    const GROUP_IDS = {
+      categories: 'requests-category',
+      release_types: 'requests-release-type',
+      formats: 'requests-format',
+      encodings: 'requests-encoding',
+      media: 'requests-media',
+    };
+    const STRICT_IDS = {
+      'strict-format': 'requests-strict-format',
+      'strict-encoding': 'requests-strict-encoding',
+      'strict-media': 'requests-strict-media',
+    };
 
-      formRow('Tags',
-        el('input', { type: 'search', id: 'requests-tags', placeholder: 'hip.hop, jazz' }),
-        // Two radios, the way the form has it. A dropdown made a choice between
-        // two things look like a list of many.
-        el('label', { class: 'check' },
-          el('input', { type: 'radio', name: 'requests-tags-mode', value: 'any', checked: true }), 'Any'),
-        el('label', { class: 'check' },
-          el('input', { type: 'radio', name: 'requests-tags-mode', value: 'all' }), 'All'),
-        el('span', { class: 'hint reqhint' }, "the tracker's own spelling — dots, not spaces")),
-
-      formRow('Include filled',
-        el('input', { type: 'checkbox', id: 'requests-show-filled' })),
-    ];
-
-    if (spec.include_old) {
-      rows.push(formRow('Include old', el('input', { type: 'checkbox', id: 'requests-include-old' })));
-    }
-    if (spec.categories.length) {
-      // Was pinned to Music and never offered. Every search lox made carried
-      // filter_cat for music alone, so the audiobook and application requests
-      // the site returns could not appear here however the page was set.
-      rows.push(formRow('Categories', checkGroup('requests-category', spec.categories, '')));
-    }
-    if (spec.release_types.length) {
-      rows.push(formRow('Release types', checkGroup('requests-release-type', spec.release_types, '')));
-    }
-    if (spec.formats.length) {
-      rows.push(formRow('Formats', checkGroup('requests-format', spec.formats, 'requests-strict-format')));
-    }
-    if (spec.encodings.length) {
-      rows.push(formRow('Bitrates', checkGroup('requests-encoding', spec.encodings, 'requests-strict-encoding')));
-    }
-    if (spec.media.length) {
-      rows.push(formRow('Media', checkGroup('requests-media', spec.media, 'requests-strict-media')));
-    }
-    if (spec.bounty) {
-      rows.push(formRow('Bounty (GiB)',
-        el('input', { type: 'text', id: 'requests-bounty-min', placeholder: 'min' }),
-        el('input', { type: 'text', id: 'requests-bounty-max', placeholder: 'max' }),
-        el('span', { class: 'hint reqhint' }, 'add M or T for MiB or TiB')));
-    }
+    const rows = (spec.form || []).map((item) => {
+      if (item.kind === 'search') {
+        return formRow('Search terms',
+          el('input', { type: 'search', id: 'requests-search', placeholder: 'Artist, album or both' }),
+          spec.descriptions
+            ? el('label', { class: 'check', title: 'Only affects what the search text above matches' },
+                el('input', { type: 'checkbox', id: 'requests-descriptions' }),
+                'Include desc/comments')
+            : null);
+      }
+      if (item.kind === 'tags') {
+        return formRow('Tags',
+          el('input', { type: 'search', id: 'requests-tags', placeholder: 'hip.hop, jazz' }),
+          // Two radios, the way the form has it.
+          el('label', { class: 'check' },
+            el('input', { type: 'radio', name: 'requests-tags-mode', value: 'any', checked: true }), 'Any'),
+          el('label', { class: 'check' },
+            el('input', { type: 'radio', name: 'requests-tags-mode', value: 'all' }), 'All'));
+      }
+      if (item.kind === 'toggle') {
+        return formRow(item.label, el('input', { type: 'checkbox', id: `requests-${item.key.replace(/_/g, '-')}` }));
+      }
+      if (item.kind === 'bounty') {
+        return formRow(item.label,
+          el('input', { type: 'text', id: 'requests-bounty-min', class: 'reqsmall', placeholder: 'min' }),
+          el('input', { type: 'text', id: 'requests-bounty-max', class: 'reqsmall', placeholder: 'max' }),
+          el('span', { class: 'hint reqhint' }, 'add M or T for MiB or TiB'));
+      }
+      if (item.kind === 'group' && item.options.length) {
+        return formRow(item.label, checkGroup(GROUP_IDS[item.key], item.options, {
+          withAll: item.all,
+          checked: item.default,
+          strictId: STRICT_IDS[item.strict] || '',
+        }));
+      }
+      return null;
+    }).filter(Boolean);
 
     rows.push(formRow('Pages to fetch',
-      // Pages, not a row count. One page is one call against the budget, so
-      // pages are the unit the cost is actually measured in.
-      el('input', { id: 'requests-limit', type: 'number', min: '1', step: '1', value: '4',
-                    oninput: requestsCost }),
+      // Pages, not a row count. One page is one call against the budget.
+      el('input', { id: 'requests-limit', type: 'number', class: 'reqsmall', min: '1', step: '1',
+                    value: '4', oninput: requestsCost }),
       el('span', { class: 'hint reqhint' },
          `${state.requestsTracker} serves ${spec.page_size} per page — one call each`)));
 

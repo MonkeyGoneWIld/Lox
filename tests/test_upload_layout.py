@@ -469,10 +469,49 @@ def main() -> int:
     # types into a 132px list you had to scroll to reach "Unknown".
     check("the search form is rows, not scrolling columns",
           "function formRow" in js and "max-height: 132px" not in css, "")
-    check("with a label beside its controls",
-          "grid-template-columns: 128px 1fr" in rule(css, ".reqrow"), "")
-    check("every group of ticks has its own All",
+    check("with a label beside its controls, not above them",
+          "grid-template-columns:" in rule(css, ".reqrow")
+          and "1fr" in rule(css, ".reqrow"), rule(css, ".reqrow").strip()[:60])
+
+    # A text box was stretching the width of the panel because the global
+    # "inputs fill their field" rule outscores a plain `.reqfield
+    # input[type=search]` -- four :not() attribute selectors against one class
+    # and one attribute. The narrow rule has to carry the same weight or it
+    # loses however far down the file it sits.
+    widths = rule(css, '.reqfield input:not([type="checkbox"]):not([type="radio"])'
+                       ':not([type="button"]):not([type="submit"])')
+    check("a search box is as wide as what you type in it, not as wide as the page",
+          "width: 420px" in widths, widths.strip()[:60])
+    check("and a number box is narrower still",
+          "width: 110px" in rule(css, '.reqfield input.reqsmall:not([type="checkbox"])'
+                                      ':not([type="radio"]):not([type="button"])'
+                                      ':not([type="submit"])'), "")
+
+    # Every group ran into the next one, so fifteen release types and six
+    # formats read as one undifferentiated field of ticks.
+    check("rows are spaced apart from each other", "gap: 18px" in rule(css, ".reqform"), "")
+    check("and a group's ticks are spaced from its All",
+          "gap: 8px" in rule(css, ".reqgroup"), "")
+
+    check("every group of ticks can have its own All",
           "function checkGroup" in js and "'All'" in js, "")
+    check("but a group can be rendered without one",
+          "withAll" in js, "")
+    check("and a group can start ticked or clear",
+          "checked = true" in js or "checked," in js, "")
+
+    # The page used to decide the order, the labels and the defaults itself,
+    # and got all three wrong for one tracker or the other. The tracker
+    # describes its own form now.
+    check("the page renders the form the tracker describes",
+          "spec.form" in js, "")
+    check("rather than a fixed list of its own",
+          "if (spec.release_types.length)" not in js, "")
+
+    # This sat under the tags box on both trackers and explained the site's
+    # own syntax to someone already looking at the site's own form.
+    check("the tags box does not lecture about punctuation",
+          "dots, not spaces" not in js, "")
     check("and the All follows the ticks under it, rather than only leading them",
           "function syncAll" in js, "")
     check("categories are offered at all", "requests-category" in js, "")

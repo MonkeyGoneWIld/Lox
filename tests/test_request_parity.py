@@ -158,6 +158,56 @@ def main() -> int:
     check("OPS offers a bounty range, RED does not",
           schema("OPS")["bounty"] and not schema("RED")["bounty"], "")
 
+    # --- the form is laid out the way the site lays it out -----------------
+    # The page renders whatever this describes, so the order, the labels and
+    # the defaults are all assertable here rather than only visible on screen.
+    def rows(tracker: str) -> list[dict]:
+        return schema(tracker)["form"]
+
+    def labels(tracker: str) -> list[str]:
+        return [r.get("label", r["kind"]) for r in rows(tracker)]
+
+    def group(tracker: str, key: str) -> dict:
+        return next(r for r in rows(tracker) if r.get("key") == key)
+
+    check("RED orders its groups the way RED's form does",
+          [r["key"] for r in rows("RED") if r["kind"] == "group"]
+          == ["categories", "release_types", "formats", "encodings", "media"],
+          str(labels("RED")))
+    check("OPS orders its groups the way OPS's form does",
+          [r["key"] for r in rows("OPS") if r["kind"] == "group"]
+          == ["categories", "release_types", "media", "formats", "encodings"],
+          str(labels("OPS")))
+
+    # Same group, two names. Showing one site's word while searching the other
+    # is showing a label that is not on the form being copied.
+    check("RED calls the encoding group Bitrates",
+          group("RED", "encodings")["label"] == "Bitrates", "")
+    check("OPS calls it Encoding",
+          group("OPS", "encodings")["label"] == "Encoding", "")
+
+    # RED has no All over its categories and starts them clear, because clear
+    # is how you ask RED for all of them. OPS has one and starts them ticked.
+    red_cats, ops_cats = group("RED", "categories"), group("OPS", "categories")
+    check("RED's categories have no All and start clear",
+          not red_cats["all"] and not red_cats["default"], "")
+    check("OPS's categories have an All and start ticked",
+          ops_cats["all"] and ops_cats["default"], "")
+
+    # An unnarrowed search is a search for everything, which is how both forms
+    # arrive -- every box already ticked.
+    for tracker in ("RED", "OPS"):
+        others = [r for r in rows(tracker) if r["kind"] == "group" and r["key"] != "categories"]
+        check(f"{tracker}'s other groups all start ticked",
+              others and all(r["all"] and r["default"] for r in others),
+              str([r["label"] for r in others]))
+
+    # OPS asks for the bounty before the categories; RED never asks.
+    check("OPS puts the bounty where its form puts it",
+          labels("OPS").index("Bounty offered (GiB)") < labels("OPS").index("Categories"), "")
+    check("a tracker with no filters still gets a usable form",
+          len(schema("SOMETHINGELSE")["form"]) == 3, "")
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

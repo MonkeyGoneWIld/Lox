@@ -998,24 +998,48 @@ select {
 /* Tick lists inside a filter field: scrollable so a 16-entry encoding list does
    not push everything else off the panel. */
 /* The request search, laid out the way the trackers lay theirs out: a label
-   on the left, its controls flowing across the rest of the row. It was four
-   columns of scrolling boxes, which turned fifteen release types into a
-   132px-tall list you had to scroll to find "Unknown" -- and made two forms
-   that are meant to mirror the sites look nothing like them. */
-.reqform { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 16px; }
+   on the left, its controls flowing across the rest of the row.
 
-.reqrow { display: grid; grid-template-columns: 128px 1fr; gap: 14px; align-items: start; }
-.reqlabel { font-size: 13px; font-weight: 600; padding-top: 3px; }
-.reqfield { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-width: 0; }
-.reqfield input[type="search"], .reqfield input[type="text"] { width: 260px; }
-.reqfield input[type="number"] { width: 90px; }
+   Two things this gets wrong if left alone. The form does not want the whole
+   width of a wide screen -- a search box stretched to 1700px looks like a
+   mistake, and the sites cap theirs -- so it is held to a readable measure.
+   And the groups need air between them: run "Release types" straight into
+   "Formats" with a single gap and fifty checkboxes read as one field. */
+.reqform {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin: 14px 0 18px;
+  max-width: 1120px;
+}
+
+.reqrow { display: grid; grid-template-columns: 136px 1fr; gap: 16px; align-items: start; }
+.reqlabel { font-size: 13px; font-weight: 600; padding-top: 4px; }
+.reqfield { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
+
+/* Text boxes are as wide as the thing you type in them, not as wide as the
+   window.
+
+   The selector carries the same :not() chain as the global "inputs fill their
+   field" rule further up, because that rule scores four attribute selectors
+   and a plain `.reqfield input[type=search]` loses to it -- which is why the
+   search box was still stretching to 800px with a 420px rule sitting right
+   here. Specificity, not cascade order. */
+.reqfield input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
+  width: 420px;
+  max-width: 100%;
+}
+
+.reqfield input.reqsmall:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
+  width: 110px;
+}
 .reqhint { margin: 0; font-size: 11.5px; }
 
-.reqgroup { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.reqgroup { display: flex; flex-direction: column; gap: 8px; width: 100%; }
 /* All and "Only specified" sit above the ticks they govern, as on the site. */
-.reqgroup-head { display: flex; align-items: center; gap: 16px; }
+.reqgroup-head { display: flex; align-items: center; gap: 18px; }
 .reqgroup-head .check { font-weight: 600; }
-.reqchecks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.reqchecks { display: flex; flex-wrap: wrap; gap: 8px 18px; }
 .reqchecks .check { font-size: 12.5px; }
 
 .filter-note { color: var(--warn); }

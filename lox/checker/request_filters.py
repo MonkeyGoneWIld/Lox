@@ -57,6 +57,20 @@ class TrackerFilters(NamedTuple):
     #: filter_cat[1]=1 -- and OPS collects them -- filter_cat[]=0. Sending one
     #: site's spelling to the other filters nothing and returns everything.
     category_style: str
+    #: What this site calls the encoding group. RED says "Bitrates", OPS says
+    #: "Encoding", and the page should say what the site the user is searching
+    #: says.
+    encodings_label: str
+    #: The order the site puts its groups in. RED goes formats, bitrates,
+    #: media; OPS goes media, formats, encoding. Same three groups, different
+    #: order, and a form that claims to mirror the site has to mirror that too.
+    group_order: tuple[str, ...]
+    #: Whether the category row offers an All. RED's does not -- it is seven
+    #: bare boxes, and leaving them all clear is how you ask for everything.
+    categories_all: bool = True
+    #: Whether the categories start ticked. OPS ticks them; RED leaves them
+    #: clear, which on RED means the same thing.
+    categories_default: bool = True
     supports_bounty: bool = False
     supports_include_old: bool = False
     supports_descriptions: bool = False
@@ -81,6 +95,10 @@ RED = TrackerFilters(
     encodings_strict_param="bitrate_strict",
     categories=dict(zip(CATEGORIES, range(1, len(CATEGORIES) + 1), strict=True)),
     category_style="indexed",
+    encodings_label="Bitrates",
+    group_order=("release_types", "formats", "encodings", "media"),
+    categories_all=False,
+    categories_default=False,
     supports_include_old=True,
     supports_descriptions=True,
 )
@@ -103,6 +121,8 @@ OPS = TrackerFilters(
     encodings_strict_param="bitrates_strict",
     categories=dict(zip(CATEGORIES, range(len(CATEGORIES)), strict=True)),
     category_style="listed",
+    encodings_label="Encoding",
+    group_order=("release_types", "media", "formats", "encodings"),
     supports_bounty=True,
 )
 
@@ -137,6 +157,8 @@ def schema(tracker: str) -> dict[str, Any]:
                 f"{tracker}'s filter IDs have not been verified against its own search page, so only the "
                 f"filters that need no IDs are offered. The rest would risk searching for the wrong thing."
             ),
+            "form": [{"kind": "search"}, {"kind": "tags"},
+                     {"kind": "toggle", "key": "show_filled", "label": "Include filled"}],
             "categories": [],
             "formats": [],
             "media": [],
@@ -147,10 +169,55 @@ def schema(tracker: str) -> dict[str, Any]:
             "descriptions": False,
             "page_size": PAGE_SIZE,
         }
+    groups = {
+        "release_types": ("Release types", list(spec.release_types), ""),
+        "formats": ("Formats", list(spec.formats), "strict-format"),
+        "encodings": (spec.encodings_label, list(spec.encodings), "strict-encoding"),
+        "media": ("Media", list(spec.media), "strict-media"),
+    }
+
+    # The form, in the order the site lays it out. The page renders this rather
+    # than deciding for itself, because the two sites disagree about the order
+    # and about what the encoding group is called, and that knowledge belongs
+    # in the one module whose job is the difference between them.
+    form: list[dict[str, Any]] = [
+        {"kind": "search"},
+        {"kind": "tags"},
+        {"kind": "toggle", "key": "show_filled", "label": "Include filled"},
+    ]
+    if spec.supports_include_old:
+        form.append({"kind": "toggle", "key": "include_old", "label": "Include old"})
+    # OPS asks for the bounty range before the categories; RED has no bounty.
+    if spec.supports_bounty:
+        form.append({"kind": "bounty", "label": "Bounty offered (GiB)"})
+    form.append({
+        "kind": "group",
+        "key": "categories",
+        "label": "Categories",
+        "options": list(spec.categories),
+        "all": spec.categories_all,
+        "default": spec.categories_default,
+        "strict": "",
+    })
+    for key in spec.group_order:
+        label, options, strict = groups[key]
+        form.append({
+            "kind": "group",
+            "key": key,
+            "label": label,
+            "options": options,
+            "all": True,
+            # Every box starts ticked, which is how both forms arrive: a search
+            # nobody has narrowed is a search for everything.
+            "default": True,
+            "strict": strict,
+        })
+
     return {
         "tracker": tracker,
         "mapped": True,
         "note": "",
+        "form": form,
         "categories": list(spec.categories),
         "formats": list(spec.formats),
         "media": list(spec.media),

@@ -86,6 +86,21 @@ jobs:
       - name: Request collection and filters
         run: uv run python tests/test_requests.py
 
+      - name: HTTPS roots, and a tracker failure that says what went wrong
+        # aiohttp builds its default SSL context at import, so lox has to add
+        # certifi's roots before that happens or a machine with a stale
+        # certificate store cannot reach a tracker at all -- and used to say so
+        # with an empty error message.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5016"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+        run: |
+          mkdir -p /tmp/lox/downloads
+          uv run python tests/test_network_trust.py
+
       - name: Upload prompts, folder rename and integrity
         # The upload's questions have to reach the browser rather than answer
         # themselves. Includes a source scan, so a call site no test reaches is
