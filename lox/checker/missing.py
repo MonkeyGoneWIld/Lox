@@ -632,18 +632,28 @@ class MissingScanner:
                     result.missing_from.append(code)
 
             result.status = self._status_for(result, usable)
+            known = self.store.get("albums", candidate.album_id) or {}
+            supply = await self._supply_facts(candidate, known)
+            # Merged onto what was already known, not written over it. A
+            # re-check from the queue carries four fields -- id, title, artist,
+            # source -- and a plain write turned every other fact on the record
+            # into its default: the release came back all_flac=False, which the
+            # queue reads as "not all FLAC on Deezer", which is a SETTLED
+            # reason. So re-checking a queue row deleted it from the queue, and
+            # re-checking it again could not bring it back.
             self.store.put(
                 "albums",
                 candidate.album_id,
                 {
+                    **known,
                     "status": result.status,
-                    "title": candidate.title,
-                    "artist": candidate.artist,
+                    "title": candidate.title or known.get("title") or "",
+                    "artist": candidate.artist or known.get("artist") or "",
                     # Which pressing this is. Two editions of one record are
                     # two different uploads, and the queue could not say which
                     # of them it was looking at.
-                    "year": candidate.year,
-                    "source": candidate.source,
+                    "year": candidate.year or known.get("year") or "",
+                    "source": candidate.source or known.get("source") or "",
                     "found_on": result.found_on,
                     "missing_from": result.missing_from,
                     # Which group each tracker matched, so "RED has it" can be
@@ -651,13 +661,7 @@ class MissingScanner:
                     # that leaves you searching for it by hand.
                     "group_ids": {code: int(gid) for code, gid in (result.group_ids or {}).items()},
                     "errors": result.errors,
-                    # A candidate only gets this far by being all FLAC -- the
-                    # filter above drops the rest as skipped_no_flac -- but the
-                    # queue should not have to know that to trust the row. Say
-                    # it, so a row is readable on its own.
-                    "all_flac": bool((candidate.availability or {}).get("all_flac")),
-                    "flac_count": (candidate.availability or {}).get("flac_count"),
-                    "deezer_tracks": (candidate.availability or {}).get("total"),
+                    **supply,
                 },
             )
             # A request that this same release would fill lives in its own
@@ -676,6 +680,60 @@ class MissingScanner:
 
         self.store.flush("albums")
         return results
+
+    async def _supply_facts(self, candidate: Candidate, known: dict[str, Any]) -> dict[str, Any]:
+        """What Deezer can supply for a release, for the record being written.
+
+        The queue will not list a release Deezer cannot deliver, and it says so
+        in as many words: "Deezer formats not checked yet -- re-check it to see
+        if it is all FLAC". That advice was false. A re-check knew the album id
+        and nothing else, so it wrote all_flac=False rather than looking, and
+        the row left the queue for good instead of being answered.
+
+        A scan already carries the answer on the candidate. A re-check does
+        not, so it asks -- Deezer costs no tracker budget, and this is the one
+        question the user pressed the button to have answered.
+
+        Args:
+            candidate: The album being checked.
+            known: The stored record, for the answer a previous check reached.
+
+        Returns:
+            The availability keys to write, and nothing else.
+        """
+        supplied = candidate.availability or {}
+        if supplied:
+            return {
+                "all_flac": bool(supplied.get("all_flac")),
+                "flac_count": supplied.get("flac_count"),
+                "deezer_tracks": supplied.get("total"),
+                "deezer_unavailable": supplied.get("unreadable") or [],
+                "release_date": supplied.get("release_date") or known.get("release_date") or "",
+                "blocked": known.get("blocked") or "",
+            }
+
+        try:
+            availability = await self.gw.availability(candidate.album_id)
+        except DeezerGWError as e:
+            debug.log("availability check for %s failed: %s", candidate.album_id, e, level=30)
+            # Nothing learned, so nothing is claimed: whatever the record
+            # already said stands. Writing a default here is what emptied the
+            # queue, and a failed lookup is not evidence of anything.
+            return {
+                key: known[key]
+                for key in ("all_flac", "flac_count", "deezer_tracks",
+                            "deezer_unavailable", "release_date", "blocked")
+                if key in known
+            }
+
+        return {
+            "all_flac": availability.all_flac,
+            "flac_count": availability.flac_count,
+            "deezer_tracks": availability.total,
+            "deezer_unavailable": list(availability.unreadable),
+            "release_date": availability.release_date,
+            "blocked": availability.reason() or "",
+        }
 
     def _mirror_to_requests(self, album_id: str, result: Any) -> None:
         """Write an album's tracker verdict onto any request it would fill.
@@ -882,15 +940,27 @@ class MissingScanner:
             # retestable rather than recording a verdict nobody reached.
             status = "tracker_failed"
 
+        known = self.store.get("albums", str(album_id)) or {}
+        # Merged, for the same reason the batch check merges: a write here that
+        # named only what this path knows dropped the year the scan recorded
+        # and the group ids that make "RED has it" a link rather than a label.
         self.store.put(
             "albums",
             album_id,
             {
+                **known,
                 "status": status,
-                "title": check.title,
-                "artist": check.artist,
+                "title": check.title or known.get("title") or "",
+                "artist": check.artist or known.get("artist") or "",
                 "found_on": check.found_on,
                 "missing_from": check.missing_from,
+                # Which group each tracker matched, so the verdict keeps its
+                # address on this path too.
+                "group_ids": {
+                    v.tracker: int(v.match.group_id)
+                    for v in check.verdicts
+                    if v.match and v.match.group_id
+                },
                 "source": "album check",
                 # Read by the queue, which will not list a release Deezer
                 # cannot supply.

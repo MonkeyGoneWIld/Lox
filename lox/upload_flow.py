@@ -725,7 +725,7 @@ class FlowPrompts:
         else:
             # Metadata results and numbered menus are offered the same way: the
             # pipeline wants the index back, so that is the option's value.
-            result = _RESULT_LINE.match(text) if text.startswith(">") else None
+            result = _RESULT_LINE.match(text) if text.startswith(">") and ">>>" not in text else None
             menu = _MENU_LINE.match(text)
             if result:
                 index, description, url = result[1], result[2].strip(), result[3]
@@ -742,7 +742,15 @@ class FlowPrompts:
                         "link_label": "Open on Deezer ↗",
                     }
                 )
-            elif menu and len(text) < 60:
+            elif menu and len(text) < 60 and ">>>" not in text:
+                # A line carrying the rename arrow is a file being renamed, not
+                # an answer to anything. "05. Night Piano.flac >>> 05. Ronan -
+                # Night Piano.flac" reads as a numbered menu entry, so it was
+                # offered as a button beside "upload to an existing group on
+                # RED?" -- a filename presented as a torrent group to post
+                # into. The downconvert menu already refused these; every
+                # question should, because no question has a filename for an
+                # answer.
                 self._candidates.append({"value": menu[1], "label": menu[2][:60], "detail": ""})
 
         if "spectrals are available" in text.lower():
@@ -1742,6 +1750,13 @@ async def run_uploads(
                     "tracker": tracker,
                     "ok": tracker in reached,
                     "folder": seen.get(tracker, folder),
+                    # Where the torrent now lives. The pipeline hands this over
+                    # as each tracker takes the upload and it was recorded and
+                    # then dropped here, so the history had nothing to link to
+                    # and fell back to a search for the folder name -- the one
+                    # page that knows the exact torrent id was sending people
+                    # to a search box.
+                    "url": posted_to.get(tracker, ""),
                     "would_post": posted.get("fields") or {},
                     "descriptions": posted.get("descriptions") or {},
                     "posts": posted.get("posts") or [],

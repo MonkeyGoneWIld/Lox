@@ -370,6 +370,26 @@ class FlowRegistry:
         flows.sort(key=lambda f: f.created, reverse=True)
         return [f.as_dict() for f in flows]
 
+    def dismiss(self, flow_id: str) -> bool:
+        """Drop one finished flow.
+
+        A finished upload card stayed on the page until the browser was
+        reloaded, so the tab that says what is uploading kept showing what
+        already had. Only finished ones go: a run still working is dismissed by
+        cancelling it, which is a different decision and says so.
+
+        Args:
+            flow_id: The flow to forget.
+
+        Returns:
+            True when it was there and finished.
+        """
+        flow = self.flows.get(flow_id)
+        if flow is None or flow.state not in ("done", "failed", "cancelled"):
+            return False
+        del self.flows[flow_id]
+        return True
+
     def clear_finished(self) -> int:
         """Drop finished flows. Returns how many went."""
         done = [k for k, v in self.flows.items() if v.state in ("done", "failed", "cancelled")]

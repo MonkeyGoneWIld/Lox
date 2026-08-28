@@ -698,8 +698,11 @@ def main() -> int:
           "label: 'Added'" in js and "created_age" in js, "")
     check("and it can be narrowed like any other date column",
           "filter: 'days'" in js, "")
-    check("as well as how long since it was looked up",
-          "label: 'Days since lookup'" in js, "")
+    # And which check it means. "Days since lookup" was days only -- "0d ago"
+    # four minutes after a check, and "94d ago" where three months is the thing
+    # being judged -- beside an Added column that had the units all along.
+    check("as well as when the trackers were last asked",
+          "label: 'Latest tracker check'" in js, "")
     check("each with the date behind the relative time",
           "function checkedOn" in js, "")
     check("and the date is not dropped when a row is due again",

@@ -210,6 +210,11 @@
               <button id="scanhistory-forget">Forget</button>
               <span class="hint" id="scanhistory-count"></span>
             </div>
+            <!-- Its own, because a re-check started here used to report into
+                 the queue's log on another page: the button did nothing you
+                 could see, and the only way to know it was working was to go
+                 and look somewhere else. -->
+            <div class="joblog" id="scanhistory-log" hidden></div>
           </div>
           <div id="scanhistory-results"></div>
         </div>
@@ -290,6 +295,10 @@
               <button id="history-clear-filters">Clear filters</button>
               <span class="hint" id="history-count"></span>
             </div>
+            <!-- The same reason as the scan's: pressing Check again jumped to
+                 another sub-tab to show progress, so the page you pressed it
+                 on had nothing to say for itself. -->
+            <div class="joblog" id="history-log" hidden></div>
           </div>
           <div id="history-results"></div>
         </div>
@@ -309,8 +318,7 @@
         <div class="panel">
           <h2>Upload Queue</h2>
           <p class="hint">Releases that exist on Deezer and are missing from at least one of
-            your trackers. Each row says where it is missing from, where it came from, and how
-            long it has been waiting.</p>
+            your trackers.</p>
           <div class="row">
             <!-- The default is the one that finishes the job. Downloading on
                  its own leaves the release in the download folder waiting for

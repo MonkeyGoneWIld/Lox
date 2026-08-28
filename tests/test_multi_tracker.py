@@ -489,6 +489,76 @@ def ui_checks() -> None:
     check("demotion cannot empty a track",
           "def fix_track" in deezer_py and "album_mains" in deezer_py, "")
 
+    # An upload was given its own rate allowance so it would not queue behind a
+    # scan -- and then given the same size bucket, so it still stalled, just in
+    # a queue of its own.
+    base_py = pathlib.Path("lox/trackers/base.py").read_text(encoding="utf-8")
+    check("the upload allowance is wider than the scanner's",
+          "_rate_limiter = AsyncLimiter(10, 10)" in base_py
+          and "_upload_limiter = AsyncLimiter(30, 10)" in base_py, "")
+    # And it stopped spending that allowance on the same login. The pipeline
+    # builds a client per tracker per torrent, so one release with two
+    # downconversions to two trackers opened with eight identical index calls.
+    check("a login is asked for once, not once per client",
+          "_CREDENTIALS: dict[tuple[str, str], tuple[str, str]]" in base_py
+          and "cached = _CREDENTIALS.get((self.site_code, self.cookie))" in base_py, "")
+    check("keyed by the cookie, so a new login is a miss",
+          "_CREDENTIALS[(self.site_code, self.cookie)] = (self.authkey, self.passkey)" in base_py, "")
+    check("and dropped when the tracker says the session is gone",
+          "_CREDENTIALS.pop((self.site_code, self.cookie), None)" in base_py, "")
+
+    # The history's tracker names went to a search for the folder name. The
+    # pipeline hands over the exact torrent URL as each tracker takes it, and
+    # the outcome dropped it on the floor.
+    check("an outcome carries where the torrent landed",
+          '"url": posted_to.get(tracker, ""),' in flow_py, "")
+    check("and the finished card links to it rather than naming it",
+          "o.ok && o.url && !result.dry_run" in js, "")
+
+    # A finished card sat on the page until the browser was reloaded.
+    check("a finished run can be dismissed", "def dismiss(self, flow_id: str)" in
+          pathlib.Path("lox/flow.py").read_text(encoding="utf-8"), "")
+    web_api = pathlib.Path("lox/web/api.py").read_text(encoding="utf-8")
+    check("with an endpoint that refuses to drop a running one",
+          '@routes.post("/api/flows/{flow_id}/dismiss")' in web_api
+          and '"that run is not finished"' in web_api, "")
+    check("and a button that appears once it has finished",
+          "async function dismissFlow(flowId)" in js and "'Dismiss')" in js, "")
+
+    # A re-check started from a lookup history reported into the queue's log on
+    # another page: the button looked dead and the work was invisible.
+    check("a re-check reports where it was started from",
+          "async function recheckReleases(picked, boxSel = '#found-log')" in js
+          and "recheckReleases(picked, '#scanhistory-log')" in js, "")
+    check("and a request re-check does too",
+          "logSel = '#requests-log'" in js and "logSel: '#history-log'" in js, "")
+    check("with somewhere on each page to report it",
+          'id="scanhistory-log"' in shell and 'id="history-log"' in shell, "")
+    scan_rerun = js[js.index("async function scanHistoryRerun"):]
+    scan_rerun = scan_rerun[:scan_rerun.index("\n  }")]
+    hist_rerun = js[js.index("async function historyRerun"):]
+    hist_rerun = hist_rerun[:hist_rerun.index("\n  }")]
+    check("and neither jumps to another sub-tab to do it",
+          "showScanTab(" not in scan_rerun and "showRequestTab(" not in hist_rerun, "")
+
+    # Days only, beside an Added column that had the units all along.
+    check("the lookup history says which check it means",
+          "label: 'Latest tracker check'," in js and "label: 'Days since lookup'," not in js, "")
+    check("and says it in the same units as Added",
+          js.count("value: (r) => daysAgo(r.checked_at),") == 2, "")
+
+    # "Open" is an anchor styled as a button, so the button-to-button gap rule
+    # never applied to it and it sat flush against Rename.
+    css = pathlib.Path("lox/web/static/css/app.css").read_text(encoding="utf-8")
+    check("every control in a row-actions cell is spaced",
+          ".table td.row-actions > span {" in css
+          and ".table td.row-actions button + button" not in css, "")
+
+    # The user can see which trackers a row is missing from; the paragraph
+    # saying that a row says so is not information.
+    check("the queue does not narrate its own columns",
+          "where it came from, and how" not in shell, "")
+
     # A status poll can be in flight while a switch is clicked, carrying the
     # value from before it. Landing after the save it put the box back, so the
     # toast said "on" and the box was off.

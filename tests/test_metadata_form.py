@@ -271,6 +271,53 @@ async def main() -> int:
     flow5.answer(step5.id, "*")
     check("and it is the answer the pipeline receives", await asyncio.wait_for(task5, timeout=2) == "*", "")
 
+    # --- a filename is never an answer ------------------------------
+    # "Would you like to upload to an existing group on RED?" was asked with
+    # "Night Piano.flac >>> 05. Ronan - Night Piano.flac" as one of the groups
+    # to post into. The rename plan prints as numbered lines, and a numbered
+    # line is how the pipeline offers a menu -- so under any heading this file
+    # was not filed under, the renames became buttons on the next question.
+    # The downconversion menu already refused these; nothing else did.
+    flow9 = Flow("upload", "renames")
+    p9 = FlowPrompts(flow9, "")
+    GROUP_Q = ("Would you like to upload to an existing group on RED?@"
+               "Pick from recent uploads found, paste a URL or [N]ew group "
+               "/ [a]bort / [d]elete music folder").replace("@", "\n")
+
+    async def pick_group():
+        p9._echo("Renaming files")
+        p9._echo("05. Night Piano.flac >>> 05. Ronan - Night Piano.flac")
+        p9._echo("06. Day Piano.flac >>> 06. Ronan - Day Piano.flac")
+        return await p9._prompt(GROUP_Q)
+
+    task9 = asyncio.create_task(pick_group())
+    step9 = await wait_for_step(flow9)
+    labels9 = [o["label"] for o in step9.options]
+    check("a rename is not offered as a group to upload into",
+          not any(">>>" in label for label in labels9), str(labels9))
+    check("nor is the file it renames to",
+          not any(".flac" in label.lower() for label in labels9), str(labels9))
+    check("while the question's own answers are still there",
+          any("new group" in label.lower() for label in labels9), str(labels9))
+    flow9.answer(step9.id, "n")
+    await asyncio.wait_for(task9, timeout=2)
+
+    # A real group, printed the way the pipeline prints one, still is offered.
+    flow10 = Flow("upload", "realgroup")
+    p10 = FlowPrompts(flow10, "")
+
+    async def pick_real():
+        p10._echo("1 >> 2846919 | Ronan - Instrumental Remixes Vol. 4 | https://redacted.sh/t.php?id=2846919")
+        return await p10._prompt("Would you like to upload to an existing group on RED? [N]ew group")
+
+    task10 = asyncio.create_task(pick_real())
+    step10 = await wait_for_step(flow10)
+    labels10 = [o["label"] for o in step10.options]
+    check("a real group is still offered",
+          any("Instrumental Remixes" in label for label in labels10), str(labels10))
+    flow10.answer(step10.id, "n")
+    await asyncio.wait_for(task10, timeout=2)
+
     # --- the form can answer the error it shows ---------------------
     # "Ronan - Instrumental Remixes Vol. 4" reached the metadata form with
     # tracks that had no main artist, which the trackers refuse. The form

@@ -4184,8 +4184,9 @@
   // search is still going. Both want the same job, the same log line and the
   // same Stop button; only the batching differs.
   async function runCheckJob(tracker, ids,
-                             { recheck = false, prefix = '', onSkipped = null, onProgress = null } = {}) {
-    const log = $('#requests-log');
+                             { recheck = false, prefix = '', onSkipped = null, onProgress = null,
+                               logSel = '#requests-log' } = {}) {
+    const log = $(logSel) || $('#requests-log');
     const { job_id: jobId } = await api('/api/requests/check', {
       method: 'POST',
       body: { tracker, request_ids: ids, recheck },
@@ -4217,14 +4218,15 @@
     return job;
   }
 
-  async function requestsCheck(entries, { placeholders = false, recheck = false } = {}) {
+  async function requestsCheck(entries, { placeholders = false, recheck = false,
+                                          logSel = '#requests-log' } = {}) {
     // Callers used to hand over bare ids; they hand over {id, tracker} now,
     // and a bare id still works so a caller that has only an id is not forced
     // to invent a tracker for it.
     const items = entries.map((e) => (typeof e === 'object' ? e : { id: String(e), tracker: null }));
     if (!items.length) return toast('Nothing to check', 'bad');
 
-    const log = $('#requests-log');
+    const log = $(logSel) || $('#requests-log');
     log.hidden = false;
     log.textContent = 'Starting…';
     clearSkipped();
@@ -4273,6 +4275,7 @@
         // two trackers at once would race the budget guard on both.
         const job = await runCheckJob(tracker, ids, {
           recheck,
+          logSel,
           prefix: groups.size > 1 ? `${tracker}: ` : '',
           onSkipped: (note) => showSkipped(tracker, note),
         });
@@ -4572,17 +4575,18 @@
           cell: (r) => whenCell(r.added_at),
         },
         {
-          label: 'Days since lookup',
-          value: (r) => (r.checked_days_ago === null ? -1 : r.checked_days_ago),
+          // The same column as Added, about a different event, so it reads the
+          // same way. It was days only -- "0d ago" for something checked four
+          // minutes ago, and "94d ago" where "3 months" is the thing being
+          // judged -- while Added beside it had the units all along.
+          label: 'Latest tracker check',
+          value: (r) => daysAgo(r.checked_at),
           filter: 'days',
           class: 'nowrap',
           cell: (r) => {
             const days = r.checked_days_ago;
             const stale = state.scanWindow > 0 && days !== null && days >= state.scanWindow;
-            return el('span', {},
-              el('div', {}, days === null ? 'unknown' : days < 1 ? 'today' : `${Math.round(days)}d ago`),
-              el('span', { class: 'hint' },
-                 [checkedOn(r.checked_at), stale ? 'due a re-check' : ''].filter(Boolean).join(' · ')));
+            return whenCell(r.checked_at, stale ? 'due a re-check' : '');
           },
         },
       ],
@@ -4594,8 +4598,9 @@
     const shown = tableView('scanhistory').shown || state.scanHistory;
     const picked = shown.filter((r) => state.scanHistorySelected.has(scanKey(r)));
     if (!picked.length) return;
-    showScanTab('run');
-    await recheckReleases(picked);
+    // Stays here. It used to switch to the Scan sub-tab, which is neither
+    // where the button was nor where the progress went.
+    await recheckReleases(picked, '#scanhistory-log');
   }
 
   /** Forget the stored answers, so the next scan looks them up again. */
@@ -4782,8 +4787,8 @@
             : el('span', {}, '—')),
         },
         {
-          label: 'Days since lookup',
-          value: (r) => (r.checked_days_ago === null ? -1 : r.checked_days_ago),
+          label: 'Latest tracker check',
+          value: (r) => daysAgo(r.checked_at),
           filter: 'days',
           class: 'nowrap',
           cell: (r) => {
@@ -4791,7 +4796,7 @@
             const window_ = state.historyWindow;
             const stale = window_ > 0 && days !== null && days >= window_;
             return dateCell(
-              days === null ? 'unknown' : days < 1 ? 'today' : `${Math.round(days)}d ago`,
+              r.checked_at ? ago(r.checked_at) : 'unknown',
               checkedOn(r.checked_at),
               stale ? 'due a re-check' : '',
             );
@@ -4812,12 +4817,16 @@
       if (!byTracker.has(parts[0])) byTracker.set(parts[0], []);
       byTracker.get(parts[0]).push(parts[1]);
     }
-    showRequestTab('find');
+    // Reported here rather than on the Find sub-tab this used to jump to.
+    // Placeholders belong to a search's own result list, so they are not stood
+    // up over a history table that already has the rows.
     for (const [tracker, ids] of byTracker) {
       // eslint-disable-next-line no-await-in-loop -- serial on purpose: two
       // trackers at once race the same budget guard.
-      await requestsCheck(ids.map((id) => ({ id, tracker })), { placeholders: true, recheck: true });
+      await requestsCheck(ids.map((id) => ({ id, tracker })),
+                          { recheck: true, logSel: '#history-log' });
     }
+    await loadHistory();
   }
 
   // Which tracker a pasted request URL belongs to. The id alone is not enough
@@ -5540,7 +5549,7 @@ They will not be listed again, even if a later scan finds them.`)) {
   // things that did not make it into the queue -- and the second is where it
   // matters most, because "not checked against Deezer yet" is the one reason
   // on that list a re-check actually fixes.
-  async function recheckReleases(picked) {
+  async function recheckReleases(picked, boxSel = '#found-log') {
     const trackers = checkTrackers();
     if (!trackers.length) return toast('No tracker configured', 'bad');
 
@@ -5549,7 +5558,10 @@ They will not be listed again, even if a later scan finds them.`)) {
     }));
     try {
       const { job_id } = await api('/api/missing/check', { method: 'POST', body: { candidates, trackers } });
-      const log = $('#found-log');
+      // Whichever page asked. This was always the queue's log, so a re-check
+      // started from the scan's lookup history reported onto a page the user
+      // was not on: the button looked dead and the work was invisible.
+      const log = $(boxSel) || $('#found-log');
       log.hidden = false;
       log.textContent = 'Starting…';
       log.after(jobCancel(job_id, 'Stop re-checking'));
@@ -6481,8 +6493,13 @@ They will not be listed again, even if a later scan finds them.`)) {
           { class: 'result-block' },
           el('summary', {},
              el('strong', {}, o.tracker),
-             el('span', { class: `tag ${o.ok ? 'ok' : 'bad'}` },
-                o.ok ? (result.dry_run ? 'would upload' : 'uploaded') : (o.error || 'failed')),
+             // The torrent that now exists, where there is one. A real run
+             // knows its exact id, so "uploaded" opens the upload rather than
+             // being a word about it.
+             o.ok && o.url && !result.dry_run
+               ? trackerTag(o.tracker, 'ok', 'uploaded', o.url, `Open it on ${o.tracker}`)
+               : el('span', { class: `tag ${o.ok ? 'ok' : 'bad'}` },
+                    o.ok ? (result.dry_run ? 'would upload' : 'uploaded') : (o.error || 'failed')),
              el('span', { class: 'card-sub' }, o.folder ? basename(o.folder) : '')),
           ...detail,
         ),
@@ -6883,7 +6900,11 @@ They will not be listed again, even if a later scan finds them.`)) {
           el('span', { class: `tag ${stateTag}` }, flow.state === 'waiting' ? 'needs you' : flow.state),
           flow.state === 'running' || flow.state === 'waiting'
             ? el('button', { class: 'ghost', onclick: () => cancelFlow(flow.id) }, 'Cancel')
-            : null,
+            // Finished, so the way off the page is dismissing it rather than
+            // cancelling something that is not running. The record of it is in
+            // Upload History either way.
+            : el('button', { class: 'ghost', title: 'Kept in Upload History',
+                             onclick: () => dismissFlow(flow.id) }, 'Dismiss'),
         ].filter(Boolean),
       );
     }
@@ -6946,6 +6967,27 @@ They will not be listed again, even if a later scan finds them.`)) {
 
   async function cancelFlow(flowId) {
     await api(`/api/flows/${flowId}/cancel`, { method: 'POST' });
+  }
+
+  /**
+   * Take a finished run off the page.
+   *
+   * A done card sat there until the browser was reloaded, so the tab that says
+   * what is uploading went on showing what already had. What it did is not
+   * lost by dismissing it -- Upload History keeps every run, with its log.
+   *
+   * @param {string} flowId - The finished run.
+   */
+  async function dismissFlow(flowId) {
+    try {
+      await api(`/api/flows/${flowId}/dismiss`, { method: 'POST' });
+    } catch (e) {
+      return toast(e.message, 'bad');
+    }
+    state.flows.delete(flowId);
+    $(`#flow-${CSS.escape(flowId)}`)?.remove();
+    railNeedsYou($$('.flow-head[data-state="waiting"]').length);
+    return undefined;
   }
 
   async function resumeFlows() {

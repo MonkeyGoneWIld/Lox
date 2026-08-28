@@ -223,6 +223,9 @@ jobs:
         # and widening brings the same rows back with no tracker call.
         run: uv run python tests/test_queue_rules.py
 
+      - name: Re-checking a queue row must not delete it
+        run: uv run python tests/test_queue_recheck.py
+
       - name: A saved setting reaches the running process
         # The page could report a value nothing was using: the gateway copies
         # budgets and tracker credentials once, at startup.

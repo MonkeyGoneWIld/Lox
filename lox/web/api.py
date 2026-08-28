@@ -2323,6 +2323,15 @@ async def api_flow_cancel(request: web.Request) -> web.Response:
     return json_response({"cancelled": flow.cancel()})
 
 
+@routes.post("/api/flows/{flow_id}/dismiss")
+async def api_flow_dismiss(request: web.Request) -> web.Response:
+    """Forget one finished flow, so its card leaves the page."""
+    gone = request.app["flows"].dismiss(request.match_info["flow_id"])
+    if not gone:
+        return error("that run is not finished", status=409)
+    return json_response({"dismissed": True})
+
+
 @routes.post("/api/flows/clear")
 async def api_flows_clear(request: web.Request) -> web.Response:
     """Drop finished flows."""
