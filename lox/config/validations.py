@@ -291,7 +291,11 @@ class UploadFormatting(BaseStruct):
     various_artist_threshold: int = 4
     blacklisted_substitution: str = "_"
     guests_in_track_title: bool = False
-    various_artist_word: str = "Various"
+    # What a release billed to more artists than the threshold is called.
+    # "Various" was the default and it is not what either tracker calls it:
+    # both list a compilation under "Various Artists", so a folder named
+    # "Various - ..." is a rename away from the name it should have had.
+    various_artist_word: str = "Various Artists"
     strip_useless_versions: bool = True
     add_edition_title_to_album_tag: bool = True
 
@@ -483,6 +487,14 @@ class Linking(BaseStruct):
     """
 
     enabled: bool = False
+    # Delete the download once every tracker that took the release is seeding
+    # from its own linked copy.
+    #
+    # Without this the release stays in the download folder for ever, on the
+    # Uploading list, offering to upload something already uploaded. It is only
+    # ever safe with linking on -- with it off the tracker is seeding from that
+    # very folder -- and it never runs on a dry run or on a run nothing took.
+    remove_source_after_upload: bool = True
     # Root of the torrent client's upload/seeding area.
     link_dir: str | None = None
     method: Literal["hardlink", "symlink", "copy"] = "hardlink"

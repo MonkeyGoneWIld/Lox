@@ -313,6 +313,10 @@ FIELDS: tuple[Field, ...] = (
           "Hardlink unless your client cannot follow them. Copy means a second full copy of every release.",
           choices=("hardlink", "symlink", "copy")),
     Field("linking.per_tracker_dirs", "Separate folder per tracker", "bool", "linking"),
+    Field("linking.remove_source_after_upload", "Delete the download once it is seeding", "bool", "linking",
+          "After a successful upload the release is seeding from the linked folders, and the original "
+          "download is a duplicate that stays on the Uploading list for ever. Only ever applies with "
+          "linking on, never to a dry run, and never when no tracker took it."),
     Field("linking.fallback_to_copy", "Fall back to a real copy if linking fails", "bool", "linking",
           "Leave off so a cross-filesystem mistake fails loudly instead of doubling disk usage."),
 

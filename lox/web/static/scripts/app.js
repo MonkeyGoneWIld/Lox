@@ -34,8 +34,6 @@
     paneStack: [],
     found: [],
     selectedFound: new Set(),
-    // The queue rule in words, for the line that says what did not make it.
-    foundRule: '',
     // Narrowing what is on screen. Not persisted: it is a way of reading the
     // list, not a setting.
     // Releases ticked for a batch action, by album id.
@@ -47,6 +45,8 @@
     uploadTrackers: [],
     // The download folder as it was last read, and what is ticked in it.
     folders: [],
+    // The tracker chip being dragged into a new position, if any.
+    draggingTarget: null,
     // Folders waiting their turn, and the one being uploaded now.
     uploadQueue: [],
     uploadCurrent: null,
@@ -331,11 +331,13 @@
           });
         }
 
-        // The column's class dresses the DATA cell, not the header. Applying
-        // it to both put `display: flex` on the trackers header, which laid
-        // the label and its filter out side by side while every other header
-        // stacked them -- the row stepped up and down across the table.
-        return el('th', {},
+        // A column is a label, the filter that narrows it and the values --
+        // one stack on one centre line -- so the header has to know which
+        // column it is heading. Only the alignment is shared: the column's own
+        // class still dresses the DATA cell alone, because putting all of it
+        // on the header put `display: flex` on the trackers header and laid
+        // the label out beside its filter while every other one stacked them.
+        return el('th', { class: column.text ? 'col-text' : null },
           el('div', { class: 'th-label' }, sortButton),
           el('div', { class: 'th-filter-slot' }, control));
       }));
@@ -374,7 +376,9 @@
               },
             }))
           : null,
-        ...columns.map((column) => el('td', { class: column.class || '' }, column.cell(row)))));
+        ...columns.map((column) =>
+          el('td', { class: `${column.class || ''}${column.text ? ' col-text' : ''}`.trim() },
+             column.cell(row)))));
 
     return el('div', { 'data-table': name, class: 'datatable' },
       el('table', { class: 'table' },
@@ -473,9 +477,9 @@
   // The two used to be separate -- a click changed the screen and then, where
   // somebody had got round to it, mentioned itself to history -- and the
   // places nobody had got round to were the ones people actually use. A
-  // search, a Browse tab, a genre, a channel, a request, the excluded rows in
-  // the queue and a place on the settings page all carried the address of
-  // whichever screen you had arrived from. Back skipped every one of them at
+  // search, a Browse tab, a genre, a channel, a request and a place on the
+  // settings page all carried the address of whichever screen you had arrived
+  // from. Back skipped every one of them at
   // once, a reload threw them away, and none of them could be bookmarked or
   // sent to anybody.
   //
@@ -1005,19 +1009,18 @@
   /**
    * Which trackers an upload goes to, and in what order.
    *
-   * Two things were wrong with the row of toggles this replaces.
+   * Uploading to two trackers is two posts in sequence, and which goes first
+   * decides who owns the group the second one adds to -- so the order is a
+   * real decision and the list is a real list. You drag it into the order you
+   * want, which is what everyone tries first; the arrows this replaces were
+   * two more buttons on a row that already had too many.
    *
-   * Turning off the last one you had on emptied the list, and the next render
-   * quietly refilled it with the *first* configured tracker -- so with only
-   * OPS selected, pressing OPS gave you RED, and with only RED selected,
-   * pressing RED gave you RED again. One direction worked and the other did
-   * nothing, for no reason anybody could see. There has to be a tracker
-   * selected, so turning the last one off now hands over to the next one
-   * instead of springing back to the top of the list.
-   *
-   * And the order was the order they happened to be declared in. Uploading to
-   * both trackers is two uploads in sequence, and which goes first matters
-   * enough to be worth saying.
+   * Clicking a tracker turns it on or off. Turning off the last one you had on
+   * used to empty the list, and the next render quietly refilled it with the
+   * FIRST configured tracker -- so with only OPS on, pressing OPS gave you
+   * RED, while with only RED on, pressing RED gave you RED again. One
+   * direction worked and the other did nothing, for no visible reason. There
+   * has to be a tracker selected, so the last one off hands over to the next.
    */
   function renderUploadTargets() {
     const host = $('#upload-tracker');
@@ -1035,17 +1038,18 @@
         state.uploadTrackers.splice(at, 1);
       } else {
         // The last one: hand over rather than leaving nothing selected.
-        const next = codes[(codes.indexOf(code) + 1) % codes.length];
-        state.uploadTrackers = [next];
+        state.uploadTrackers = [codes[(codes.indexOf(code) + 1) % codes.length]];
       }
       renderUploadTargets();
     };
 
-    const move = (code, by) => {
-      const at = state.uploadTrackers.indexOf(code);
-      const to = at + by;
-      if (at < 0 || to < 0 || to >= state.uploadTrackers.length) return;
-      state.uploadTrackers.splice(to, 0, ...state.uploadTrackers.splice(at, 1));
+    /** Put `code` where `before` is, or at the end when there is no `before`. */
+    const moveTo = (code, before) => {
+      const order = state.uploadTrackers.filter((c) => c !== code);
+      const at = before ? order.indexOf(before) : -1;
+      if (at < 0) order.push(code);
+      else order.splice(at, 0, code);
+      state.uploadTrackers = order;
       renderUploadTargets();
     };
 
@@ -1053,41 +1057,82 @@
     const ordered = [...state.uploadTrackers, ...codes.filter((c) => !state.uploadTrackers.includes(c))];
     const several = state.uploadTrackers.length > 1;
 
+    const chip = (code) => {
+      const at = state.uploadTrackers.indexOf(code);
+      const on = at >= 0;
+      const node = el('button', {
+        type: 'button',
+        class: `upload-target${on ? ' on' : ''}${several && on ? ' draggable' : ''}`,
+        // Only a selected tracker has a position, so only a selected tracker
+        // has anything to drag.
+        //
+        // The string, not the boolean: `draggable` is an enumerated attribute,
+        // and el() writes a `true` as an empty value -- which is not one of
+        // the words it accepts, so the browser fell back to the default and
+        // nothing could be picked up.
+        draggable: several && on ? 'true' : 'false',
+        'data-code': code,
+        title: on
+          ? (several
+              ? `${code} runs ${at === 0 ? 'first' : `${at + 1} of ${state.uploadTrackers.length}`}. Drag to reorder.`
+              : `Uploading to ${code}`)
+          : `Also upload to ${code}`,
+        onclick: () => toggle(code),
+        ondragstart: (e) => {
+          state.draggingTarget = code;
+          node.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          // Firefox will not start a drag without something on the transfer.
+          e.dataTransfer.setData('text/plain', code);
+        },
+        ondragend: () => {
+          state.draggingTarget = null;
+          $$('.upload-target').forEach((n) => n.classList.remove('dragging', 'drop-before'));
+        },
+        ondragover: (e) => {
+          if (!state.draggingTarget || state.draggingTarget === code) return;
+          if (!state.uploadTrackers.includes(code)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          node.classList.add('drop-before');
+        },
+        ondragleave: () => node.classList.remove('drop-before'),
+        ondrop: (e) => {
+          e.preventDefault();
+          node.classList.remove('drop-before');
+          const dragged = state.draggingTarget || e.dataTransfer.getData('text/plain');
+          if (dragged && dragged !== code) moveTo(dragged, code);
+        },
+      },
+      several && on ? el('span', { class: 'target-order' }, String(at + 1)) : null,
+      code);
+      return node;
+    };
+
     host.replaceChildren(
-      ...ordered.map((code) => {
-        const at = state.uploadTrackers.indexOf(code);
-        const on = at >= 0;
-        return el('span', { class: `upload-target${on ? ' on' : ''}` },
-          several && on
-            ? el('button', {
-                type: 'button',
-                class: 'order-arrow',
-                disabled: at === 0,
-                title: `Upload to ${code} earlier`,
-                'aria-label': `Move ${code} earlier`,
-                onclick: () => move(code, -1),
-              }, '\u2039')
-            : null,
-          el('button', {
-            type: 'button',
-            class: on ? 'active' : '',
-            title: on
-              ? `Uploading to ${code}${several ? ` — ${at + 1} of ${state.uploadTrackers.length}` : ''}`
-              : `Also upload to ${code}`,
-            onclick: () => toggle(code),
-          }, several && on ? `${at + 1}. ${code}` : code),
-          several && on
-            ? el('button', {
-                type: 'button',
-                class: 'order-arrow',
-                disabled: at === state.uploadTrackers.length - 1,
-                title: `Upload to ${code} later`,
-                'aria-label': `Move ${code} later`,
-                onclick: () => move(code, 1),
-              }, '\u203a')
-            : null);
-      }),
+      ...ordered.map(chip),
+      // The drop target for "put it last": without one, dragging past the end
+      // of the row has nowhere to land.
+      several
+        ? el('span', {
+            class: 'target-end',
+            ondragover: (e) => {
+              if (!state.draggingTarget) return;
+              e.preventDefault();
+              e.currentTarget.classList.add('drop-before');
+            },
+            ondragleave: (e) => e.currentTarget.classList.remove('drop-before'),
+            ondrop: (e) => {
+              e.preventDefault();
+              e.currentTarget.classList.remove('drop-before');
+              const dragged = state.draggingTarget || e.dataTransfer.getData('text/plain');
+              if (dragged) moveTo(dragged, null);
+            },
+          })
+        : null,
     );
+    const note = $('#upload-order-note');
+    if (note) note.textContent = several ? 'drag to reorder' : '';
   }
 
   /**
@@ -2355,6 +2400,8 @@
       columns: [
         {
           label: 'Saved search',
+          // Read down rather than compared across, so it keeps its left edge.
+          text: true,
           value: (w) => w.name || '',
           filter: 'text',
           cell: (w) => (state.watchEditing === w.id
@@ -3026,6 +3073,8 @@
       columns: [
         {
           label: 'Album',
+          // Read down rather than compared across, so it keeps its left edge.
+          text: true,
           value: (c) => `${c.artist || ''} ${c.title || ''}`.trim(),
           filter: 'text',
           cell: (c) => el('a', {
@@ -3837,6 +3886,8 @@
         columns: [
           {
             label: 'Request',
+            // Read down rather than compared across, so it keeps its left edge.
+            text: true,
             value: (r) => `${r.artist || ''} ${r.title || ''} ${r.id}`.trim(),
             filter: 'text',
             class: 'req-name',
@@ -4263,6 +4314,8 @@
       columns: [
         {
           label: 'Release',
+          // Read down rather than compared across, so it keeps its left edge.
+          text: true,
           value: (r) => `${r.artist || ''} ${r.title || ''}`.trim(),
           filter: 'text',
           cell: (r) => el('a', {
@@ -4427,6 +4480,8 @@
       columns: [
         {
           label: 'Request',
+          // Read down rather than compared across, so it keeps its left edge.
+          text: true,
           value: (r) => `${r.artist || ''} ${r.album || ''} ${r.id}`.trim(),
           filter: 'text',
           cell: (r) => {
@@ -4701,13 +4756,27 @@
       el('div', { class: 'split' }, left, right),
     );
 
-    left.replaceChildren(
-      el('div', { class: 'row split-head' },
-        el('h3', { class: 'section-title' }, `Request on ${code || 'the tracker'}`),
-        url ? el('a', { class: 'filebtn', href: url, target: '_blank', rel: 'noopener noreferrer' },
-                 'Open in a tab ↗') : null),
-      spinner('Loading the request'),
-    );
+    // Rebuilt on a refresh, so the head can say how old the copy is.
+    const drawHead = (detail) => el('div', { class: 'row split-head' },
+      el('h3', { class: 'section-title' }, `Request on ${code || 'the tracker'}`),
+      // What the terms are was settled when the request was posted, so the
+      // stored copy is the answer and opening one is instant. The vote count
+      // and the comments do move, which is why the age is on screen and there
+      // is a button to ask again.
+      detail && detail.cached_at
+        ? el('span', { class: 'hint' }, `as of ${ago(detail.cached_at)}`)
+        : null,
+      detail
+        ? el('button', {
+            class: 'ghost',
+            title: 'Ask the tracker again. Takes about a minute.',
+            onclick: () => loadRequestSide(true),
+          }, 'Refresh')
+        : null,
+      url ? el('a', { class: 'filebtn', href: url, target: '_blank', rel: 'noopener noreferrer' },
+               'Open in a tab ↗') : null);
+
+    left.replaceChildren(drawHead(null), spinner('Loading the request'));
 
     const deezerSide = (async () => {
       if (!match?.deezer_id) {
@@ -4726,14 +4795,19 @@
       }
     })();
 
-    const head = left.firstChild;
-    if (!code || !id) {
-      left.replaceChildren(head, empty('This request has no tracker or id to look up.'));
-    } else {
+    async function loadRequestSide(refresh = false) {
+      if (!code || !id) {
+        left.replaceChildren(drawHead(null), empty('This request has no tracker or id to look up.'));
+        return;
+      }
+      if (refresh) {
+        left.replaceChildren(drawHead(null), spinner('Asking the tracker again'));
+      }
       try {
         const detail = await api(
-          `/api/requests/detail?tracker=${encodeURIComponent(code)}&id=${encodeURIComponent(id)}`);
-        left.replaceChildren(head, requestPanel(detail));
+          `/api/requests/detail?tracker=${encodeURIComponent(code)}&id=${encodeURIComponent(id)}`
+          + (refresh ? '&refresh=1' : ''));
+        left.replaceChildren(drawHead(detail), requestPanel(detail));
         // Somebody who arrived on the link had nothing to name the page with
         // until now. The tracker's own record has it, so use it.
         const title = [detail.artist, detail.title].filter(Boolean).join(' — ');
@@ -4743,9 +4817,11 @@
           setTitle(title);
         }
       } catch (e) {
-        left.replaceChildren(head, empty(e.message));
+        left.replaceChildren(drawHead(null), empty(e.message));
       }
     }
+
+    await loadRequestSide();
     await deezerSide;
   }
 
@@ -4915,37 +4991,21 @@
     const body = $('#found-body');
     body.replaceChildren(spinner('Loading'));
     try {
-      const { found, blacklisted, held_count: heldCount, rule,
-              held_groups: heldGroups = [], settled_count: settledCount = 0,
-              settled_groups: settledGroups = [] } = await api('/api/found');
+      const { found, blacklisted } = await api('/api/found');
       state.found = found;
-      state.foundRule = rule || '';
       state.selectedFound = new Set(found.map((f) => f.id));
       $('#found-restore').hidden = !blacklisted;
       $('#found-restore').textContent = `Clear blacklist (${blacklisted})`;
 
-      // What did not make the queue is a count and a reason, not a second
-      // list underneath the first.
+      // What did not make the queue is not the queue's business.
       //
-      // It used to be a table you could open, and everything in it was
-      // something nobody wanted: releases every tracker already has, releases
-      // Deezer cannot supply, releases a rule you set deliberately excluded.
-      // Offering all of that as a list to work through made the queue look
-      // like it was hiding work from you when it was doing its job. The line
-      // stays, because a list that quietly got shorter is worse; the table
-      // does not.
-      const dropped = settledCount
-        ? `${settledCount} dropped: ${settledGroups.map((g) => `${g.count} ${g.label}`).join('; ')}.`
-        : '';
-      const parts = heldGroups.map((g) => (g.key === 'rules'
-        ? `${g.count} by your queue rules, which let through ${state.foundRule}`
-        : `${g.count} ${g.label}`));
-      const excluded = heldCount ? `${heldCount} excluded: ${parts.join('; ')}.` : '';
-
-      const heldRow = $('#found-held-row');
-      heldRow.hidden = !heldCount && !settledCount;
-      $('#found-held').textContent = [excluded, dropped].filter(Boolean).join(' ');
-
+      // This was a table you could open, and then a line saying how many had
+      // been kept out and why. Both were the same mistake: everything counted
+      // there is something nobody wanted -- releases every tracker already
+      // has, releases Deezer cannot supply, releases a rule the operator set
+      // deliberately excludes -- and reporting the total made a working queue
+      // look like it was withholding eighty-nine things. A queue is a list of
+      // work; what is not work does not belong on it in any form.
       renderQueueUpkeep();
       renderFound();
     } catch (e) {
@@ -5019,6 +5079,8 @@
       columns: [
         {
           label: 'Release',
+          // Read down rather than compared across, so it keeps its left edge.
+          text: true,
           value: (f) => `${f.artist || ''} ${f.title || ''}`.trim(),
           filter: 'text',
           cell: (f) => el('a', {
@@ -5326,6 +5388,8 @@ They will not be listed again, even if a later scan finds them.`)) {
         columns: [
           {
             label: 'Folder',
+            // Read down rather than compared across, so it keeps its left edge.
+            text: true,
             value: (f) => f.name,
             filter: 'text',
             cell: (f) => el('span', {},
@@ -6046,7 +6110,16 @@ They will not be listed again, even if a later scan finds them.`)) {
   //
   // After a real run the same files are what the torrents are seeding from, so
   // only the transcodes are listed and the label says what removing them costs.
+  // What a rehearsal left on disk, and only a rehearsal.
+  //
+  // A real run's downconversions were posted and are seeding: offering to
+  // delete them on the page that says the upload succeeded invites you to
+  // break four torrents you just made. This panel exists because a dry run
+  // hardlinks and transcodes without posting anything, so what it leaves is
+  // genuinely litter -- which is why the server sends nothing here for a run
+  // that was not one.
   function leftovers(result) {
+    if (!result.dry_run) return null;
     const seen = new Set();
     const items = [];
     const add = (path, what) => {
@@ -6068,13 +6141,12 @@ They will not be listed again, even if a later scan finds them.`)) {
       'details',
       { class: 'result-block', open: true },
       el('summary', {},
-         el('strong', {}, result.dry_run ? 'Files this rehearsal left behind' : 'Transcodes kept'),
+         el('strong', {}, 'Files this rehearsal left behind'),
          el('span', { class: 'card-sub' },
             `${items.length} folder${items.length === 1 ? '' : 's'}`)),
       el('p', { class: 'hint' },
-         result.dry_run
-           ? 'Nothing was posted or seeded, so none of this is in use. Delete what you do not want to keep.'
-           : 'These were uploaded and are seeding. Deleting one stops that torrent.'),
+         'Nothing was posted or seeded, so none of this is in use. '
+         + 'Delete what you do not want to keep.'),
       list,
     );
 

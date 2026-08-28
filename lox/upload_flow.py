@@ -99,7 +99,14 @@ _BLOCK_HEADS = {
     # answer to "what would this have done", so it is kept rather than scrolled
     # past in the log.
     "would have posted": ("dryrun", "What would have been posted"),
+    # Which request is about to be filled. "Are you sure you would like to fill
+    # this request" was asked with the request itself scattered into the log,
+    # which is collapsed -- so the question had no subject on screen.
+    "selected request": ("request", "The request this would fill"),
 }
+
+#: "Bounty: 10.00 GiB" -- the shape _print_request_details writes.
+_LABELLED = re.compile(r"^([A-Z][A-Za-z ]{1,24}):\s+(.+?)\s*$")
 # "title                        Sammaouny". Matched after the line has been
 # stripped -- it is indented in the pipeline's output, but _echo strips every
 # line before this sees it, so requiring the indent here matched nothing and
@@ -401,6 +408,11 @@ class _Answer:
 class FlowPrompts:
     """Redirects click's prompt functions into a flow for as long as it is active."""
 
+    #: Which tracker the pipeline is currently working on, so a question that
+    #: is only about one of them can say so. Uploading to two trackers asks
+    #: "upload the torrent?" twice, and the two look identical.
+    tracker: str = ""
+
     def __init__(self, flow: Flow, folder: str = "") -> None:
         """Initialize with the flow that questions should go to.
 
@@ -493,13 +505,17 @@ class FlowPrompts:
             # out -- everything up to the post is still changeable, and a typo
             # in the metadata should not mean aborting the whole upload.
             if _RERUN_METADATA.search(prompt):
+                where = f" to {self.tracker}" if self.tracker else ""
                 choice = await self.flow.choose(
-                    prompt.split("(")[0].strip().rstrip("?:, ") or "Upload the torrent?",
+                    f"Upload the torrent{where}?",
                     [
-                        {"value": "yes", "label": "Upload the torrent"},
+                        {"value": "yes", "label": f"Upload to {self.tracker}" if self.tracker
+                                                  else "Upload the torrent"},
                         {"value": "no", "label": "← Back to the metadata"},
                     ],
-                    detail="Nothing has been posted yet, so going back changes what will be.",
+                    detail=(f"Nothing has been posted{where} yet, so going back changes what will be."
+                            if self.tracker
+                            else "Nothing has been posted yet, so going back changes what will be."),
                     default="yes",
                     tables=tables,
                 )
@@ -842,6 +858,16 @@ class FlowPrompts:
             )
             # Kept for the result summary as well as the question it sits under.
             self.dry_run_payload[field[1].strip()] = field[2].strip()
+            return True
+
+        if self._block["kind"] == "request":
+            labelled = _LABELLED.match(text)
+            if not labelled:
+                return False
+            self._block["rows"].append(
+                {"group": "", "label": labelled[1].strip(), "before": labelled[2].strip(),
+                 "after": "", "changed": False}
+            )
             return True
 
         if self._block["kind"] == "renames":
@@ -1461,19 +1487,29 @@ class FlowPrompts:
 async def run_upload(
     flow: Flow,
     folder: str,
-    tracker: str,
+    trackers: list[str],
     *,
     source: str = "WEB",
     auto_rename: bool = False,
+    link_for: Any = None,
+    on_uploaded: Any = None,
 ) -> dict[str, Any]:
-    """Upload one folder to one tracker, asking the browser as it goes.
+    """Upload one folder to every chosen tracker, asking the browser as it goes.
+
+    One pass of the pipeline, not one per tracker. Everything that is a fact
+    about the release -- the spectrals, the metadata lookup, the retagging, the
+    folder and file names, which formats to convert to -- happens once; only
+    what is genuinely per-tracker happens per tracker.
 
     Args:
         flow: The flow questions and progress are published to.
         folder: Release folder to upload.
-        tracker: Tracker code.
+        trackers: Tracker codes, in the order they should run.
         source: Media source.
         auto_rename: Rename files and folders without asking.
+        link_for: Called with ``(tracker, path)`` before each tracker's post,
+            returning the path that tracker seeds from.
+        on_uploaded: Called with ``(tracker, url)`` after each tracker takes it.
 
     Returns:
         A summary of what happened.
@@ -1484,12 +1520,20 @@ async def run_upload(
     import lox.trackers
     from lox.uploader import upload as run_pipeline
 
-    flow.progress(f"Preparing {tracker}")
-    flow.note(f"Uploading {folder} to {tracker}")
-    debug.log("upload start tracker=%s folder=%s", tracker, folder, level=20)
+    first = trackers[0]
+    flow.progress(f"Preparing {', '.join(trackers)}")
+    flow.note(f"Uploading {folder} to {', '.join(trackers)}")
+    debug.log("upload start trackers=%s folder=%s", ",".join(trackers), folder, level=20)
 
-    gazelle = lox.trackers.get_class(tracker)()
+    gazelle = lox.trackers.get_class(first)()
     with FlowPrompts(flow, folder) as prompts:
+        prompts.tracker = first
+
+        def on_tracker(tracker: str) -> None:
+            """Which tracker the questions from here on are about."""
+            prompts.tracker = tracker
+            flow.progress(f"Uploading to {tracker}")
+
         await run_pipeline(
             gazelle,
             folder,
@@ -1499,10 +1543,14 @@ async def run_upload(
             (),
             None,
             auto_rename=auto_rename,
+            also_upload_to=list(trackers),
+            link_for=link_for,
+            on_uploaded=on_uploaded,
+            on_tracker=on_tracker,
         )
 
-    flow.progress(f"Finished {tracker}", 100.0)
-    debug.log("upload finished tracker=%s folder=%s", tracker, folder, level=20)
+    flow.progress(f"Finished {', '.join(trackers)}", 100.0)
+    debug.log("upload finished trackers=%s folder=%s", ",".join(trackers), folder, level=20)
     posts = prompts.finish_posts()
     return {
         "posts": posts,
@@ -1520,12 +1568,25 @@ async def run_uploads(
     source: str = "WEB",
     auto_rename: bool = False,
 ) -> dict[str, Any]:
-    """Upload one folder to several trackers, hardlinking per tracker first.
+    """Upload one folder to several trackers, hardlinking per tracker as it goes.
+
+    This used to call the pipeline once per tracker, which meant the second
+    tracker asked every question the first had already answered: the spectrals
+    were regenerated and re-reviewed, the metadata was looked up and confirmed
+    again, the files were retagged and the folder renamed again, and the
+    downconversions were chosen again -- all about a release that had not
+    changed in the intervening minute. The pipeline has always had its own
+    tracker loop that does the shared work once; it was being switched off.
+
+    It is driven rather than switched off now. The loop is given exactly the
+    trackers picked in the UI, in the order picked, so it never offers one that
+    was deliberately left out -- which was the reason for switching it off in
+    the first place.
 
     Args:
         flow: The flow to drive.
         folder: Release folder.
-        trackers: Tracker codes.
+        trackers: Tracker codes, in the order they should run.
         source: Media source.
         auto_rename: Rename without asking.
 
@@ -1533,36 +1594,127 @@ async def run_uploads(
         Per-tracker outcomes.
     """
     from lox import cfg
+    from lox.seeding.links import LinkError, link_release
 
-    # The pipeline has its own multi-tracker loop: at the end of a release it
-    # offers whatever other trackers are configured. Here that is both redundant
-    # and wrong -- this function is already looping over exactly the trackers
-    # picked in the UI, so the offer names ones that were deliberately not
-    # picked, and taking it would upload twice.
-    was_multi = cfg.upload.multi_tracker_upload
-    cfg.upload.multi_tracker_upload = False
+    outcomes: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}
+    # Which trackers actually took the torrent, recorded as it happens. A run
+    # that stops on the second tracker must not report the second as uploaded,
+    # nor the first as failed.
+    posted_to: dict[str, str] = {}
+
+    def on_uploaded(tracker: str, url: Any) -> None:
+        posted_to[tracker] = str(url or "")
+        flow.note(f"{tracker} took the upload.")
+
+    async def link_for(tracker: str, path: str) -> str:
+        """Where this tracker should seed from, made from the prepared release."""
+        if not cfg.linking.enabled:
+            return path
+        if tracker in seen:
+            return seen[tracker]
+        flow.progress(f"Linking for {tracker}")
+        try:
+            link = await _to_thread(link_release, path, tracker)
+        except LinkError as e:
+            # Not fatal: the tracker can still have the release, it just seeds
+            # from the same folder as the others.
+            flow.note(f"{tracker}: linking failed — {e}", "error")
+            return path
+        flow.note(f"{tracker}: {'reused' if link.reused else link.method} {link.files} file(s)")
+        seen[tracker] = link.destination
+        return link.destination
+
+    result: dict[str, Any] = {}
+    with _record_transcodes() as transcoded:
+        try:
+            posted = await run_upload(
+                flow, folder, trackers, source=source, auto_rename=auto_rename,
+                link_for=link_for, on_uploaded=on_uploaded,
+            )
+        except click.Abort:
+            flow.note("Aborted.", "warning")
+            outcomes = [{"tracker": t, "ok": False, "error": "aborted"} for t in trackers]
+            posted = {}
+        except Exception as e:  # noqa: BLE001 - reported rather than raised
+            flow.note(f"{type(e).__name__}: {e}", "error")
+            outcomes = [{"tracker": t, "ok": False, "error": str(e)} for t in trackers]
+            posted = {}
+        else:
+            reached = set(posted_to)
+            outcomes = [
+                {
+                    "tracker": tracker,
+                    "ok": tracker in reached,
+                    "folder": seen.get(tracker, folder),
+                    "would_post": posted.get("fields") or {},
+                    "descriptions": posted.get("descriptions") or {},
+                    "posts": posted.get("posts") or [],
+                }
+                if tracker in reached
+                else {"tracker": tracker, "ok": False, "error": "did not reach this tracker"}
+                for tracker in trackers
+            ]
+
+        succeeded = [o["tracker"] for o in outcomes if o["ok"]]
+        result = {
+            "folder": folder,
+            "outcomes": outcomes,
+            "succeeded": succeeded,
+            "dry_run": _dry_run(),
+        }
+        # Kept, never deleted, and only worth mentioning on a rehearsal. A dry
+        # run exists to be inspected, and deleting the transcodes it just made
+        # removes the part you most wanted to look at. A real run's
+        # downconversions were uploaded and are seeding, so they are not
+        # leftovers at all.
+        if _dry_run():
+            for path in transcoded:
+                flow.note(f"Transcode kept at {path}")
+            result["transcodes"] = list(transcoded)
+            for outcome in result.get("outcomes") or []:
+                outcome["kept"] = list(transcoded)
+        else:
+            result["transcodes"] = []
+
+    _discard_spectrals(flow, folder)
+    _clean_up_source(flow, folder, result)
+    return result
+
+
+def _clean_up_source(flow: Flow, folder: str, result: dict[str, Any]) -> None:
+    """Remove the download the release was made from, once it is somewhere else.
+
+    A finished upload leaves the release seeding from the per-tracker link
+    directories, and the original download sitting in the download folder --
+    where it stays on the Uploading list for ever, offering to upload a release
+    that has already been uploaded.
+
+    Only ever when all three are true: the upload was real, at least one
+    tracker took it, and linking is on so the bytes genuinely exist somewhere
+    else. With linking off the tracker is seeding from this very folder, and
+    deleting it would break the torrent.
+    """
+    import shutil
+
+    from lox import cfg
+
+    if _dry_run() or not result.get("succeeded"):
+        return
+    if not cfg.linking.enabled or not cfg.linking.remove_source_after_upload:
+        return
+    linked = [o.get("folder") for o in result.get("outcomes") or [] if o.get("ok")]
+    if not any(path and os.path.abspath(path) != os.path.abspath(folder) for path in linked):
+        # Nothing was linked anywhere else, so this folder is what is seeding.
+        return
+    if not os.path.isdir(folder):
+        return
     try:
-        with _record_transcodes() as transcoded:
-            result: dict[str, Any] = {}
-            try:
-                result = await _upload_each(flow, folder, trackers, source=source, auto_rename=auto_rename)
-                return result
-            finally:
-                # Kept, never deleted. A dry run exists to be inspected, and
-                # deleting the transcodes it just made meant the one part you
-                # most wanted to check -- that the conversion produced the
-                # right files -- was gone before you could look. They are
-                # listed on the result with a button to remove them, so the
-                # decision is yours rather than automatic.
-                for path in transcoded:
-                    flow.note(f"Transcode kept at {path}")
-                if result:
-                    result["transcodes"] = list(transcoded)
-                    for outcome in result.get("outcomes") or []:
-                        outcome["kept"] = list(transcoded)
-    finally:
-        cfg.upload.multi_tracker_upload = was_multi
-        _discard_spectrals(flow, folder)
+        shutil.rmtree(folder)
+    except OSError as e:
+        flow.note(f"Could not remove {folder}: {e}", "warning")
+        return
+    flow.note(f"Removed the download at {folder}; the trackers seed from their own copies.")
 
 
 @contextlib.contextmanager
@@ -1620,60 +1772,6 @@ def _discard_spectrals(flow: Flow, folder: str) -> None:
         flow.note(f"Removed spectral scratch: {os.path.basename(path)}")
     except OSError as e:
         flow.note(f"Could not remove {path}: {e}", "warning")
-
-
-async def _upload_each(
-    flow: Flow,
-    folder: str,
-    trackers: list[str],
-    *,
-    source: str,
-    auto_rename: bool,
-) -> dict[str, Any]:
-    """Upload to each tracker in turn. See :func:`run_uploads`."""
-    from lox import cfg
-    from lox.seeding.links import LinkError, link_release
-
-    outcomes: list[dict[str, Any]] = []
-    for tracker in trackers:
-        target = folder
-        if cfg.linking.enabled:
-            flow.progress(f"Linking for {tracker}")
-            try:
-                link = await _to_thread(link_release, folder, tracker)
-                target = link.destination
-                flow.note(f"{tracker}: {'reused' if link.reused else link.method} {link.files} file(s)")
-            except LinkError as e:
-                flow.note(f"{tracker}: linking failed — {e}", "error")
-                outcomes.append({"tracker": tracker, "ok": False, "error": str(e)})
-                continue
-
-        try:
-            posted = await run_upload(flow, target, tracker, source=source, auto_rename=auto_rename)
-            outcomes.append(
-                {
-                    "tracker": tracker,
-                    "ok": True,
-                    "folder": target,
-                    "would_post": posted.get("fields") or {},
-                    "descriptions": posted.get("descriptions") or {},
-                    "posts": posted.get("posts") or [],
-                }
-            )
-        except click.Abort:
-            flow.note(f"{tracker}: aborted", "warning")
-            outcomes.append({"tracker": tracker, "ok": False, "error": "aborted"})
-        except Exception as e:  # noqa: BLE001 - one tracker failing must not stop the rest
-            flow.note(f"{tracker}: {type(e).__name__}: {e}", "error")
-            outcomes.append({"tracker": tracker, "ok": False, "error": str(e)})
-
-    succeeded = [o["tracker"] for o in outcomes if o["ok"]]
-    return {
-        "folder": folder,
-        "outcomes": outcomes,
-        "succeeded": succeeded,
-        "dry_run": _dry_run(),
-    }
 
 
 def _dry_run() -> bool:

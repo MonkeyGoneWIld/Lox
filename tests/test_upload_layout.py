@@ -337,8 +337,20 @@ def main() -> int:
           "th-label" in js and "th-filter-slot" in js, "")
     check("the filter slot is there even with no filter in it",
           "min-height" in rule(css, ".datatable thead th > .th-filter-slot"), "")
-    check("and the column's class does not reach the header",
-          "class dresses the DATA cell" in js, "")
+    check("and the column's own class still does not reach the header",
+          "still dresses the DATA cell alone" in js, "")
+
+    # A column is a label, the filter that narrows it and the values -- one
+    # stack on one centre line. They were all left-aligned against cells of
+    # very different widths, so a short label sat at the far left of a wide
+    # column with its filter box under it and its values off to one side.
+    check("a column's label, filter and values share a centre line",
+          "justify-content: center" in rule(css, ".datatable thead th > .th-label")
+          and "justify-content: center" in rule(css, ".datatable thead th > .th-filter-slot")
+          and "text-align: center" in rule(css, ".datatable td"), "")
+    check("except the name column, which is read down rather than compared across",
+          "text-align: left" in rule(css, ".datatable td.col-text")
+          and "column.text ? 'col-text' : null" in js, "")
 
     # A release found in June and re-checked this morning read as found this
     # morning: only checked_at was stamped, and every write overwrote it.
@@ -349,17 +361,19 @@ def main() -> int:
     check("and the buttons act on that same list",
           "const foundSelection = () =>" in js and "tableView('queue').shown" in js, "")
 
-    # A rule that hides rows without saying so is indistinguishable from a
-    # scan that found nothing, which is how this page loses someone's trust.
-    # It is a line, not a second list: everything the rules keep out is
-    # something nobody wanted, and offering it as work to get through made the
-    # queue look like it was withholding rows rather than doing its job.
-    check("held-back rows are counted on the page", 'id="found-held"' in shell, "")
-    check("but not listed under the queue as a second job",
-          'id="found-held-toggle"' not in shell and "function heldTable" not in js, "")
-    check("and the rule itself said in words", "state.foundRule" in js, "")
-    check("and no state left over from it",
-          "foundFilter" not in js and "state.showHeld" not in js, "")
+    # What did not reach the queue is not the queue's business.
+    #
+    # This was a table you could open, and then a line saying how many had been
+    # kept out and why. Both were the same mistake: everything counted there is
+    # something nobody wanted -- releases every tracker already has, releases
+    # Deezer cannot supply, releases a rule the operator set deliberately
+    # excludes -- and reporting the total made a working queue look like it was
+    # withholding eighty-nine things.
+    check("the queue does not report what it kept out",
+          'id="found-held"' not in shell and 'id="found-held-toggle"' not in shell, "")
+    check("nor list it", "function heldTable" not in js, "")
+    check("and no state left over from either",
+          "foundFilter" not in js and "state.showHeld" not in js and "state.foundRule" not in js, "")
 
     # --- the search results are a list you can work with --------------
     # Taking twenty of thirty covers was twenty clicks, and there was no way to
@@ -917,8 +931,16 @@ def main() -> int:
           "codes[(codes.indexOf(code) + 1) % codes.length]" in js, "")
     check("rather than springing back to the first one in the list",
           "state.uploadTrackers.add(state.trackers[0].code)" not in js, "")
-    check("and the trackers can be put in the order they should run",
-          "function renderUploadTargets" in js and "const move = (code, by)" in js, "")
+    # Dragged into order, which is what everyone tries first. The chevrons
+    # this replaced were two more buttons per chip on a row that already had
+    # too many, and read as punctuation rather than as controls.
+    check("and the trackers are dragged into the order they should run",
+          "function renderUploadTargets" in js
+          and "ondragstart:" in js and "ondrop:" in js, "")
+    check("with somewhere to drop one at the end of the row",
+          "target-end" in js and "target-end" in css, "")
+    check("and no arrows left behind",
+          "order-arrow" not in js and "order-arrow" not in css, "")
     check("which the upload honours, because it is a list and not a set",
           "uploadTrackers: []," in js, "")
 

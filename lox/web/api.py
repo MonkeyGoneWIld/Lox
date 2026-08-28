@@ -848,6 +848,37 @@ def _as_year(value: Any) -> float:
         return 0.0
 
 
+def _request_verdict(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Which trackers a request check found the release on, and which not.
+
+    The checker searches the tracker for the release before offering it as a
+    fill, and used to record the answer only as ``already_on_tracker``. The
+    queue speaks in ``found_on`` and ``missing_from``, so a request confirmed
+    absent from OPS looked to it exactly like a release nobody had checked --
+    and was held out with "not checked against any tracker yet".
+
+    Records written since carry both. This derives them for the ones written
+    before, so a hundred already-checked requests do not have to be paid for
+    again to reach the queue.
+
+    Args:
+        entry: A stored request record.
+
+    Returns:
+        ``(found_on, missing_from)``.
+    """
+    found = [str(t).upper() for t in entry.get("found_on") or ()]
+    missing = [str(t).upper() for t in entry.get("missing_from") or ()]
+    if found or missing:
+        return found, missing
+
+    tracker = str(entry.get("tracker") or "").upper()
+    on_tracker = entry.get("already_on_tracker")
+    if not tracker or on_tracker is None:
+        return [], []
+    return ([tracker], []) if on_tracker else ([], [tracker])
+
+
 def _tracker_links(entry: dict[str, Any], artist: str, title: str) -> dict[str, str]:
     """Where each tracker verdict on a row actually leads.
 
@@ -1004,6 +1035,7 @@ async def api_found(request: web.Request) -> web.Response:
         if entry.get("uploaded_at") or str(entry.get("deezer_id")) in dismissed or request_id in dismissed:
             continue
         album_id = str(entry.get("deezer_id"))
+        found_on, missing_from = _request_verdict(entry)
         merge(
             album_id,
             {
@@ -1020,10 +1052,10 @@ async def api_found(request: web.Request) -> web.Response:
                 "bounty": entry.get("bounty") or "",
                 # Which trackers have it and which do not, so the row says what
                 # the last check actually found rather than only that it exists.
-                "found_on": entry.get("found_on") or [],
-                "missing_from": entry.get("missing_from") or [],
+                "found_on": found_on,
+                "missing_from": missing_from,
                 "tracker_links": _tracker_links(
-                    entry,
+                    {**entry, "found_on": found_on, "missing_from": missing_from},
                     entry.get("artist") or entry.get("deezer_artist") or "",
                     entry.get("album") or entry.get("deezer_title") or "",
                 ),
@@ -1091,6 +1123,31 @@ async def api_found(request: web.Request) -> web.Response:
             "blacklisted": sum(1 for d in dismissed.values() if d.get("blacklist")),
         }
     )
+
+
+def _forget_download(downloader: Downloader, folder: str) -> None:
+    """Drop the finished download a release was uploaded from.
+
+    An upload leaves the release seeding from the per-tracker link directories
+    and the download itself deleted, so the job that fetched it is a row about
+    a folder that is not there any more -- sitting on the Downloading list with
+    a Delete button for a path that no longer exists.
+
+    Only finished jobs, and only when the folder really has gone: a job still
+    running is still about something.
+
+    Args:
+        downloader: The download registry.
+        folder: The release folder that was uploaded.
+    """
+    target = os.path.abspath(folder)
+    if os.path.isdir(target):
+        return
+    for job_id, job in list(downloader.jobs.items()):
+        if job.status in ("queued", "running"):
+            continue
+        if job.folder and os.path.abspath(job.folder) == target:
+            del downloader.jobs[job_id]
 
 
 def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: list[str]) -> None:
@@ -1660,8 +1717,13 @@ async def api_request_detail(request: web.Request) -> web.Response:
         return error("id must be a number")
 
     gateway: TrackerGateway = request.app["gateway"]
+    store: CheckerStore = request.app["store"]
+    # A request's terms are set when it is posted and the tracker takes the
+    # better part of a minute to read them back, so the stored copy is the
+    # answer unless the reader asks for a fresh one.
+    refresh = request.query.get("refresh") == "1"
     try:
-        return json_response(await request_detail(gateway, tracker, request_id))
+        return json_response(await request_detail(gateway, tracker, request_id, store, refresh))
     except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
         return error(str(e), status=502)
 
@@ -1825,8 +1887,8 @@ async def api_requests_history(request: web.Request) -> web.Response:
             "filled": bool(entry.get("filled")),
             "already_on_tracker": entry.get("already_on_tracker"),
             "tracker_group_url": entry.get("tracker_group_url") or "",
-            "found_on": entry.get("found_on") or [],
-            "missing_from": entry.get("missing_from") or [],
+            "found_on": _request_verdict(entry)[0],
+            "missing_from": _request_verdict(entry)[1],
             "all_flac": entry.get("all_flac"),
             "checked_at": entry.get("checked_at"),
             "checked_days_ago": age,
@@ -2045,6 +2107,8 @@ async def api_upload(request: web.Request) -> web.Response:
     store: CheckerStore = request.app["store"]
     album_id = str(body.get("album_id") or "")
 
+    downloader: Downloader = request.app["downloader"]
+
     async def run(f):
         result = await run_uploads(f, folder, trackers, source=source, auto_rename=auto_rename)
         # A release that has been uploaded is not one that is missing any more.
@@ -2052,6 +2116,7 @@ async def api_upload(request: web.Request) -> web.Response:
         # list slightly less true than it was before.
         if result.get("succeeded") and not cfg.upload.dry_run:
             _mark_uploaded(store, album_id, folder, result["succeeded"])
+            _forget_download(downloader, folder)
         return result
 
     label = f"{os.path.basename(folder)} to {', '.join(trackers)}"

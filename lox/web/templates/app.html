@@ -313,13 +313,6 @@
             <button id="found-restore" hidden>Clear blacklist</button>
             <span class="hint" id="found-count"></span>
           </div>
-          <!-- What did not make the queue, as a count and a reason. Never as
-               a second list underneath the first: everything in it is
-               something nobody wanted, and offering it as work to get through
-               made the queue look like it was hiding things. -->
-          <div class="row held-note" id="found-held-row" hidden>
-            <span class="hint" id="found-held"></span>
-          </div>
           <!-- A queue row is a claim about somebody else's tracker, and it
                decays. This says whether lox is keeping it honest by itself. -->
           <p class="hint" id="found-upkeep"></p>
@@ -345,7 +338,8 @@
                Uploading to both is two uploads in sequence, and which goes
                first decides who owns the group the other one adds to. -->
           <span class="hint">Upload to:</span>
-          <div class="segmented" id="upload-tracker"></div>
+          <div class="upload-targets" id="upload-tracker"></div>
+          <span class="hint" id="upload-order-note"></span>
           <!-- The same two settings as Settings → Uploading, not copies of
                them: these write through to the config and are re-read from the
                server, so the two pages cannot disagree. -->

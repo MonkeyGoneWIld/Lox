@@ -10,6 +10,7 @@ verification are all free, so they run afterwards and filter hard — a wrong fi
 is worse than no fill.
 """
 
+import contextlib
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -89,6 +90,16 @@ class RequestMatch(msgspec.Struct):
     # open after somebody uploaded it is not worth filling twice.
     already_on_tracker: bool | None = None
     tracker_group_url: str | None = None
+    #: The same answer in the vocabulary the queue reads.
+    #:
+    #: "already_on_tracker: false" and "missing_from: [OPS]" are the same
+    #: sentence, and only the second one is a sentence the queue understands.
+    #: Writing only the first is why a request that was checked, matched at
+    #: 100% and confirmed absent from the tracker was held out of the queue as
+    #: "not checked against any tracker yet".
+    found_on: list[str] = msgspec.field(default_factory=list)
+    missing_from: list[str] = msgspec.field(default_factory=list)
+    group_ids: dict[str, int] = msgspec.field(default_factory=dict)
     # Whether the request was already filled before we looked at it, and by
     # whom. A filled request cannot be filled again, so this ends the check.
     filled: bool = False
@@ -501,6 +512,9 @@ class DeezerRequestChecker:
                         "confidence": match.confidence,
                         "already_on_tracker": match.already_on_tracker,
                         "tracker_group_url": match.tracker_group_url,
+                        "found_on": match.found_on,
+                        "missing_from": match.missing_from,
+                        "group_ids": match.group_ids,
                         # What Deezer has, and what this request will take.
                         # The queue needs both to answer the only question
                         # that matters for a source that is not all FLAC: did
@@ -524,6 +538,13 @@ class DeezerRequestChecker:
     async def _check_one(self, tracker: str, request_id: str, verifier: TrackCountVerifier) -> RequestMatch:
         """Run the full pipeline for a single request."""
         raw = await self.gateway.get_request(tracker, int(request_id))
+        # The payload is already in hand and the tracker takes the better part
+        # of a minute to produce it, so the page's copy is rendered and kept
+        # here rather than fetched again the first time somebody opens the row.
+        # Imported here: request_detail imports this module for format_bounty.
+        from lox.checker.request_detail import cache_detail  # noqa: PLC0415
+
+        cache_detail(self.store, self.gateway, tracker, int(request_id), raw)
         match = RequestMatch(
             request_id=str(request_id),
             tracker=tracker,
@@ -662,6 +683,15 @@ class DeezerRequestChecker:
             match.reason = None
             debug.log("tracker search for request %s failed: %s", match.request_id, e, level=30)
 
+        # Said again in the words the queue reads. The search above is a real
+        # tracker verdict about a real release -- the same verdict a scan
+        # produces -- and recording it only as a boolean meant the queue could
+        # not tell it apart from a release nobody had asked about.
+        if match.already_on_tracker is True:
+            match.found_on = [tracker]
+        elif match.already_on_tracker is False:
+            match.missing_from = [tracker]
+
         return match
 
     async def _on_tracker(self, tracker: str, match: RequestMatch) -> bool | None:
@@ -690,5 +720,9 @@ class DeezerRequestChecker:
         )
         if best and score >= MIN_TOTAL_SCORE:
             match.tracker_group_url = f"{self.gateway.api(tracker).base_url}/torrents.php?id={best.get('id')}"
+            group_id = best.get("id")
+            if group_id is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    match.group_ids = {tracker: int(group_id)}
             return True
         return False

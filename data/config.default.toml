@@ -196,7 +196,7 @@ session = 'get-from-site-cookie'
 # various_artist_threshold = 4
 # blacklisted_substitution = "_"
 # guests_in_track_title = false
-# various_artist_word = "Various"
+# various_artist_word = "Various Artists"
 # strip_useless_versions = true
 # add_edition_title_to_album_tag = true
 

@@ -244,6 +244,14 @@ jobs:
         # itself -- which puts it between someone else's BBCode and the page.
         run: uv run python tests/test_request_detail.py
 
+      - name: One release, prepared once, posted to every tracker picked
+        # Uploading to two trackers ran the whole pipeline twice: the second
+        # pass regenerated the spectrals, looked the metadata up again,
+        # retagged, renamed and asked about downconversions -- every question a
+        # second time about a release that had not changed. Also pins the
+        # request verdict the queue reads, and the request detail cache.
+        run: uv run python tests/test_multi_tracker.py
+
       - name: Browse leads somewhere, and a download says what it is
         # The channel list asked the gateway with the argument in the body;
         # page.get reads it out of the query string, so every channel request

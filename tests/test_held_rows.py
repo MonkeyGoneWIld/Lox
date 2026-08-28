@@ -250,9 +250,15 @@ def page_checks() -> None:
           "Excluded from the queue" not in js and "function heldTable" not in js, "")
     check("nor a set of actions on rows nobody wanted",
           "function heldAct" not in js and "function heldPick" not in js, "")
-    check("the queue still says how many were excluded",
-          "${heldCount} excluded" in js, "")
-    check("and by which rule", "which let through ${state.foundRule}" in js, "")
+    # Read against the script with its comments taken out: why the list was
+    # removed is worth explaining to whoever maintains this, and worth not
+    # saying to somebody looking at their queue.
+    import re  # noqa: PLC0415
+
+    spoken = re.sub(r"/\*.*?\*/", "", js, flags=re.DOTALL)
+    spoken = re.sub(r"^\s*//.*$", "", spoken, flags=re.MULTILINE)
+    check("the queue does not report what it kept out either",
+          "excluded" not in spoken and "state.foundRule" not in spoken, "")
     check("a re-check is still available from the queue itself",
           "function recheckReleases" in js and "function recheckFound" in js, "")
 

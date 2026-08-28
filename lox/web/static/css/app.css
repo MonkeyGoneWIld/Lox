@@ -1243,9 +1243,20 @@ select {
   padding-bottom: 10px;
 }
 
+/* A column is a label, the filter that narrows it, and the values -- one
+   stack, on one centre line. They were all left-aligned against cells of very
+   different widths, so a short label sat at the far left of a wide column with
+   its filter box under it and the values somewhere off to the side, and
+   nothing in a column looked like it belonged to anything else in it.
+
+   The release name is the exception and stays left: a column of ragged
+   centred titles cannot be scanned down, which is the one thing that column
+   is for. Its header goes left with it, so the label still sits over the
+   values it names. */
 .datatable thead th > .th-label {
   display: flex;
   align-items: flex-end;
+  justify-content: center;
   min-height: 20px;
 }
 
@@ -1254,9 +1265,19 @@ select {
 .datatable thead th > .th-filter-slot {
   display: flex;
   align-items: center;
+  justify-content: center;
   min-height: 28px;
   padding-top: 6px;
 }
+
+.datatable td { text-align: center; }
+.datatable th.col-pick, .datatable td.col-pick { text-align: center; }
+
+/* Text that is read rather than compared. */
+.datatable th.col-text > .th-label,
+.datatable th.col-text > .th-filter-slot { justify-content: flex-start; }
+.datatable td.col-text { text-align: left; }
+.datatable th.col-text .th-filter, .datatable th.col-text .th-range-pair { margin-right: auto; }
 
 .th-sort {
   display: inline-flex;
@@ -1704,8 +1725,6 @@ a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 /* What the rules kept out. Deliberately quiet -- it is a footnote to the
    queue, not a second queue -- but never invisible, because a rule that
    silently shortens a list is indistinguishable from an empty scan. */
-/* What did not reach the queue: a line, not a list. */
-.held-note { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
 .section-head-plain {
   margin: 0 0 12px;
   font-size: 13px;
@@ -1907,25 +1926,55 @@ a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 
 
 /* ---------- upload targets, in the order they run ---------- */
-/* Two trackers is two uploads, one after the other, and which of them goes
-   first decides who owns the group the second one adds to. It was the order
-   they happened to be declared in and there was no way to say otherwise. */
-.upload-target { display: inline-flex; align-items: stretch; }
-.upload-target > button { border-radius: 0; }
-.upload-target:first-child > *:first-child { border-radius: var(--radius) 0 0 var(--radius); }
-.upload-target:last-child > *:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+/* Two trackers is two posts, one after the other, and which of them goes first
+   decides who owns the group the second one adds to -- so the order is a real
+   decision and this is a real list. You drag it into the order you want, which
+   is what everyone tries first. It replaces a pair of chevrons per chip, which
+   was four more buttons on a row that already had too many and read as
+   punctuation rather than as controls. */
+.upload-targets { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-.order-arrow {
-  padding: 0 7px;
-  font-size: 13px;
-  line-height: 1;
-  color: var(--text-dim);
+.upload-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   background: var(--bg-input);
-  border: 0;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
 }
-.order-arrow:hover:not(:disabled) { color: var(--text); }
-.order-arrow:disabled { opacity: 0.3; cursor: default; }
+.upload-target:hover { color: var(--text); }
+.upload-target.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text, #1b1200);
+}
+.upload-target.draggable { cursor: grab; }
+.upload-target.dragging { opacity: 0.45; cursor: grabbing; }
+
+/* Where it would land. A line rather than a gap: a gap opening up shifts every
+   chip after it, and the row jumps about while you are aiming at it. */
+.upload-target.drop-before { box-shadow: -3px 0 0 0 var(--text); }
+.target-end.drop-before { box-shadow: -3px 0 0 0 var(--text); }
+.target-end { display: inline-block; width: 4px; align-self: stretch; border-radius: 2px; }
+
+/* Which position it holds, inside the chip rather than beside it. */
+.target-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.22);
+  font-size: 10px;
+  font-weight: 700;
+}
 
 /* ---------- the upload queue ---------- */
 .upload-queue { border-left: 3px solid var(--accent); margin-bottom: 14px; }
@@ -1955,3 +2004,35 @@ a.tag-link:hover { filter: brightness(1.15); text-decoration: underline; }
 /* ---------- row actions inside a table ---------- */
 .table td.row-actions { white-space: nowrap; text-align: right; }
 .table td.row-actions button + button { margin-left: 8px; }
+
+
+/* ---------- spectrals ---------- */
+/* One surface, not a box inside a box.
+
+   Each track was drawn as its own dark rectangle inside the panel's dark
+   rectangle, with a sliver of a third colour trapped between them and a
+   hairline gap down the middle of every pair. Three edges where the release
+   has one. The pair now spans the panel exactly -- no padding beside it, no
+   gap between the full and the zoom, no rounding on either -- so a track reads
+   as one image and the panel is the only frame. */
+.step:has(.spectrals) {
+  padding-right: 0;
+  padding-top: 0;
+  /* The panel's own outline is the only one there should be, and it is drawn
+     by the flow card around it. A second rule a pixel outside the images is
+     the sliver of background that made every track a box in a box. */
+  border: 0;
+  overflow: hidden;
+}
+.spectrals { margin: 0; }
+/* The caption above each track is what separates them; padding here as well
+   put a band of panel colour between images that are meant to read as one
+   column of spectrograms. */
+.spectral-row { padding: 0; background: transparent; border: 0; }
+.spectral-row:last-child { padding-bottom: 0; }
+.spectral-num { padding: 8px 0 4px; margin: 0; }
+.spectral-pair { gap: 0; background: transparent; border: 0; }
+.spectral-full { width: 86.15%; }
+.spectral-zoom { width: 13.85%; margin-left: 0; }
+.spectral-full, .spectral-zoom { display: block; line-height: 0; border: 0; border-radius: 0; }
+.spectral-pair img { border: 0; border-radius: 0; }

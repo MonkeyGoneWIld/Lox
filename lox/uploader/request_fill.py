@@ -132,31 +132,40 @@ def print_request_results(gazelle_site, results, searchstr):
 def _print_request_details(gazelle_site, req):
     """Print request details.
 
+    Printed as a labelled block rather than a run of coloured lines, so the web
+    prompt bridge captures it as a table and shows it beside the question. It
+    used to scatter into the log, which is collapsed -- so "are you sure you
+    would like to fill this request" was asked with no way to see which
+    request, which is the whole of what the question is about.
+
     Read with .get throughout: the two trackers do not return the same set of
     fields, and a request missing one used to raise KeyError in the middle of
     the fill prompt -- which took the whole upload with it.
     """
-    click.secho("\nSelected Request:")
-    click.secho(gazelle_site.request_url(req.get("requestId", "")))
-    click.secho(f" {req.get('artist', '')}", fg="cyan", nl=False)
-    click.secho(f" - {req.get('title', '')} ", fg="cyan", nl=False)
-    click.secho(f"({req.get('year', '')})", fg="yellow")
-    click.secho(f" - {req.get('requestorName', '')} ", fg="cyan", nl=False)
-
     bounty = req.get("totalBounty") or req.get("bounty") or 0
     try:
         bounty_str = humanfriendly.format_size(int(bounty), binary=True)
     except (TypeError, ValueError):
         bounty_str = str(bounty)
-    click.secho(bounty_str, fg="cyan")
 
-    click.secho(f"Allowed Bitrate: {' | '.join(req.get('bitrateList') or ['Any'])}")
-    click.secho(f"Allowed Formats: {' | '.join(req.get('formatList') or ['Any'])}")
     media = list(req.get("mediaList") or [])
     if "CD" in media:
         media.remove("CD")
         media.append("CD " + str(req.get("logCue", "")))
-    click.secho(f"Allowed   Media: {' | '.join(media or ['Any'])}")
+
+    click.secho("\nSelected Request:")
+    rows = [
+        ("Request", f"{req.get('artist', '')} - {req.get('title', '')} ({req.get('year', '')})".strip()),
+        ("On", gazelle_site.request_url(req.get("requestId", ""))),
+        ("Asked by", str(req.get("requestorName", ""))),
+        ("Bounty", bounty_str),
+        ("Allowed formats", " | ".join(req.get("formatList") or ["Any"])),
+        ("Allowed bitrates", " | ".join(req.get("bitrateList") or ["Any"])),
+        ("Allowed media", " | ".join(media or ["Any"])),
+    ]
+    for label, value in rows:
+        if value:
+            click.secho(f"{label}: {value}")
     click.secho("Description:", fg="cyan")
     description = (req.get("bbDescription") or req.get("description") or "").splitlines(True)
 
