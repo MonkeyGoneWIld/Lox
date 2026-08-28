@@ -119,6 +119,49 @@ def channel_page(*channels):
     }
 
 
+def explore_page(*channels):
+    """The Explore page as Deezer actually serves it.
+
+    Copied from a live ``channels/explore/explore-tab`` payload rather than
+    imagined: every one of the forty-eight tiles in "Explore all" comes back
+    with ``pictures: []`` on both the item and its ``data``, and the artwork is
+    filed on the item as ``image_linked_item`` -- the cover of a playlist
+    inside the channel, because a channel owns no picture of its own.
+    """
+    return {
+        "title": "Explore",
+        "sections": [
+            {
+                "title": "Explore all",
+                "module_id": "6550abfd",
+                "items": [
+                    {
+                        "id": f"uuid-{slug}",
+                        "type": "channel",
+                        "title": title,
+                        "target": f"/channels/{slug}",
+                        "background_color": "#A238FF",
+                        "data": {
+                            "type": "channel",
+                            "id": f"uuid-{slug}",
+                            "name": title,
+                            "title": title,
+                            "logo": None,
+                            "description": None,
+                            "slug": slug,
+                            "background_color": "#A238FF",
+                            "pictures": [],
+                            "__TYPE__": "channel",
+                        },
+                        "image_linked_item": {"md5": f"md5{slug}", "type": "playlist"},
+                    }
+                    for slug, title in channels
+                ],
+            }
+        ],
+    }
+
+
 def album_item(album_id, title, date):
     return {
         "type": "album",
@@ -155,6 +198,34 @@ def browse_checks() -> None:
           str([c["slug"] for c in channels]))
     check("each with its artwork, which lives in a pictures list",
           all(c["image"] and "abc123" in c["image"] for c in channels), str(channels[0]["image"]))
+
+    # --- and the shape Deezer actually serves --------------------------
+    # Read off a live channels/explore/explore-tab payload. All forty-eight
+    # tiles in "Explore all" carry pictures: [] on the item AND on its data;
+    # the artwork is filed on the item as image_linked_item, the cover of a
+    # playlist inside the channel, because a channel owns no picture. Nothing
+    # read that key, so the grid drew as coloured rectangles with an initial in
+    # the middle while Deezer's own page showed artwork for every one.
+    live = FakeGW(pages={"channels/explore": explore_page(
+        ("charts", "Charts"), ("new", "New releases"), ("queerculture", "Queer culture"))})
+    tiles = asyncio.run(Explorer(live).channels())  # type: ignore[arg-type]
+    check("every channel on the Explore page has a picture",
+          all(c["image"] for c in tiles), str([c["title"] for c in tiles if not c["image"]]))
+    check("taken from the playlist the channel borrows it from",
+          all("/playlist/" in c["image"] for c in tiles), str(tiles[0]["image"]))
+    check("and it is that channel's own picture, not the first one found",
+          tiles[1]["image"] and "md5new" in tiles[1]["image"], str(tiles[1]["image"]))
+    check("with the colour still there behind it",
+          all(c["colour"] == "#A238FF" for c in tiles), str(tiles[0]["colour"]))
+
+    # A picture the item owns outright still wins over the borrowed one.
+    from lox.deezer.explore import picture_of
+
+    both = {"pictures": [{"md5": "own", "type": "misc"}],
+            "image_linked_item": {"md5": "borrowed", "type": "playlist"}}
+    check("a picture of its own beats a borrowed one",
+          "own" in (picture_of(both) or ""), str(picture_of(both)))
+    check("and an item with neither still has none", picture_of({"pictures": []}) is None, "")
     check("and its colour, which is all some of them have",
           channels[0]["colour"] == "#3448FC", str(channels[0]["colour"]))
     check("and the strip it came from, so ninety-eight cards are not one grid",

@@ -152,8 +152,16 @@ def picture_of(node: dict, kind: str = "misc", size: int = 264) -> str | None:
 
     The gateway is not consistent: an album carries ``ALB_PICTURE``, a playlist
     ``PLAYLIST_PICTURE``, and a channel carries a ``pictures`` list of
-    ``{md5, type}`` with no upper-case key at all -- which is why every channel
-    card came back with no artwork on it.
+    ``{md5, type}`` with no upper-case key at all.
+
+    A channel on the Explore page carries neither. Every one of the forty-eight
+    tiles in "Explore all" comes back with ``pictures: []`` on both the item and
+    its ``data`` -- the artwork is filed on the item as ``image_linked_item``,
+    ``{"md5": ..., "type": "playlist"}``, because the picture Deezer shows for a
+    channel is the cover of a playlist inside it rather than a picture the
+    channel owns. Nothing read that key, so the whole grid drew as coloured
+    rectangles with an initial in the middle while Deezer's own page showed
+    artwork for all of them.
 
     Args:
         node: An item or its ``data``.
@@ -171,6 +179,11 @@ def picture_of(node: dict, kind: str = "misc", size: int = 264) -> str | None:
         first = pictures[0]
         if isinstance(first, dict) and first.get("md5"):
             return cover_url(first["md5"], first.get("type") or kind, size)
+    # The borrowed one, last: a picture the item owns outright is a better
+    # answer than the cover of something filed under it.
+    linked = node.get("image_linked_item") or node.get("IMAGE_LINKED_ITEM")
+    if isinstance(linked, dict) and linked.get("md5"):
+        return cover_url(linked["md5"], linked.get("type") or kind, size)
     return None
 
 
