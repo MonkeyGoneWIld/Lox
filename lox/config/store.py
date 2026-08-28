@@ -301,11 +301,14 @@ class SettingsStore:
 
         Returns:
             Keys that could not be applied, e.g. a tracker section that does not
-            exist in config.toml yet.
+            exist in config.toml yet. Settings this version has retired are not
+            among them: they are dropped from the file instead, because an error
+            nobody can act on is worse than the stale value it complains about.
         """
         from lox.config.validations import Seedbox
 
         failed: list[str] = []
+        retired: list[str] = []
         for key, value in self.values.items():
             if key == SEEDBOX_KEY:
                 # A list of structs, not a leaf: rebuilt rather than assigned
@@ -318,7 +321,19 @@ class SettingsStore:
             try:
                 set_value(cfg, key, value)
             except SettingsError:
-                failed.append(key)
+                # A setting this version no longer has is not a failure to
+                # report, it is a leftover to sweep up. image.ptpimg_key was
+                # written by an older lox, ptpimg has since been removed, and
+                # every save afterwards said "Could not apply: image.ptpimg_key"
+                # -- a permanent error about a key nothing could ever set again,
+                # and no way to clear it short of editing settings.toml by hand.
+                (failed if key in FIELDS_BY_KEY else retired).append(key)
+
+        if retired:
+            with self._lock:
+                for key in retired:
+                    self._values.pop(key, None)
+            self.save()
         return failed
 
     def snapshot(self, cfg: Any, reveal_secrets: bool = False) -> dict[str, Any]:

@@ -351,12 +351,15 @@ def main() -> int:
 
     # A rule that hides rows without saying so is indistinguishable from a
     # scan that found nothing, which is how this page loses someone's trust.
+    # It is a line, not a second list: everything the rules keep out is
+    # something nobody wanted, and offering it as work to get through made the
+    # queue look like it was withholding rows rather than doing its job.
     check("held-back rows are counted on the page", 'id="found-held"' in shell, "")
-    check("with a way to look at them", 'id="found-held-toggle"' in shell, "")
-    check("each carrying the reason it was held", "held_reason" in js, "")
+    check("but not listed under the queue as a second job",
+          'id="found-held-toggle"' not in shell and "function heldTable" not in js, "")
     check("and the rule itself said in words", "state.foundRule" in js, "")
     check("and no state left over from it",
-          "foundFilter" not in js, "")
+          "foundFilter" not in js and "state.showHeld" not in js, "")
 
     # --- the search results are a list you can work with --------------
     # Taking twenty of thirty covers was twenty clicks, and there was no way to
@@ -675,8 +678,12 @@ def main() -> int:
 
     # Two different ages, and the table only ever showed one. A request open
     # for two years and one posted yesterday are not the same proposition.
-    check("the history says when the request was opened",
-          "label: 'Opened'" in js and "created_age" in js, "")
+    # Called Added, like every other list in the app. Two names for one idea
+    # was one too many, and this was the odd one out.
+    check("the history says when the request was raised",
+          "label: 'Added'" in js and "created_age" in js, "")
+    check("and it can be narrowed like any other date column",
+          "filter: 'days'" in js, "")
     check("as well as how long since it was looked up",
           "label: 'Days since lookup'" in js, "")
     check("each with the date behind the relative time",
@@ -728,8 +735,8 @@ def main() -> int:
           "addr('/requests', { tracker: t.code })" in js, "")
     check("one request has its own address, openable cold",
           "async function openRequest(tracker, id)" in js, "")
-    check("showing the excluded rows is somewhere you can be",
-          "addr('/queue', { held: state.showHeld ? '' : '1' })" in js, "")
+    check("the queue is one address, now that it is one list",
+          "case '/queue': showQueue();" in js, "")
     check("and so is a section of the settings page",
           "function settingsHeading" in js and "`/settings/${name}`" in js, "")
     check("which is scrolled to on arrival",
@@ -855,9 +862,16 @@ def main() -> int:
           "$('#missing-sources').value = '';" in js, "")
     check("and the browser is asked not to restore it either",
           'id="missing-sources" rows="3" autocomplete="off"' in shell, "")
-    check("and the rows are columns, not a ragged flex line",
-          "grid-template-columns: auto minmax(0, 1fr) auto auto" in rule(css, ".watchrow"),
-          rule(css, ".watchrow").strip()[:80])
+    # A hand-rolled grid of its own, with no way to find a saved search by name
+    # and no way to see which had gone unscanned longest. It is one of the
+    # app's tables now, so it gets the column filters, the sorting and the
+    # shift-click selection every other list here has.
+    check("saved searches are one of the app's tables",
+          "name: 'watchlists'," in js and "function watchlistPick" in js, "")
+    check("with a filter on the name", "label: 'Saved search'," in js, "")
+    check("and on how long since it was scanned",
+          "label: 'Last scanned'," in js, "")
+    check("and no grid of its own left behind", ".watchrow" not in css, "")
 
     # The page used to decide the order, the labels and the defaults itself,
     # and got all three wrong for one tracker or the other. The tracker
@@ -882,6 +896,89 @@ def main() -> int:
     check("read back from whichever is picked",
           "requests-tags-mode" + "'" + "]:checked" in flat_js, "")
     check("with the old wording gone", "Fetch open requests" not in shell, "")
+
+    # --- uploading is a queue, and the trackers have an order ----------
+    #
+    # Uploading was one folder at a time and only ever the one just pressed,
+    # so a night's worth of releases meant sitting at the page pressing Upload
+    # and waiting. And the row of tracker toggles had two faults: turning off
+    # the last one you had on refilled the list with the FIRST configured
+    # tracker, so pressing OPS with only OPS on gave you RED while pressing
+    # RED with only RED on gave you RED again -- one direction worked and the
+    # other did nothing. The order they ran in was the order they happened to
+    # be declared.
+    check("several folders can be picked at once", 'id="folders-upload"' in shell, "")
+    check("and they upload one after another",
+          "async function runUploadQueue" in js and "state.uploadQueue.shift()" in js, "")
+    check("with the queue on screen while it works", 'id="upload-queue"' in shell, "")
+    check("and everything still waiting can be called off in one go",
+          "function cancelQueuedUploads" in js and "Cancel the other ${waiting}" in js, "")
+    check("turning off the only selected tracker hands over to the next",
+          "codes[(codes.indexOf(code) + 1) % codes.length]" in js, "")
+    check("rather than springing back to the first one in the list",
+          "state.uploadTrackers.add(state.trackers[0].code)" not in js, "")
+    check("and the trackers can be put in the order they should run",
+          "function renderUploadTargets" in js and "const move = (code, by)" in js, "")
+    check("which the upload honours, because it is a list and not a set",
+          "uploadTrackers: []," in js, "")
+
+    # Where a release is missing from beats where uploads go in general: a
+    # release OPS already has should not be offered to OPS.
+    check("an upload goes where the release is actually missing from",
+          "function uploadTargets(item)" in js and "item.missing_from" in js, "")
+    check("and the queue's own buttons use it",
+          "startUpload(job.folder, uploadTargets(item), id)" in js, "")
+
+    # --- a download says what quality it actually came back as ---------
+    check("a lossy download is flagged rather than filed as FLAC",
+          "function askAboutQuality" in js, "")
+    check("with both answers offered", "keep: true" in js and "keep: false" in js, "")
+    check("and asked once per download, not once per poll",
+          "state.qualityAsked" in js, "")
+    check("a release lox will not fetch as FLAC can still be fetched anyway",
+          "allow_lossy: allowLossy" in js, "")
+
+    # --- every list has filters in its columns -------------------------
+    for name, label in (("requests", "the request search"), ("candidates", "the scan results"),
+                        ("folders", "the upload folders"), ("watchlists", "the saved searches")):
+        check(f"{label} is one of the app's tables", f"name: '{name}'," in js, "")
+    check("and the downloads, which are cards, get a filter bar of their own",
+          "function listFilter" in js and ".listfilter" in css, "")
+    check("a date column can be narrowed like any other",
+          "column.filter === 'days'" in js, "")
+    check("and every filter control is the same height, whatever kind it is",
+          "height: 28px" in rule(css, ".th-filter"), rule(css, ".th-filter"))
+
+    # --- the settings page lines up across a row -----------------------
+    #
+    # Every setting is a label, a control and a note. As independent flex
+    # columns they agreed only by luck: a two-line label pushed its own box
+    # down while its neighbour stayed put, a long note stretched one cell, and
+    # a checkbox had no control row at all so it sat level with the labels.
+    check("a settings row shares its rows with the settings beside it",
+          "grid-template-rows: subgrid" in css, "")
+    check("which needs every setting to have the same three parts",
+          "const setting = (head, ...control)" in js, "")
+    check("including the ones that carry their own label",
+          "return setting(null, el('label', { class: 'check' }" in js, "")
+    check("and the torrent-client editor, which shares the grid",
+          "el('div', { class: 'setting-control' }, control)" in js, "")
+
+    # --- nothing outside Settings explains the tracker budget ----------
+    #
+    # The budget is a number in the sidebar and a section on the settings page.
+    # Everywhere else it was leaking into hints about work the reader was
+    # trying to do -- "checking each album against a tracker is not [free]" is
+    # not an explanation of the Scan box.
+    # Read against the script with its comments taken out: how the budget works
+    # is worth explaining to whoever maintains this, and worth not explaining
+    # to somebody trying to scan a playlist.
+    spoken_js = re.sub(r"^\s*//.*$", "", js, flags=re.MULTILINE)
+    spoken_shell = re.sub(r"<!--.*?-->", "", shell, flags=re.DOTALL)
+    for phrase in ("tracker budget", "one call each", "not paid for twice",
+                   "Expanding them is free", "protect the budget"):
+        check(f"no screen explains the budget: {phrase!r}",
+              phrase not in spoken_shell and phrase not in spoken_js, "")
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")

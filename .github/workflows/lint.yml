@@ -244,6 +244,14 @@ jobs:
         # itself -- which puts it between someone else's BBCode and the page.
         run: uv run python tests/test_request_detail.py
 
+      - name: Browse leads somewhere, and a download says what it is
+        # The channel list asked the gateway with the argument in the body;
+        # page.get reads it out of the query string, so every channel request
+        # failed and the genre fallback it dropped to could not be opened
+        # either. New releases had one region-dependent source. And a lossy
+        # download landed in a folder named [WEB FLAC].
+        run: uv run python tests/test_browse_and_quality.py
+
       - name: Start with a broken download directory
         # Sets its own LOX_* environment, deliberately pointing at a path that
         # does not exist. Guards the restart loop this caused in deployment.

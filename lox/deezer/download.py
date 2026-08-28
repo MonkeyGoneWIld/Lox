@@ -63,6 +63,8 @@ class TrackDownload(msgspec.Struct):
     size: int = 0
     path: str | None = None
     error: str | None = None
+    #: What Deezer actually served, which is not always what was asked for.
+    fmt: str = ""
 
 
 class DownloadJob(msgspec.Struct):
@@ -79,9 +81,38 @@ class DownloadJob(msgspec.Struct):
     error: str | None = None
     started: float | None = None
     finished: float | None = None
+    #: Take whatever quality Deezer will serve, whatever the config says.
+    #: Set per download, because "I want this one anyway" is a decision about
+    #: one release rather than a setting to go and change and change back.
+    allow_lossy: bool = False
+    #: What the operator said about a download that came back below FLAC:
+    #: "" while nobody has been asked, then "kept" or "discarded".
+    decision: str = ""
     # Highest percentage reported so far, so the bar is monotonic even if a
     # size correction would otherwise pull it back.
     _floor: float = 0.0
+
+    @property
+    def formats(self) -> list[str]:
+        """Every stream quality this job was actually served, best first."""
+        order = {name: i for i, name in enumerate(("FLAC", "MP3_320", "MP3_128"))}
+        seen = {t.fmt for t in self.tracks if t.fmt}
+        return sorted(seen, key=lambda f: order.get(f, 99))
+
+    @property
+    def quality(self) -> str:
+        """The worst quality served, which is what the release actually is."""
+        served = self.formats
+        return served[-1] if served else ""
+
+    @property
+    def lossy(self) -> bool:
+        """True once any track has come back as something other than FLAC.
+
+        Reported the moment the first one lands rather than at the end, so the
+        question can be asked while there is still a download to stop.
+        """
+        return any(t.fmt and t.fmt != "FLAC" for t in self.tracks)
 
     @property
     def done_count(self) -> int:
@@ -133,6 +164,14 @@ class DownloadJob(msgspec.Struct):
             "total": len(self.tracks),
             "started": self.started,
             "finished": self.finished,
+            # What came back, and whether anybody has been asked about it. A
+            # release Deezer would only serve as MP3 used to land in the
+            # download folder looking exactly like a FLAC one.
+            "formats": self.formats,
+            "quality": self.quality,
+            "lossy": self.lossy,
+            "decision": self.decision,
+            "allow_lossy": self.allow_lossy,
             "tracks": [
                 {
                     "title": t.title,
@@ -182,13 +221,28 @@ class Downloader:
         configured = getattr(deezer_cfg, "download_dir", None) if deezer_cfg else None
         return configured or cfg.directory.download_directory
 
-    def formats(self) -> tuple[str, ...]:
-        """Stream qualities to request, honouring the fallback setting."""
+    def formats(self, allow_lossy: bool = False) -> tuple[str, ...]:
+        """Stream qualities to request, honouring the fallback setting.
+
+        Args:
+            allow_lossy: Take whatever is available for this one download,
+                whatever ``format_fallback`` says. Turning the setting off is
+                how you stop lox quietly fetching MP3 for everything; it should
+                not also be the thing that stops you fetching one release you
+                have decided you want.
+
+        Returns:
+            Qualities to ask for, best first.
+        """
         order = ("FLAC", "MP3_320", "MP3_128")
-        if not self.allow_fallback:
-            return (self.preferred_format,)
         start = order.index(self.preferred_format) if self.preferred_format in order else 0
+        if not self.allow_fallback and not allow_lossy:
+            return (self.preferred_format,)
         return order[start:]
+
+    def formats_for(self, job: "DownloadJob") -> tuple[str, ...]:
+        """Qualities to request for one job."""
+        return self.formats(job.allow_lossy)
 
     def on_update(self, callback: Callable[[DownloadJob], None]) -> None:
         """Register a callback fired whenever a job changes state."""
@@ -218,11 +272,13 @@ class Downloader:
         self._workers = []
         self._stopping = False
 
-    async def enqueue(self, album_id: str | int) -> DownloadJob:
+    async def enqueue(self, album_id: str | int, allow_lossy: bool = False) -> DownloadJob:
         """Queue an album for download.
 
         Args:
             album_id: Deezer album ID.
+            allow_lossy: Accept a lower quality than the preferred one for this
+                download alone, regardless of ``format_fallback``.
 
         Returns:
             The created job, already visible in :attr:`jobs`.
@@ -241,6 +297,7 @@ class Downloader:
             title=meta.get("title") or f"Album {album_id}",
             artist=(meta.get("artist") or {}).get("name") or "Unknown Artist",
             cover=meta.get("cover_xl") or meta.get("cover_big") or meta.get("cover"),
+            allow_lossy=bool(allow_lossy),
         )
         self.jobs[job.id] = job
         await self.start()
@@ -360,6 +417,7 @@ class Downloader:
                 job.error = f"{len(failures)} of {len(job.tracks)} track(s) failed"
             else:
                 job.status = "done"
+                self._settle_folder(job)
         except Exception as e:  # noqa: BLE001 - surfaced to the UI via job.error
             job.status = "failed"
             job.error = str(e)
@@ -371,6 +429,34 @@ class Downloader:
                 level=logging.INFO,
             )
             self._notify(job)
+
+    def _settle_folder(self, job: DownloadJob) -> None:
+        """Rename the folder to match the quality actually downloaded.
+
+        The folder is created before a single stream URL has been resolved, so
+        it can only be named for what was asked for -- and it was named
+        ``[WEB FLAC]`` unconditionally. A release Deezer served as MP3 then sat
+        in a folder claiming to be lossless, which is the one mistake in this
+        pipeline a tracker will not forgive.
+        """
+        quality = job.quality
+        if not job.folder or not quality or quality == "FLAC":
+            return
+        label = "MP3" if quality.startswith("MP3") else quality
+        head, tail = os.path.split(job.folder)
+        renamed = tail.replace("[WEB FLAC]", f"[WEB {label}]")
+        if renamed == tail:
+            return
+        target = os.path.join(head, renamed)
+        try:
+            os.rename(job.folder, target)
+        except OSError as e:
+            debug.log("download: could not rename %s -> %s (%s)", job.folder, target, e, level=30)
+            return
+        for track in job.tracks:
+            if track.path and track.path.startswith(job.folder):
+                track.path = os.path.join(target, os.path.relpath(track.path, job.folder))
+        job.folder = target
 
     @staticmethod
     def _make_track(song: dict, index: int) -> TrackDownload:
@@ -418,7 +504,8 @@ class Downloader:
             track.status = "running"
             self._notify(job)
             try:
-                url, fmt = await self.gw.stream_url(song, self.formats())
+                url, fmt = await self.gw.stream_url(song, self.formats_for(job))
+                track.fmt = fmt
                 extension = _EXTENSIONS.get(fmt, ".flac")
                 filename = f"{track.number:02d}. {sanitize(track.title, 'Track')}{extension}"
                 path = os.path.join(job.folder or self.download_dir, filename)

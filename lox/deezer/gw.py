@@ -231,8 +231,16 @@ class DeezerGW:
                 self.user_id, self.country, bool(self.license_token), level=logging.INFO,
             )
 
-    async def _call_raw(self, method: str, payload: dict) -> dict:
-        """POST to gw-light without requiring a prior login."""
+    async def _call_raw(self, method: str, payload: dict, query: dict | None = None) -> dict:
+        """POST to gw-light without requiring a prior login.
+
+        Args:
+            method: The gw method name.
+            payload: JSON body for the method.
+            query: Extra query-string parameters. ``page.get`` reads its
+                argument from the query string rather than the body, which is
+                why it answered MISSING_PARAMETER_PAGE to a perfectly good body.
+        """
         session = await self.session()
         params = {
             "method": method,
@@ -241,6 +249,7 @@ class DeezerGW:
             "api_token": "" if method in _TOKENLESS_METHODS else (self.api_token or ""),
             "cid": str(random.randint(0, 1_000_000_000)),
         }
+        params.update(query or {})
         debug.event("deezer.gw", method=method)
         try:
             async with session.post(GW_URL, params=params, json=payload) as resp:
@@ -260,13 +269,21 @@ class DeezerGW:
             raise DeezerGWError(f"gw-light error for {method}: {error}")
         return data
 
-    async def call(self, method: str, payload: dict | None = None, retries: int = 2) -> dict:
+    async def call(
+        self,
+        method: str,
+        payload: dict | None = None,
+        retries: int = 2,
+        query: dict | None = None,
+    ) -> dict:
         """Call a gw-light method, refreshing the session token if it expires.
 
         Args:
             method: The gw method name, e.g. ``deezer.pageAlbum``.
             payload: JSON body for the method.
             retries: How many times to re-login and retry on token errors.
+            query: Extra query-string parameters, for the handful of methods
+                that take their argument there instead of in the body.
 
         Returns:
             The ``results`` object from the response.
@@ -278,7 +295,7 @@ class DeezerGW:
         last_error: DeezerGWError | None = None
         for attempt in range(retries + 1):
             try:
-                data = await self._call_raw(method, payload or {})
+                data = await self._call_raw(method, payload or {}, query)
                 return data.get("results") or {}
             except DeezerGWError as e:
                 last_error = e

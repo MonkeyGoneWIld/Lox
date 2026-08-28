@@ -148,15 +148,16 @@
              numbers into a screenful. -->
         <div class="panel">
           <h2>Scan filters</h2>
-          <p class="hint">Applied while a scan expands its sources, before any tracker is contacted.
-            They do not affect requests, searches or anything you check by hand.</p>
+          <p class="hint">What a scan will even look at. A release ruled out here is never looked up at all.
+            These apply to scanning only &mdash; requests, searches and anything you check by hand ignore them.</p>
           <div class="scanfilters" id="scan-filters"></div>
         </div>
 
         <div class="panel">
           <h2>Scan Deezer against your trackers</h2>
           <p class="hint">Paste Deezer links &mdash; a playlist, a channel module, an artist, an album &mdash;
-            one per line. Expanding them is free; checking each album against a tracker is not.</p>
+            one per line. Each one is expanded into the albums it holds, and every album is then
+            checked against your trackers.</p>
           <!-- autocomplete=off so a reload does not hand back the list the
                last scan ran, sitting in the box looking like the next thing
                you were about to do. -->
@@ -169,7 +170,6 @@
                  questions about the link already in the box. -->
             <button id="missing-save">Save for later</button>
           </div>
-          <p class="hint" id="missing-cost"></p>
           <div class="joblog" id="missing-collect-log" hidden></div>
           <div class="joblog" id="missing-check-log" hidden></div>
         </div>
@@ -191,16 +191,19 @@
           <h2>Results</h2>
           <div class="row">
             <button id="missing-check">Check again</button>
+            <span class="hint" id="missing-selected"></span>
+            <span class="hint" id="missing-cost"></span>
           </div>
-          <table class="table" id="missing-table"></table>
+          <div id="missing-table"></div>
         </div>
         </div>
 
         <div id="scan-tab-history" hidden>
           <div class="panel">
             <h2>Lookup History</h2>
-            <p class="hint">Every album a scan has looked up. A scan skips what is listed here, so the same
-              tracker calls are not paid for twice &mdash; select rows and re-check to look again.</p>
+            <p class="hint">Every album a scan has looked up, and what it found. A later scan leaves these
+              alone until the answer goes stale &mdash; select any of them and press Check again to
+              ask now.</p>
             <div class="row">
               <button class="primary" id="scanhistory-rerun" disabled>Check again</button>
               <button id="scanhistory-clear-filters">Clear filters</button>
@@ -267,6 +270,9 @@
             </div>
           </details>
           <div class="joblog" id="requests-log" hidden></div>
+          <!-- What the run skipped, and why. One panel, replaced by the next
+               run rather than stacked on top of the last one. -->
+          <div id="requests-skipped" hidden></div>
         </div>
 
         <!-- How much of the search is on screen and how much there was. This
@@ -292,8 +298,9 @@
       <section class="view" id="view-found">
         <div class="panel">
           <h2>Upload Queue</h2>
-          <p class="hint">Releases matched to a Deezer source and not found on a
-            tracker. Kept so the budget you already spent is not spent again.</p>
+          <p class="hint">Releases that exist on Deezer and are missing from at least one of
+            your trackers. Each row says where it is missing from, where it came from, and how
+            long it has been waiting.</p>
           <div class="row">
             <button class="primary" id="found-download">Download selected</button>
             <button id="found-upload">Download &amp; upload selected</button>
@@ -306,14 +313,16 @@
             <button id="found-restore" hidden>Clear blacklist</button>
             <span class="hint" id="found-count"></span>
           </div>
-          <!-- What the queue rules in Settings kept out. Shown as a count with
-               a way to look, never as a silently shorter list. -->
+          <!-- What did not make the queue, as a count and a reason. Never as
+               a second list underneath the first: everything in it is
+               something nobody wanted, and offering it as work to get through
+               made the queue look like it was hiding things. -->
           <div class="row held-note" id="found-held-row" hidden>
             <span class="hint" id="found-held"></span>
-            <button class="linkbtn" id="found-held-toggle">Show excluded</button>
           </div>
-          <!-- A re-check spends a tracker call per release and used to show
-               nothing but a Stop button while it did. -->
+          <!-- A queue row is a claim about somebody else's tracker, and it
+               decays. This says whether lox is keeping it honest by itself. -->
+          <p class="hint" id="found-upkeep"></p>
           <div class="joblog" id="found-log" hidden></div>
         </div>
         <div id="found-body"></div>
@@ -330,6 +339,11 @@
       <section class="view" id="view-uploads">
         <div class="row toolbar">
           <button id="folders-refresh">Refresh folders</button>
+          <button class="primary" id="folders-upload" disabled>Upload selected</button>
+          <span class="hint" id="folders-selected"></span>
+          <!-- Which trackers, and in what order they run when there are two.
+               Uploading to both is two uploads in sequence, and which goes
+               first decides who owns the group the other one adds to. -->
           <span class="hint">Upload to:</span>
           <div class="segmented" id="upload-tracker"></div>
           <!-- The same two settings as Settings → Uploading, not copies of
@@ -344,6 +358,8 @@
           <span class="hint" id="uploads-dir"></span>
         </div>
         <p class="hint" id="linking-note"></p>
+        <!-- What is uploading and what is waiting behind it. -->
+        <div id="upload-queue" hidden></div>
         <div id="folders-list"></div>
         <div id="upload-flows"></div>
       </section>

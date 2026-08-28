@@ -193,6 +193,12 @@ class DeezerSettings(BaseStruct):
     preferred_format: Literal["FLAC", "MP3_320", "MP3_128"] = "FLAC"
     # Accept a lower quality when the preferred one is not available to the account.
     format_fallback: bool = True
+    # Ask before keeping a download that came back below the preferred quality.
+    # The fallback above decides whether lox will take MP3 at all; this decides
+    # whether it does so silently. Off, a lossy release lands in the download
+    # folder looking exactly like a FLAC one, and the first thing that notices
+    # is a tracker rejecting the upload.
+    confirm_lower_quality: bool = True
     concurrent_downloads: Annotated[int, msgspec.Meta(ge=1, le=8)] = 2
 
     def __post_init__(self):
@@ -445,6 +451,16 @@ class Checker(BaseStruct):
     # trusting before it is worth confirming. 0 means an answer never goes
     # stale.
     album_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 365
+
+    # How old a queue row may get before lox confirms it still belongs there.
+    #
+    # A queue row is a claim about someone else's tracker -- "nobody has
+    # uploaded this yet" -- and it decays: somebody else uploads it, or a
+    # request gets filled, and the row sits there for months looking like work.
+    # Rows older than this are re-checked in the background, one at a time, and
+    # only while nothing else is running, so it never competes with a scan or
+    # an upload you started. 0 turns it off.
+    queue_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 30
 
     # Where scan state is kept. Defaults to <download_directory>/.lox-checker.
     state_dir: str | None = None

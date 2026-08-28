@@ -631,6 +631,10 @@ class MissingScanner:
                     "source": candidate.source,
                     "found_on": result.found_on,
                     "missing_from": result.missing_from,
+                    # Which group each tracker matched, so "RED has it" can be
+                    # the link to the group RED has rather than a dead label
+                    # that leaves you searching for it by hand.
+                    "group_ids": {code: int(gid) for code, gid in (result.group_ids or {}).items()},
                     "errors": result.errors,
                     # A candidate only gets this far by being all FLAC -- the
                     # filter above drops the rest as skipped_no_flac -- but the
@@ -677,6 +681,10 @@ class MissingScanner:
                     **entry,
                     "found_on": list(result.found_on),
                     "missing_from": list(result.missing_from),
+                    # getattr, because this is also called with a stand-in
+                    # verdict that carries only the two tracker lists.
+                    "group_ids": {code: int(gid)
+                                  for code, gid in (getattr(result, "group_ids", None) or {}).items()},
                     # On every tracker that was asked, and missing from none:
                     # there is nothing left to upload.
                     "already_on_tracker": bool(result.found_on) and not result.missing_from,

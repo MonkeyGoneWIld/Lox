@@ -20,6 +20,8 @@
     exploreTab: 'channels',
     exploreGenre: '0',
     candidates: [],
+    // What a check said about each collected album, by album id.
+    scanResults: new Map(),
     settings: null,
     pending: {},
     selectedCandidates: new Set(),
@@ -32,22 +34,30 @@
     paneStack: [],
     found: [],
     selectedFound: new Set(),
-    // Rows the Settings queue rules kept out, and the rule in words.
-    foundHeld: [],
-    selectedHeld: new Set(),
-    heldGroups: [],
-    droppedNote: '',
+    // The queue rule in words, for the line that says what did not make it.
     foundRule: '',
-    showHeld: false,
     // Narrowing what is on screen. Not persisted: it is a way of reading the
     // list, not a setting.
     // Releases ticked for a batch action, by album id.
     picked: new Map(),
-    uploadTrackers: new Set(),
+    // Which trackers an upload goes to, in the order it goes to them. A
+    // list rather than a set: uploading to two trackers is two uploads, one
+    // after the other, and which of them goes first is a decision -- the
+    // first one to post owns the group the second one adds to.
+    uploadTrackers: [],
+    // The download folder as it was last read, and what is ticked in it.
+    folders: [],
+    // Folders waiting their turn, and the one being uploaded now.
+    uploadQueue: [],
+    uploadCurrent: null,
+    selectedFolders: new Set(),
     albumCheck: null,
     watchlists: [],
     // Which saved searches are ticked, so several can be scanned as one job.
     watchSelected: new Set(),
+    // Downloads whose quality has already been queried, so a poll every second
+    // does not ask the same question every second.
+    qualityAsked: new Set(),
     // The one being renamed, so a re-render does not close the box you are
     // typing in.
     watchEditing: null,
@@ -74,6 +84,10 @@
     historySelected: new Set(),
     // Check results by request id, so the split view can show what was found.
     requestMatches: new Map(),
+    // Every check result, matched or not, so the Result column survives a
+    // sort, a filter or any other re-render. It used to live only in the
+    // cell, so narrowing the list threw away everything already looked up.
+    requestResults: new Map(),
     trackers: [],
     seedboxes: [],
     seedboxFields: [],
@@ -156,7 +170,7 @@
    *   `selection` is `{ set, onChange }` to add checkboxes.
    * @returns {HTMLElement} The table, filters and all.
    */
-  function dataTable({ name, rows, columns, selection = null, onShown = null,
+  function dataTable({ name, rows, columns, selection = null, onShown = null, rowAttrs = null,
                       idOf = (row) => row.id, empty: emptyText = 'Nothing here.' }) {
     const view = tableView(name);
     // What identifies a row. Usually its id; for a list of requests it is the
@@ -170,7 +184,12 @@
     let shown = rows;
     for (const column of columns) {
       const wanted = view.filters[column.label];
-      if (column.filter === 'range') {
+      // A date column filters the way anybody asks about one: "in the last
+      // week", "older than a month". Both ends are days, and the value is a
+      // timestamp, so the two are the same range filter with a different
+      // reading -- which is why "Added" and "Last checked" had no filter at
+      // all until now.
+      if (column.filter === 'range' || column.filter === 'days') {
         // Two limits, either of which may be left empty: "1990 to blank"
         // means everything from 1990 on, which is how people ask.
         const low = wanted && wanted.low !== '' ? Number(wanted.low) : null;
@@ -221,7 +240,8 @@
       const mark = focused && host.contains(focused)
         ? { cls: focused.className, ph: focused.placeholder, at: focused.selectionStart }
         : null;
-      host.replaceWith(dataTable({ name, rows, columns, selection, onShown, idOf, empty: emptyText }));
+      host.replaceWith(
+        dataTable({ name, rows, columns, selection, onShown, rowAttrs, idOf, empty: emptyText }));
       if (!mark) return;
       const fresh = document.querySelector(`[data-table="${name}"]`);
       const again = fresh && [...fresh.querySelectorAll('thead .th-filter')]
@@ -277,7 +297,7 @@
           el('option', { value: '', selected: !view.filters[column.label] }, 'all'),
           ...options.map((option) =>
             el('option', { value: option, selected: view.filters[column.label] === option }, option)));
-        } else if (column.filter === 'range') {
+        } else if (column.filter === 'range' || column.filter === 'days') {
           const current = view.filters[column.label] || { low: '', high: '' };
           const limit = (which, placeholder) => el('input', {
             class: 'th-filter th-range',
@@ -292,9 +312,10 @@
               view.timer = setTimeout(rerender, 260);
             },
           });
+          const isDays = column.filter === 'days';
           control = el('div', { class: 'th-range-pair' },
-            limit('low', column.lowLabel || 'min'),
-            limit('high', column.highLabel || 'max'));
+            limit('low', column.lowLabel || (isDays ? 'newest' : 'min')),
+            limit('high', column.highLabel || (isDays ? 'oldest' : 'max')));
         } else if (column.filter) {
           control = el('input', {
             class: 'th-filter',
@@ -327,7 +348,7 @@
 
     // --- the rows ------------------------------------------------------
     const body = sorted.map((row, index) =>
-      el('tr', {},
+      el('tr', rowAttrs ? rowAttrs(row) : {},
         selection
           ? el('td', { class: 'col-pick' }, el('input', {
               type: 'checkbox',
@@ -379,6 +400,44 @@
     const s = String(Math.floor(seconds % 60)).padStart(2, '0');
     return `${m}:${s}`;
   };
+
+  /**
+   * How many days ago a stored timestamp was.
+   *
+   * @param {number} stamp - Epoch seconds, or falsy when nothing is recorded.
+   * @returns {number} Whole-ish days, or -1 for "never" -- which sorts before
+   *   everything and is excluded by any range filter, both of which are what
+   *   you want from a row nothing has happened to.
+   */
+  function daysAgo(stamp) {
+    const seconds = Number(stamp);
+    if (!seconds) return -1;
+    return Math.max(0, (Date.now() / 1000 - seconds) / 86400);
+  }
+
+  /**
+   * Whether a queue row is old enough to be confirmed again.
+   *
+   * The confirmation happens by itself, in the background, whenever nothing
+   * else is running -- so this is not a chore being handed to the reader, it
+   * is the row saying which side of the line it is on.
+   *
+   * @param {number} stamp - When it was last checked.
+   * @returns {string} A note for the cell, or "".
+   */
+  function staleNote(stamp) {
+    const window_ = state.queueRecheck?.after_days || 0;
+    if (!window_ || !stamp) return '';
+    return daysAgo(stamp) >= window_ ? 'due a re-check' : '';
+  }
+
+  /** A when-column cell: how long ago on top, the date itself underneath. */
+  function whenCell(stamp, note = '') {
+    if (!stamp) return el('span', {}, '\u2014');
+    return el('span', {},
+      el('div', {}, ago(stamp)),
+      el('span', { class: 'hint' }, [checkedOn(stamp), note].filter(Boolean).join(' \u00b7 ')));
+  }
 
   const empty = (message) => el('p', { class: 'empty' }, message);
   const spinner = (label) => el('p', { class: 'empty' }, el('span', { class: 'spinner' }), ' ' + label);
@@ -448,7 +507,7 @@
   // The query keys the routes own. Anything else in the address belongs to
   // somebody else -- ?token= above all, which is how a bookmark authenticates
   // -- so it is carried through every move rather than dropped.
-  const ROUTE_KEYS = ['q', 'type', 'genre', 'tracker', 'held'];
+  const ROUTE_KEYS = ['q', 'type', 'genre', 'tracker'];
 
   /**
    * An address: a path, this route's own parameters, and whatever else the
@@ -565,7 +624,7 @@
       case '/scan/history': showScan('history'); return;
       case '/requests': showRequests('find', param('tracker')); return;
       case '/requests/history': showRequests('history', param('tracker')); return;
-      case '/queue': showQueue(param('held') === '1'); return;
+      case '/queue': showQueue(); return;
       case '/downloading': setView('downloads'); return;
       case '/uploading': setView('uploads'); return;
       case '/settings': showSettings(''); return;
@@ -602,7 +661,7 @@
         ? addr('/requests/history')
         : addr('/requests', { tracker: state.requestsTracker || '' });
     }
-    if (view === 'found') return addr('/queue', { held: state.showHeld ? '1' : '' });
+    if (view === 'found') return addr('/queue');
     if (view === 'settings') {
       return addr(state.settingsSection ? `/settings/${state.settingsSection}` : '/settings');
     }
@@ -737,19 +796,11 @@
     showRequestTab(wanted);
   }
 
-  /**
-   * The Queue, with or without the rows the queue rules kept out.
-   *
-   * @param {boolean} held - Whether the excluded rows are shown.
-   */
-  function showQueue(held) {
-    const showing = state.view === 'found';
-    state.showHeld = held;
-    const toggle = $('#found-held-toggle');
-    if (toggle) toggle.textContent = held ? 'Hide excluded' : 'Show excluded';
-    // Already here: re-draw rather than re-fetch, so showing the excluded rows
-    // and hiding them again does not clear what you had ticked.
-    if (showing) { renderFound(); setTitle(); return; }
+  /** The Queue. */
+  function showQueue() {
+    // Already here: re-draw rather than re-fetch, so nothing you have ticked
+    // is thrown away by arriving at the address you are already at.
+    if (state.view === 'found') { renderFound(); setTitle(); return; }
     setView('found');
   }
 
@@ -827,6 +878,8 @@
     }
 
     state.trackers = status.trackers.filter((t) => t.configured);
+    state.queueRecheck = status.queue_recheck || null;
+    if (state.view === 'found') renderQueueUpkeep();
     renderBudgets();
     if (!state.missingTrackers.size) state.trackers.forEach((t) => state.missingTrackers.add(t.code));
     renderTrackerPickers();
@@ -945,28 +998,116 @@
       ),
     );
 
-    if (!state.uploadTrackers.size && state.trackers.length) state.uploadTrackers.add(state.trackers[0].code);
-    $('#upload-tracker').replaceChildren(
-      ...state.trackers.map((t) =>
-        el(
-          'button',
-          {
-            type: 'button',
-            class: state.uploadTrackers.has(t.code) ? 'active' : '',
-            title: 'Uploading to several trackers creates one hardlinked folder each',
-            onclick: () => {
-              state.uploadTrackers.has(t.code)
-                ? state.uploadTrackers.delete(t.code)
-                : state.uploadTrackers.add(t.code);
-              renderTrackerPickers();
-            },
-          },
-          t.code,
-        ),
-      ),
-    );
-
+    renderUploadTargets();
     requestsCost();
+  }
+
+  /**
+   * Which trackers an upload goes to, and in what order.
+   *
+   * Two things were wrong with the row of toggles this replaces.
+   *
+   * Turning off the last one you had on emptied the list, and the next render
+   * quietly refilled it with the *first* configured tracker -- so with only
+   * OPS selected, pressing OPS gave you RED, and with only RED selected,
+   * pressing RED gave you RED again. One direction worked and the other did
+   * nothing, for no reason anybody could see. There has to be a tracker
+   * selected, so turning the last one off now hands over to the next one
+   * instead of springing back to the top of the list.
+   *
+   * And the order was the order they happened to be declared in. Uploading to
+   * both trackers is two uploads in sequence, and which goes first matters
+   * enough to be worth saying.
+   */
+  function renderUploadTargets() {
+    const host = $('#upload-tracker');
+    if (!host) return;
+    const codes = state.trackers.map((t) => t.code);
+    // A tracker whose credentials were removed is not somewhere to upload to.
+    state.uploadTrackers = state.uploadTrackers.filter((c) => codes.includes(c));
+    if (!state.uploadTrackers.length && codes.length) state.uploadTrackers = [codes[0]];
+
+    const toggle = (code) => {
+      const at = state.uploadTrackers.indexOf(code);
+      if (at < 0) {
+        state.uploadTrackers.push(code);
+      } else if (state.uploadTrackers.length > 1) {
+        state.uploadTrackers.splice(at, 1);
+      } else {
+        // The last one: hand over rather than leaving nothing selected.
+        const next = codes[(codes.indexOf(code) + 1) % codes.length];
+        state.uploadTrackers = [next];
+      }
+      renderUploadTargets();
+    };
+
+    const move = (code, by) => {
+      const at = state.uploadTrackers.indexOf(code);
+      const to = at + by;
+      if (at < 0 || to < 0 || to >= state.uploadTrackers.length) return;
+      state.uploadTrackers.splice(to, 0, ...state.uploadTrackers.splice(at, 1));
+      renderUploadTargets();
+    };
+
+    // Selected first, in their running order, then the rest.
+    const ordered = [...state.uploadTrackers, ...codes.filter((c) => !state.uploadTrackers.includes(c))];
+    const several = state.uploadTrackers.length > 1;
+
+    host.replaceChildren(
+      ...ordered.map((code) => {
+        const at = state.uploadTrackers.indexOf(code);
+        const on = at >= 0;
+        return el('span', { class: `upload-target${on ? ' on' : ''}` },
+          several && on
+            ? el('button', {
+                type: 'button',
+                class: 'order-arrow',
+                disabled: at === 0,
+                title: `Upload to ${code} earlier`,
+                'aria-label': `Move ${code} earlier`,
+                onclick: () => move(code, -1),
+              }, '\u2039')
+            : null,
+          el('button', {
+            type: 'button',
+            class: on ? 'active' : '',
+            title: on
+              ? `Uploading to ${code}${several ? ` — ${at + 1} of ${state.uploadTrackers.length}` : ''}`
+              : `Also upload to ${code}`,
+            onclick: () => toggle(code),
+          }, several && on ? `${at + 1}. ${code}` : code),
+          several && on
+            ? el('button', {
+                type: 'button',
+                class: 'order-arrow',
+                disabled: at === state.uploadTrackers.length - 1,
+                title: `Upload to ${code} later`,
+                'aria-label': `Move ${code} later`,
+                onclick: () => move(code, 1),
+              }, '\u203a')
+            : null);
+      }),
+    );
+  }
+
+  /**
+   * Where one release should actually go.
+   *
+   * The toggles above say where uploads go in general. A release that has been
+   * checked says something more specific: it is missing from RED and OPS
+   * already has it, and uploading it to OPS would be a duplicate somebody else
+   * has to report. So the check wins where there is one, and the toggles only
+   * decide the order it runs in.
+   *
+   * @param {object} [item] - A queue row, or anything carrying missing_from.
+   * @returns {string[]} Tracker codes, in the order set on the Uploading tab.
+   */
+  function uploadTargets(item) {
+    const codes = state.trackers.map((t) => t.code);
+    const order = [...state.uploadTrackers, ...codes.filter((c) => !state.uploadTrackers.includes(c))];
+    const missing = ((item && item.missing_from) || []).filter((c) => codes.includes(c));
+    if (!missing.length) return [...state.uploadTrackers];
+    return order.filter((c) => missing.includes(c));
   }
 
   // ---------------------------------------------------------------- cards
@@ -1230,20 +1371,20 @@
   // prompt you cannot tell the release for -- so those still run in turn, each
   // starting as soon as its own download lands.
   async function bulkDownloadAndUpload(entries) {
-    const trackers = [...state.uploadTrackers];
-    if (!trackers.length) return toast('Pick a tracker to upload to first', 'bad');
+    if (!state.uploadTrackers.length) return toast('Pick a tracker to upload to first', 'bad');
     clearPicks();
     go(addr('/downloading'));
     toast(`Downloading ${entries.length} together. Uploads start as each one lands.`);
 
     const started = await Promise.all(entries.map(async ({ id, item }) => ({
       id,
+      item,
       label: `${item?.artist || ''} - ${item?.title || ''}`.trim() || String(id),
       queued: await download(id),
     })));
 
     // One at a time from here, in the order they were picked.
-    for (const { id, label, queued } of started) {
+    for (const { id, item, label, queued } of started) {
       if (!queued) continue;
       const job = await waitForDownload(queued.id);
       if (!job || job.status !== 'done' || !job.folder) {
@@ -1251,7 +1392,9 @@
         continue;
       }
       go(addr('/uploading'));
-      await startUpload(job.folder, trackers, id);
+      // Where this one release is missing from, not where uploads go in
+      // general: a release OPS already has should not be offered to OPS.
+      await startUpload(job.folder, uploadTargets(item), id);
     }
   }
 
@@ -1499,6 +1642,47 @@
 
   // ---------------------------------------------------------------- explore
 
+  // Browse is where you go when you do not already know what you are looking
+  // for, and it is the one place in the app that can start a release moving
+  // without you having typed anything. It could not do that: the Channels grid
+  // led to "Invalid channel slug: 'genre:132'" on every card, New releases was
+  // blank for every genre outside a handful of markets, and nothing on any of
+  // the three tabs could be sent anywhere. All three are dealt with below and
+  // in lox/deezer/explore.py, and every list here can now be sent to a scan.
+
+  /** The albums on a list of cards, as Deezer links. */
+  const albumLinks = (items) => (items || [])
+    .filter((i) => (i.type === 'album' || i.album_id) && (i.id || i.album_id))
+    .map((i) => `https://www.deezer.com/album/${i.album_id || i.id}`);
+
+  /**
+   * A button that sends a list of releases to the Scan tab.
+   *
+   * Browse without this is a picture gallery: you can see that Deezer has
+   * forty new rap records and you have no way of asking which of them your
+   * trackers are missing without opening forty pages.
+   *
+   * @param {Array} items - Cards, of which the albums are taken.
+   * @param {string} label - What the button says.
+   */
+  function scanTheseButton(items, label = 'Send to Scan') {
+    const links = albumLinks(items);
+    if (!links.length) return null;
+    return el('button', {
+      class: 'ghost',
+      title: `Add ${links.length} release(s) to the Scan tab`,
+      onclick: () => sendToMissing(links),
+    }, `${label} (${links.length})`);
+  }
+
+  /** A section heading with whatever can be done to the section beside it. */
+  function browseSection(title, items, extra = null) {
+    return el('div', { class: 'row browse-head' },
+      el('h2', { class: 'section-title' }, title),
+      extra,
+      scanTheseButton(items));
+  }
+
   async function loadExplore() {
     const body = $('#explore-body');
     const filters = $('#explore-filters');
@@ -1513,54 +1697,102 @@
     try {
       if (state.exploreTab === 'channels') {
         clearGenreFilter(filters);
-        const { channels } = await api('/api/explore/channels');
-        if (!channels.length) {
-          body.replaceChildren(empty('No channels returned. Deezer channels need a valid ARL.'));
-          return;
-        }
-        const grid = el('div', { class: 'grid' });
-        grid.append(
-          ...channels.map((c) =>
-            el(
-              'div',
-              { class: 'card', onclick: () => go(addr(`/browse/channel/${encodeURIComponent(c.slug)}`)) },
-              el('div', {
-                class: 'card-art',
-                style: c.image ? `background-image:url('${c.image}')` : `background:${c.colour || 'var(--bg-input)'}`,
-              }),
-              el('div', { class: 'card-title' }, c.title),
-            ),
-          ),
-        );
-        body.replaceChildren(grid);
-        return;
+        return await renderChannels(body);
       }
 
       await renderGenreFilter(filters);
-      if (state.exploreTab === 'charts') {
-        const chart = await api(`/api/explore/charts?genre=${state.exploreGenre}`);
-        body.replaceChildren();
-        for (const [label, key] of [['Albums', 'albums'], ['Tracks', 'tracks'], ['Artists', 'artists']]) {
-          if (!chart[key]?.length) continue;
-          const grid = el('div', { class: 'grid' });
-          grid.append(...chart[key].map(card));
-          body.append(el('h2', { class: 'section-title' }, label), grid);
-        }
-        if (!body.children.length) body.replaceChildren(empty('Deezer has no chart for this selection.'));
-      } else {
-        const data = await api(`/api/explore/releases?genre=${state.exploreGenre}`);
-        const grid = el('div', { class: 'grid' });
-        renderGrid(grid, data.results, data.note || 'No new releases.');
-        body.replaceChildren(
-          ...[
-            data.note ? el('p', { class: 'hint' }, data.note) : null,
-            grid,
-          ].filter(Boolean),
-        );
-      }
+      if (state.exploreTab === 'charts') return await renderCharts(body);
+      return await renderReleases(body);
     } catch (e) {
       body.replaceChildren(empty(e.message));
+      return undefined;
     }
+  }
+
+  /** The Channels grid, or the genres that stand in for it. */
+  async function renderChannels(body) {
+    const { channels } = await api('/api/explore/channels');
+    if (!channels.length) {
+      body.replaceChildren(empty('Deezer returned no channels and no genres. Check the ARL in Settings.'));
+      return;
+    }
+    // Deezer only hands channels to an authenticated session. Without one the
+    // grid is the editorial genres instead, which is a real page rather than
+    // an apology -- but it should say which of the two you are looking at.
+    const fallback = channels.every((c) => c.kind === 'genre');
+
+    const channelCard = (c) => el(
+      'div',
+      {
+        class: 'card',
+        title: c.title,
+        onclick: () => go(addr(`/browse/channel/${encodeURIComponent(c.slug)}`)),
+      },
+      el('div', {
+        class: 'card-art',
+        style: c.image ? `background-image:url('${c.image}')` : `background:${c.colour || 'var(--bg-input)'}`,
+      }),
+      el('div', { class: 'card-title' }, c.title),
+    );
+
+    // Deezer serves close to a hundred of these -- genres, moods and thirty-five
+    // podcast categories -- and one flat grid of ninety-eight is not somewhere
+    // anybody browses. They arrive in the strips Deezer groups them into, so
+    // the page keeps those.
+    const groups = new Map();
+    channels.forEach((c) => {
+      const name = c.group || '';
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(c);
+    });
+
+    body.replaceChildren(
+      ...[
+        fallback
+          ? el('p', { class: 'hint' },
+               'Deezer is not serving channels to this account, so these are its genres. '
+               + 'Each one opens what is new and what is charting in it.')
+          : null,
+        ...[...groups.entries()].flatMap(([name, group]) => [
+          name ? el('h2', { class: 'section-title' }, name) : null,
+          el('div', { class: 'grid' }, ...group.map(channelCard)),
+        ]),
+      ].filter(Boolean),
+    );
+  }
+
+  /** The Charts tab: albums, tracks and artists for the chosen genre. */
+  async function renderCharts(body) {
+    const chart = await api(`/api/explore/charts?genre=${state.exploreGenre}`);
+    body.replaceChildren();
+    for (const [label, key] of [['Albums', 'albums'], ['Tracks', 'tracks'], ['Artists', 'artists']]) {
+      if (!chart[key]?.length) continue;
+      const grid = el('div', { class: 'grid' });
+      grid.append(...chart[key].map(card));
+      body.append(browseSection(label, chart[key]), grid);
+    }
+    if (!body.children.length) body.replaceChildren(empty('Deezer has no chart for this selection.'));
+  }
+
+  /** The New releases tab, saying which of its three sources answered. */
+  async function renderReleases(body) {
+    const data = await api(`/api/explore/releases?genre=${state.exploreGenre}`);
+    if (!data.results.length) {
+      body.replaceChildren(empty(data.note || 'No new releases.'));
+      return;
+    }
+    const grid = el('div', { class: 'grid' });
+    grid.append(...data.results.map(card));
+    body.replaceChildren(
+      ...[
+        browseSection(data.source === 'chart' ? 'Recent releases' : 'New releases', data.results),
+        // Never silent about where these came from. A chart is popularity, not
+        // recency, and passing one off as this week's records is how a 1993
+        // record ended up under "New releases".
+        data.note ? el('p', { class: 'hint' }, data.note) : null,
+        grid,
+      ].filter(Boolean),
+    );
   }
 
   // Emptying the bar has to take the "already built" flag with it. Leaving
@@ -1601,33 +1833,35 @@
   /** Draw one channel. Reached only through /browse/channel/<slug>. */
   async function loadChannel(slug) {
     const body = $('#explore-body');
-    body.replaceChildren(spinner(`Loading ${slug}`));
+    body.replaceChildren(spinner('Loading'));
     try {
       const channel = await api(`/api/explore/channel/${encodeURIComponent(slug)}`);
       if (state.exploreChannel === slug) setTitle(channel.title || slug);
+      const everything = channel.sections.flatMap((section) => section.items);
       body.replaceChildren(
         el('div', { class: 'row toolbar' },
-           el('button', { class: 'ghost', onclick: () => go(addr('/browse/channels')) }, '← Channels')),
+           el('button', { class: 'ghost', onclick: () => go(addr('/browse/channels')) }, '← Channels'),
+           scanTheseButton(everything, 'Send everything here to Scan')),
         el('h2', { class: 'section-title' }, channel.title),
+        ...(channel.note ? [el('p', { class: 'hint' }, channel.note)] : []),
       );
       for (const section of channel.sections) {
         const grid = el('div', { class: 'grid' });
         grid.append(...section.items.map(card));
         body.append(
-          el(
-            'div',
-            { class: 'row' },
-            el('h2', { class: 'section-title' }, section.title || 'Selection'),
+          browseSection(
+            section.title || 'Selection',
+            section.items,
+            // A module has an address of its own, so a scan can re-run it
+            // later rather than being handed a frozen list of what is in it
+            // today. A genre section has no module, and its albums are the
+            // only thing there is to send.
             section.id
-              ? el(
-                  'button',
-                  {
-                    class: 'ghost',
-                    title: 'Send this module to the Scan tab',
-                    onclick: () => sendToMissing(`https://www.deezer.com/en/channels/module/${section.id}`),
-                  },
-                  'Scan module',
-                )
+              ? el('button', {
+                  class: 'ghost',
+                  title: 'Scan this module, so a later scan picks up whatever Deezer has added to it',
+                  onclick: () => sendToMissing(`https://www.deezer.com/en/channels/module/${section.id}`),
+                }, 'Scan module')
               : null,
           ),
           grid,
@@ -1635,7 +1869,10 @@
       }
       if (!channel.sections.length) body.append(empty('Deezer sent nothing back for this channel.'));
     } catch (e) {
-      body.replaceChildren(empty(e.message));
+      body.replaceChildren(
+        el('div', { class: 'row toolbar' },
+           el('button', { class: 'ghost', onclick: () => go(addr('/browse/channels')) }, '← Channels')),
+        empty(e.message));
     }
   }
 
@@ -1694,11 +1931,25 @@
     }
   }
 
-  function sendToMissing(url) {
+  /**
+   * Put one or more Deezer links in the Scan box and go there.
+   *
+   * @param {string|string[]} urls - A link, or a list of them.
+   */
+  function sendToMissing(urls) {
+    const list = (Array.isArray(urls) ? urls : [urls]).filter(Boolean);
+    if (!list.length) return;
     const box = $('#missing-sources');
-    box.value = box.value ? `${box.value.trim()}\n${url}` : url;
+    // Whatever is already in the box stays: sending a second selection should
+    // add to the scan you are building, not replace it. Duplicates are dropped
+    // so pressing the same button twice does not queue the same album twice.
+    const already = box.value.split('\n').map((l) => l.trim()).filter(Boolean);
+    const merged = [...new Set([...already, ...list])];
+    box.value = merged.join('\n');
     go(addr('/scan'));
-    toast('Added to the Scan tab. Nothing has touched a tracker yet.');
+    toast(list.length === 1
+      ? 'Added to the Scan tab.'
+      : `${list.length} releases added to the Scan tab.`);
   }
 
   // ---------------------------------------------------------------- detail
@@ -1783,7 +2034,8 @@
             el('p', { class: 'album-verdict' }, verdict,
                availability ? el('span', { class: 'card-sub' }, ` ${availability.flac_count}/${availability.total} FLAC`) : null),
             el('p', { class: 'hint' },
-               'Checking spends tracker budget. Nothing above this line has contacted a tracker.'),
+               'Everything above comes from Deezer. Check trackers asks RED and OPS whether they '
+               + 'already have this release, and puts the answer below.'),
             el('div', { id: 'album-check-body' }),
           ),
         ),
@@ -1979,7 +2231,6 @@
           ? el('a', { href: v.match.url, target: '_blank', rel: 'noopener' },
                groupTitle(v.match) || 'view group')
           : null,
-        el('span', { class: 'card-sub' }, `${v.calls_used} call(s)`),
       );
 
       const inspected = v.inspected.length
@@ -2032,8 +2283,8 @@
     // The release has to exist on disk before there is anything to upload. If a
     // matching folder is already there, go straight to the upload; otherwise
     // queue the download and hand off to the Downloads tab.
-    state.uploadTrackers = new Set(trackers);
-    renderTrackerPickers();
+    state.uploadTrackers = [...trackers];
+    renderUploadTargets();
 
     let folders = [];
     try {
@@ -2075,14 +2326,12 @@
 
   /** How many are ticked, and what that lets you press. */
   function watchlistPick() {
-    const n = state.watchSelected.size;
-    const total = state.watchlists.length;
+    const shown = tableView('watchlists').shown || state.watchlists;
+    const n = countSelected(shown, state.watchSelected);
     $('#watchlist-scan').disabled = n === 0;
     $('#watchlist-delete').disabled = n === 0;
-    $('#watchlist-scan-all').disabled = total === 0;
-    $('#watchlist-count').textContent = total
-      ? `${n} of ${total} selected`
-      : '';
+    $('#watchlist-scan-all').disabled = state.watchlists.length === 0;
+    $('#watchlist-count').textContent = shown.length ? `${n} of ${shown.length} selected` : '';
   }
 
   function renderWatchlists() {
@@ -2094,44 +2343,57 @@
       return;
     }
 
-    container.replaceChildren(...state.watchlists.map((w) => watchRow(w)));
+    // The same table as every other list here. Thirty saved playlists in a
+    // column of hand-rolled rows had no way to find one by name, and no way
+    // to see which of them had gone unscanned longest.
+    container.replaceChildren(dataTable({
+      name: 'watchlists',
+      rows: state.watchlists,
+      selection: { set: state.watchSelected, onChange: watchlistPick },
+      onShown: watchlistPick,
+      empty: 'Nothing saved yet.',
+      columns: [
+        {
+          label: 'Saved search',
+          value: (w) => w.name || '',
+          filter: 'text',
+          cell: (w) => (state.watchEditing === w.id
+            ? renameField(w)
+            : el('span', {},
+                el('div', {}, el('strong', {}, w.name)),
+                el('span', { class: 'hint' }, w.holds || ''))),
+        },
+        {
+          label: 'Kind',
+          value: (w) => w.kind_label || '',
+          filter: 'choice',
+          class: 'nowrap',
+          cell: (w) => el('span', { class: 'tag dim' }, w.kind_label || ''),
+        },
+        {
+          label: 'Last scanned',
+          value: (w) => daysAgo(w.last_run),
+          filter: 'days',
+          class: 'nowrap',
+          cell: (w) => (w.last_run ? whenCell(w.last_run) : el('span', { class: 'hint' }, 'never')),
+        },
+        {
+          label: '',
+          filter: false,
+          class: 'row-actions',
+          cell: (w) => el('span', {},
+            w.url
+              ? el('a', { class: 'linkbtn', href: w.url, target: '_blank', rel: 'noreferrer' }, 'Open \u2197')
+              : null,
+            el('button', {
+              class: 'ghost',
+              onclick: () => { state.watchEditing = w.id; renderWatchlists(); },
+            }, 'Rename'),
+            el('button', { class: 'ghost', onclick: () => deleteWatchlists([w.id]) }, 'Delete')),
+        },
+      ],
+    }));
     watchlistPick();
-  }
-
-  /** One saved search: what it is, how big, when it was last scanned. */
-  function watchRow(w) {
-    const tick = el('input', {
-      type: 'checkbox',
-      checked: state.watchSelected.has(w.id),
-      'aria-label': `Select ${w.name}`,
-      onchange: (e) => {
-        if (e.target.checked) state.watchSelected.add(w.id);
-        else state.watchSelected.delete(w.id);
-        watchlistPick();
-      },
-    });
-
-    if (state.watchEditing === w.id) return el('div', { class: 'watchrow' }, tick, renameField(w));
-
-    return el(
-      'div',
-      { class: 'watchrow' },
-      tick,
-      el('div', { class: 'watch-what' },
-        el('strong', {}, w.name),
-        el('span', { class: 'card-sub' },
-           [w.kind_label, w.holds].filter(Boolean).join(' · '))),
-      el('div', { class: 'card-sub watch-when' },
-         w.last_run ? `scanned ${ago(w.last_run)}` : 'never scanned'),
-      el('div', { class: 'watch-acts' },
-        w.url
-          ? el('a', { class: 'linkbtn', href: w.url, target: '_blank', rel: 'noreferrer' },
-               'Open ↗')
-          : null,
-        el('button', { class: 'ghost', onclick: () => { state.watchEditing = w.id; renderWatchlists(); } },
-           'Rename'),
-        el('button', { class: 'ghost', onclick: () => deleteWatchlists([w.id]) }, 'Delete')),
-    );
   }
 
   /** The rename box, in place of the name it is replacing. */
@@ -2198,6 +2460,7 @@
   }
 
   async function deleteWatchlists(ids) {
+    if (!ids.length) return;
     const names = state.watchlists.filter((w) => ids.includes(w.id)).map((w) => w.name);
     const what = names.length === 1 ? `“${names[0]}”` : `${names.length} saved searches`;
     if (!confirm(`Delete ${what}?\n\nThis only forgets the link. Nothing already scanned is affected.`)) return;
@@ -2230,11 +2493,32 @@
 
   // ---------------------------------------------------------------- downloads
 
-  async function download(albumId) {
+  /**
+   * Queue one album.
+   *
+   * @param {string} albumId - Deezer album id.
+   * @param {boolean} [options.allowLossy] - Take whatever quality Deezer will
+   *   serve for this one release, whatever the fallback setting says. This is
+   *   the "download it anyway" answer to a release Deezer has no FLAC for.
+   */
+  async function download(albumId, { allowLossy = false } = {}) {
     try {
-      const result = await api('/api/download', { method: 'POST', body: { album_id: String(albumId) } });
+      const result = await api('/api/download', {
+        method: 'POST',
+        body: { album_id: String(albumId), allow_lossy: allowLossy },
+      });
       if (result.failed?.length) {
-        toast(result.failed[0].error, 'bad');
+        const problem = result.failed[0].error;
+        // The one failure with an answer: the account cannot have this release
+        // as FLAC and lower qualities are switched off. Rather than a dead
+        // end, offer the release at the quality Deezer will actually serve.
+        if (!allowLossy && /flac|format|quality|no media|not available/i.test(problem)) {
+          if (confirm(`${problem}\n\nDownload it at whatever quality Deezer will serve instead?`)) {
+            return download(albumId, { allowLossy: true });
+          }
+          return null;
+        }
+        toast(problem, 'bad');
         return null;
       }
       toast('Queued for download', 'ok');
@@ -2244,6 +2528,36 @@
       toast(e.message, 'bad');
       return null;
     }
+  }
+
+  /**
+   * Ask what to do about a download that came back below FLAC.
+   *
+   * Asked once per job, the moment the first lossy track lands, so there is
+   * still a download to stop. Keeping it is a real answer -- sometimes lossy
+   * is what the request wanted -- so this is a question and not a refusal.
+   *
+   * @param {object} job - The download job as the API reports it.
+   */
+  async function askAboutQuality(job) {
+    if (state.qualityAsked.has(job.id)) return;
+    state.qualityAsked.add(job.id);
+    const name = `${job.artist} — ${job.title}`;
+    const quality = (job.quality || '').replace('_', ' ') || 'a lower quality';
+    const keep = confirm(
+      `${name} is not FLAC.\n\n`
+      + `Deezer is serving it as ${quality}. Trackers reject a lossy release posted as lossless, `
+      + `and lox has named the folder for what is actually in it.\n\n`
+      + 'OK keeps the download. Cancel stops it and deletes the folder.');
+    try {
+      const result = await api(`/api/downloads/${job.id}/quality`, { method: 'POST', body: { keep } });
+      toast(keep
+        ? `Keeping ${name} at ${quality}.`
+        : `${name} stopped${result.deleted ? ' and the folder deleted' : ''}.`, keep ? 'ok' : '');
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+    pollDownloads(true);
   }
 
   // Resolve once a download job stops moving, with the job itself, so the
@@ -2268,7 +2582,7 @@
   // Download, wait for it, then upload what it produced. Resolves only when the
   // upload flow has finished, which is what lets a batch run one at a time.
   async function downloadAndUpload(albumId, item, { quiet = false } = {}) {
-    const trackers = [...state.uploadTrackers];
+    const trackers = uploadTargets(item);
     if (!trackers.length) return toast('Pick at least one tracker under Uploads', 'bad');
 
     const queued = await download(albumId);
@@ -2306,8 +2620,15 @@
     if (state.pollers.has('downloads') && !immediate) return;
     const tick = async () => {
       try {
-        const { jobs } = await api('/api/downloads');
+        const { jobs, confirm_lower_quality: askFirst } = await api('/api/downloads');
         renderDownloads(jobs);
+        // A release Deezer will not serve as FLAC used to land in the download
+        // folder looking exactly like one it would, and the first thing to
+        // notice was a tracker rejecting the upload.
+        if (askFirst) {
+          const surprise = jobs.find((j) => j.lossy && !j.decision && !j.allow_lossy);
+          if (surprise) askAboutQuality(surprise);
+        }
         const active = jobs.some((j) => ['queued', 'running'].includes(j.status));
         railCount('#dl-badge', jobs.filter((j) => ['queued', 'running'].includes(j.status)).length);
         if (active) {
@@ -2323,14 +2644,74 @@
     tick();
   }
 
+  /**
+   * A filter bar for a list that is not a table.
+   *
+   * The downloads are cards with progress bars rather than rows, so they
+   * cannot carry the per-column filters every table here has -- but a list of
+   * forty downloads still needs narrowing, and "which of these failed" was
+   * something you could only answer by scrolling.
+   *
+   * @param {string} name - Keys the retained filter state.
+   * @param {Array} rows - What is being filtered.
+   * @param {Function} textOf - The searchable text of one row.
+   * @param {Function} statusOf - The status of one row, for the dropdown.
+   * @param {Function} rerender - Called when a filter changes.
+   * @returns {object} `{ bar, shown }`.
+   */
+  function listFilter(name, rows, textOf, statusOf, rerender) {
+    const view = tableView(name);
+    const wanted = String(view.filters.text || '').toLowerCase();
+    const status = view.filters.status || '';
+    const shown = rows.filter((row) =>
+      (!wanted || String(textOf(row)).toLowerCase().includes(wanted))
+      && (!status || statusOf(row) === status));
+
+    const options = [...new Set(rows.map(statusOf).filter(Boolean))].sort();
+    const bar = el('div', { class: 'row listfilter' },
+      el('input', {
+        class: 'th-filter',
+        type: 'search',
+        placeholder: 'filter',
+        value: view.filters.text || '',
+        oninput: (e) => {
+          view.filters.text = e.target.value;
+          clearTimeout(view.timer);
+          view.timer = setTimeout(rerender, 220);
+        },
+      }),
+      el('select', {
+        class: 'th-filter',
+        onchange: (e) => { view.filters.status = e.target.value; rerender(); },
+      },
+      el('option', { value: '', selected: !status }, 'all'),
+      ...options.map((o) => el('option', { value: o, selected: status === o }, o))),
+      el('span', { class: 'hint' },
+         shown.length === rows.length
+           ? `${rows.length} download${rows.length === 1 ? '' : 's'}`
+           : `${shown.length} of ${rows.length}`));
+    return { bar, shown };
+  }
+
   function renderDownloads(jobs) {
     const list = $('#downloads-list');
     if (!jobs.length) {
       list.replaceChildren(empty('Nothing downloading. Add something from Search or Browse.'));
       return;
     }
+    const { bar, shown } = listFilter(
+      'downloads', jobs,
+      (job) => `${job.artist} ${job.title}`,
+      (job) => job.status,
+      () => renderDownloads(jobs),
+    );
+    if (!shown.length) {
+      list.replaceChildren(bar, empty('Nothing matches these filters.'));
+      return;
+    }
     list.replaceChildren(
-      ...jobs.map((job) => {
+      bar,
+      ...shown.map((job) => {
         const cls = job.status === 'done' ? 'done' : job.status === 'failed' ? 'failed' : '';
         return el(
           'div',
@@ -2345,6 +2726,36 @@
               { class: 'dl-sub' },
               job.error || `${job.status} · ${job.done}/${job.total} tracks${job.folder ? ` · ${job.folder}` : ''}`,
             ),
+            // What actually came back. Silent for a FLAC download, which is
+            // the expected case and needs no announcement.
+            job.lossy
+              ? el('div', { class: 'dl-quality' },
+                  el('span', { class: 'tag warn' }, (job.quality || 'lossy').replace('_', ' ')),
+                  ' ',
+                  job.decision === 'discarded'
+                    ? el('span', { class: 'hint' }, 'discarded')
+                    : job.decision === 'kept'
+                      ? el('span', { class: 'hint' }, 'kept anyway')
+                      : el('span', {},
+                          el('button', {
+                            class: 'linkbtn',
+                            onclick: async () => {
+                              await api(`/api/downloads/${job.id}/quality`,
+                                        { method: 'POST', body: { keep: true } });
+                              pollDownloads(true);
+                            },
+                          }, 'keep it'),
+                          ' · ',
+                          el('button', {
+                            class: 'linkbtn danger-link',
+                            onclick: async () => {
+                              await api(`/api/downloads/${job.id}/quality`,
+                                        { method: 'POST', body: { keep: false } });
+                              toast('Stopped, and the folder deleted.', 'ok');
+                              pollDownloads(true);
+                            },
+                          }, 'delete it')))
+              : null,
             el('div', { class: 'bar' }, el('div', { class: `bar-fill ${cls}`, style: `width:${job.percent}%` })),
           ),
           el(
@@ -2550,65 +2961,50 @@
     }
   }
 
-  // Shift-click selects the run between the row you last touched and this one,
-  // taking this row's new state -- so shift-click extends a selection and
-  // shift-unclick clears a stretch of it. Ticking fifty rows one at a time is
-  // not a decision fifty times over.
-  //
-  // Bound to click rather than change: change is not a mouse event and carries
-  // no shiftKey. The anchor lives out here because every tick re-renders the
-  // table, which would otherwise reset it on each use.
-  function rangeSelector(idsFn, selectedFn, rerender) {
-    let anchor = null;
-    return (id, event) => {
-      const ids = idsFn();
-      // Read the Set each time: these are reassigned wholesale when a scan or a
-      // load seeds a fresh selection, so a captured reference would end up
-      // writing into a Set nothing renders from.
-      const selected = selectedFn();
-      const index = ids.indexOf(id);
-      const checked = event.target.checked;
+  /** What identifies a collected album. */
+  const candidateKey = (c) => c.album_id;
 
-      if (event.shiftKey && anchor !== null && anchor !== -1 && index !== -1 && anchor !== index) {
-        const [from, to] = anchor < index ? [anchor, index] : [index, anchor];
-        for (let i = from; i <= to; i++) {
-          checked ? selected.add(ids[i]) : selected.delete(ids[i]);
-        }
-        // Shift-clicking inside a table also drags a text selection across it.
-        document.getSelection()?.removeAllRanges();
-      } else {
-        checked ? selected.add(id) : selected.delete(id);
-      }
-
-      anchor = index;
-      rerender();
-    };
+  function candidatesPick() {
+    const shown = tableView('candidates').shown || state.candidates;
+    const n = countSelected(shown, state.selectedCandidates, candidateKey);
+    const button = $('#missing-check');
+    if (button) {
+      button.disabled = n === 0;
+      button.textContent = n ? `Check ${n} again` : 'Check again';
+    }
+    const label = $('#missing-selected');
+    if (label) label.textContent = `${n} of ${shown.length} shown`;
   }
 
-  const pickCandidate = rangeSelector(
-    () => state.candidates.map((c) => c.album_id), () => state.selectedCandidates, () => renderCandidates());
-  const pickRequest = rangeSelector(
-    () => state.requestRows.map((r) => r.id), () => state.selectedRequests, () => renderRequestRows());
-  const pickFound = rangeSelector(
-    () => state.found.map((f) => f.id), () => state.selectedFound, () => renderFound());
+  /** What a check said about one collected album, or null. */
+  const scanResultOf = (c) => state.scanResults.get(String(c.album_id)) || null;
 
-  // The tick in a table header, with the third state that makes it honest: all,
-  // none, or a dash for some. It reports what the rows say rather than being a
-  // switch with its own opinion, so it cannot claim everything is selected when
-  // it is not.
-  function selectAllBox(allIds, selected, onChange) {
-    const box = el('input', {
-      type: 'checkbox',
-      title: 'Select all',
-      onchange: (e) => {
-        selected.clear();
-        if (e.target.checked) allIds.forEach((id) => selected.add(id));
-        onChange();
-      },
-    });
-    box.checked = allIds.length > 0 && selected.size === allIds.length;
-    box.indeterminate = selected.size > 0 && selected.size < allIds.length;
-    return box;
+  /** The result column as one phrase, so it can be filtered and sorted on. */
+  function scanOutcome(c) {
+    const result = scanResultOf(c);
+    if (!result) return 'not checked';
+    const parts = [
+      ...(result.missing_from || []).map((t) => `${t} missing`),
+      ...(result.found_on || []).map((t) => `${t} has it`),
+      ...Object.keys(result.errors || {}).map((t) => `${t} error`),
+    ];
+    return parts.join(', ') || 'no result';
+  }
+
+  /** The result cell, with every verdict as somewhere to go and check. */
+  function scanResultCell(c) {
+    const result = scanResultOf(c);
+    if (!result) return el('span', { class: 'tag dim' }, 'not checked');
+    const links = trackerLinks({ ...result, artist: c.artist, title: c.title });
+    const parts = [
+      ...(result.missing_from || []).map((t) =>
+        trackerTag(t, 'ok', `${t} missing`, links[t], `Open what ${c.artist || 'this artist'} has on ${t}`)),
+      ...(result.found_on || []).map((t) =>
+        trackerTag(t, 'dim', `${t} has it`, links[t], `Open the release on ${t}`)),
+      ...Object.entries(result.errors || {}).map(([t, e]) =>
+        el('span', { class: 'tag warn', title: e }, `${t} error`)),
+    ];
+    return el('span', {}, ...(parts.length ? parts : [el('span', { class: 'tag dim' }, 'no result')]));
   }
 
   function renderCandidates() {
@@ -2616,60 +3012,60 @@
     panel.hidden = state.candidates.length === 0;
     if (!state.candidates.length) return;
 
-    const trackers = [...state.missingTrackers];
     $('#missing-cost').textContent =
-      `${state.candidates.length} album(s) to check: about ${state.candidates.length * 3} call(s) ` +
-      `per tracker on ${trackers.join(', ') || 'no tracker'}. The scan stops rather than overdraw a budget.`;
+      `${state.candidates.length} album(s) collected. Nothing here has been looked up yet.`;
 
-    const table = $('#missing-table');
-    table.replaceChildren(
-      el(
-        'thead',
-        {},
-        el(
-          'tr',
-          {},
-          el('th', {}, selectAllBox(
-            state.candidates.map((c) => c.album_id),
-            state.selectedCandidates,
-            () => renderCandidates(),
-          )),
-          el('th', {}, 'Album'), el('th', {}, 'Year'), el('th', {}, 'Tracks'),
-          el('th', {}, 'Source'), el('th', {}, 'Result'),
-        ),
-      ),
-      el(
-        'tbody',
-        {},
-        ...state.candidates.map((c) =>
-          el(
-            'tr',
-            { 'data-album': c.album_id },
-            el(
-              'td',
-              {},
-              el('input', {
-                type: 'checkbox',
-                checked: state.selectedCandidates.has(c.album_id),
-                onclick: (e) => pickCandidate(c.album_id, e),
-              }),
-            ),
-            el(
-              'td',
-              {},
-              el('a', {
-                href: albumHref(c.album_id),
-                onclick: (e) => { e.preventDefault(); goAlbum(c.album_id); },
-              }, `${c.artist} — ${c.title}`),
-            ),
-            el('td', {}, c.year || ''),
-            el('td', {}, String(c.tracks)),
-            el('td', { class: 'card-sub' }, c.source || ''),
-            el('td', { class: 'result' }, el('span', { class: 'tag dim' }, 'not checked')),
-          ),
-        ),
-      ),
-    );
+    $('#missing-table').replaceChildren(dataTable({
+      name: 'candidates',
+      rows: state.candidates,
+      selection: { set: state.selectedCandidates, onChange: candidatesPick },
+      onShown: candidatesPick,
+      idOf: candidateKey,
+      rowAttrs: (c) => ({ 'data-album': c.album_id }),
+      empty: 'Nothing collected.',
+      columns: [
+        {
+          label: 'Album',
+          value: (c) => `${c.artist || ''} ${c.title || ''}`.trim(),
+          filter: 'text',
+          cell: (c) => el('a', {
+            href: albumHref(c.album_id),
+            onclick: (e) => { e.preventDefault(); goAlbum(c.album_id); },
+          }, `${c.artist} — ${c.title}`),
+        },
+        {
+          label: 'Year',
+          value: (c) => Number(String(c.year || '').slice(0, 4)) || 0,
+          filter: 'range',
+          lowLabel: 'from',
+          highLabel: 'to',
+          class: 'nowrap',
+          cell: (c) => el('span', {}, c.year || ''),
+        },
+        {
+          label: 'Tracks',
+          value: (c) => Number(c.tracks) || 0,
+          filter: 'range',
+          class: 'nowrap',
+          cell: (c) => el('span', {}, String(c.tracks)),
+        },
+        {
+          label: 'Source',
+          value: (c) => c.source || '',
+          filter: 'choice',
+          class: 'card-sub',
+          cell: (c) => el('span', {}, c.source || ''),
+        },
+        {
+          label: 'Result',
+          value: scanOutcome,
+          filter: 'text',
+          class: 'result',
+          cell: scanResultCell,
+        },
+      ],
+    }));
+    candidatesPick();
   }
 
   // ``all`` checks everything that was just collected; without it the ticked
@@ -2677,9 +3073,10 @@
   async function missingCheck({ all = false } = {}) {
     const trackers = [...state.missingTrackers];
     if (!trackers.length) return toast('Pick at least one tracker', 'bad');
+    const shown = tableView('candidates').shown || state.candidates;
     const candidates = all
       ? state.candidates
-      : state.candidates.filter((c) => state.selectedCandidates.has(c.album_id));
+      : shown.filter((c) => state.selectedCandidates.has(c.album_id));
     if (!candidates.length) return toast('Nothing to check', 'bad');
 
     const log = $('#missing-check-log');
@@ -2702,7 +3099,8 @@
             refreshStatus();
             const stopped = job.events.find((e) => e.event === 'budget_exhausted');
             jobFinished(log, stopped
-              ? `Stopped early to protect the budget: ${stopped.checked} checked, ${stopped.remaining ?? '?'} left. Run again when the window rolls over.`
+              ? `Stopped after ${stopped.checked}: the tracker will not answer any more just yet. `
+                + `${stopped.remaining ?? '?'} still to check — run it again shortly.`
               : `Done. ${job.result_count} album(s) checked.`);
             if (job.error) toast(job.error, 'bad');
             resolve();
@@ -2716,27 +3114,16 @@
   }
 
   function applyScanResult(result) {
-    const row = $(`#missing-table tr[data-album="${result.album_id}"] .result`);
-    if (!row) return;
-    const parts = [];
-    result.missing_from.forEach((t) => parts.push(el('span', { class: 'tag ok' }, `missing on ${t}`)));
-    result.found_on.forEach((t) => parts.push(el('span', { class: 'tag dim' }, `on ${t}`)));
-    Object.entries(result.errors || {}).forEach(([t, e]) => parts.push(el('span', { class: 'tag warn', title: e }, `${t} error`)));
-    row.replaceChildren(...(parts.length ? parts : [el('span', { class: 'tag dim' }, 'no result')]));
+    const id = String(result.album_id);
+    // Kept as data, so sorting or filtering the list redraws the answers
+    // rather than blanking every row that had one.
+    state.scanResults.set(id, result);
+    const cell = $(`#missing-table tr[data-album="${CSS.escape(id)}"] .result`);
+    const candidate = state.candidates.find((c) => String(c.album_id) === id);
+    if (cell && candidate) cell.replaceChildren(scanResultCell(candidate));
   }
 
   // ---------------------------------------------------------------- requests
-
-  // A labelled field with optional help, matching the settings page.
-  function filterField(id, label, control, help) {
-    return el(
-      'div',
-      { class: 'setting' },
-      el('label', { for: id }, label),
-      control,
-      help ? el('p', { class: 'hint setting-help' }, help) : null,
-    );
-  }
 
   // One row of the search form: a label on the left, controls on the right.
   // The trackers lay their own form out this way and it is the right shape --
@@ -2911,7 +3298,7 @@
       el('input', { id: 'requests-limit', type: 'number', class: 'reqsmall', min: '1', step: '1',
                     value: '4', oninput: requestsCost }),
       el('span', { class: 'hint reqhint' },
-         `${state.requestsTracker} serves ${spec.page_size} per page — one call each`)));
+         `${state.requestsTracker} sends ${spec.page_size} requests per page`)));
 
     host.replaceChildren(el('div', { class: 'reqform' }, ...rows));
     if (!spec.mapped && spec.note) {
@@ -2937,8 +3324,12 @@
     const budget = state.trackers.find((t) => t.code === state.requestsTracker);
     const over = budget && pages > budget.remaining;
     cost.classList.toggle('cost-over', !!over);
+    // The one thing the sidebar cannot tell you, because it is about what you
+    // have just typed: this search is asking for more than the tracker will
+    // answer right now, and it will stop short.
     cost.textContent = over
-      ? `Only ${budget.remaining} call${budget.remaining === 1 ? '' : 's'} left on ${budget.code} — the search will stop when they run out.`
+      ? `${budget.code} will only answer ${budget.remaining} more page${budget.remaining === 1 ? '' : 's'} `
+        + 'right now, so the search will stop there.'
       : '';
   }
 
@@ -3060,18 +3451,23 @@
 
     host.hidden = false;
     host.className = `requests-summary${partial ? ' partial' : ''}`;
+    // Filtered, because replaceChildren is not el(): handed a null it appends
+    // a text node reading "null", which is how a search in progress came to
+    // announce itself as "Still reading...null".
     host.replaceChildren(
-      el('span', {}, parts.join(' ')),
-      // The number is only useful next to the thing that acts on it.
-      partial && !running
-        ? el('button', {
-            class: 'ghost',
-            onclick: () => {
-              const box = $('#requests-limit');
-              if (box) { box.value = String(Math.min(totalPages, pages * 2)); box.focus(); requestsCost(); }
-            },
-          }, 'Read more pages')
-        : null);
+      ...[
+        el('span', {}, parts.join(' ')),
+        // The number is only useful next to the thing that acts on it.
+        partial && !running
+          ? el('button', {
+              class: 'ghost',
+              onclick: () => {
+                const box = $('#requests-limit');
+                if (box) { box.value = String(Math.min(totalPages, pages * 2)); box.focus(); requestsCost(); }
+              },
+            }, 'Read more pages')
+          : null,
+      ].filter(Boolean));
   }
 
   function requestsProgressDone() {
@@ -3172,6 +3568,13 @@
     let pipelineChecked = 0;
     const pipelineSkipped = [];
     let pipelineWindow = 0;
+    // The lookup is one job per page, but it is one lookup as far as anybody
+    // watching is concerned. Reporting each job's own progress meant the line
+    // read "2/25" on a search that had already found three hundred requests
+    // and restarted at zero every time a page landed -- so the count is kept
+    // here, across the jobs, and grows as the search does.
+    let queuedForLookup = 0;
+    let lookedUp = 0;
 
     if (pipeline) {
       log.hidden = false;
@@ -3181,9 +3584,11 @@
 
     const lookUpLater = (ids) => {
       if (!ids.length) return;
+      queuedForLookup += ids.length;
       chain = chain
         .then(async () => {
           if (cancelled) return;
+          const startedAt = lookedUp;
           const job = await runCheckJob(tracker, ids, {
             onSkipped: (note) => {
               // Collected rather than shown per page: twenty pages would be
@@ -3191,7 +3596,16 @@
               pipelineSkipped.push(...(note.requests || []));
               pipelineWindow = note.recheck_after_days;
             },
+            onProgress: (j) => {
+              const done = startedAt + ((j.progress && j.progress.current) || 0);
+              jobProgress(log, {
+                ...j,
+                progress: { phase: 'looking up', current: Math.min(done, queuedForLookup),
+                            total: queuedForLookup, album: (j.progress || {}).album },
+              }, queuedForLookup < rows.length ? `${rows.length} found so far` : '');
+            },
           });
+          lookedUp = startedAt + ids.length;
           pipelineChecked += job.result_count || 0;
         })
         .catch((e) => { if (!cancelled) toast(e.message, 'bad'); });
@@ -3201,6 +3615,8 @@
     container.replaceChildren(spinner(`Reading page 1 of ${pages}`));
     requestsProgress(0, pages, `Page 1 of ${pages}`);
     requestsSummary({ shown: null });
+    // Whatever the last run skipped is not what this one is doing.
+    clearSkipped();
 
     try {
       for (let page = 1; page <= pages; page++) {
@@ -3288,7 +3704,7 @@
           recheck_after_days: pipelineWindow,
         });
       }
-      $$('.requests-check-btn').forEach((b) => { b.disabled = false; });
+      requestsPick();
       jobFinished(log, `Done. ${pipelineChecked} request(s) checked.`);
       refreshStatus();
       return;
@@ -3297,6 +3713,90 @@
     if (!cancelled && rows.length && thenCheck) {
       await requestsCheck(rows.map((r) => r.id));
     }
+  }
+
+  //: Suffix to multiplier, so a bounty written the way the tracker writes it
+  //: can be compared as a number. "900 MB" sorts above "1 TB" as text.
+  const BOUNTY_UNITS = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4, PB: 1024 ** 5 };
+
+  function bountyBytes(text) {
+    const parts = String(text || '').trim().split(/\s+/);
+    if (parts.length !== 2) return 0;
+    const size = Number(parts[0]);
+    return Number.isFinite(size) ? size * (BOUNTY_UNITS[parts[1].toUpperCase()] || 0) : 0;
+  }
+
+  /**
+   * What identifies one request's answer.
+   *
+   * Tracker and id together, never the id alone: request 80755 exists on both
+   * trackers and is a different release on each, so keying on the number would
+   * show RED's answer against an OPS row.
+   */
+  const resultKey = (tracker, id) => `${tracker || state.requestsTracker || ''}:${id}`;
+
+  /** What a check said about one request, or null while nothing has. */
+  const requestResult = (row) => state.requestResults.get(resultKey(row.tracker, row.id)) || null;
+
+  /**
+   * The result column as one comparable phrase.
+   *
+   * Kept out of the cell renderer so the column can be filtered and sorted on
+   * the same words it displays -- "show me the ones that matched" should be
+   * something you can type into the column rather than something you scroll
+   * looking for.
+   */
+  function requestOutcome(row) {
+    const match = requestResult(row);
+    if (!match) return 'not checked';
+    if (match.status === 'filled') return match.reason || 'already filled';
+    if (!match.fillable) return match.reason || match.status || 'nothing usable';
+    return `${(match.confidence * 100).toFixed(0)}% match`;
+  }
+
+  /** The result cell: the outcome, and whatever can be done about it. */
+  function requestResultCell(row) {
+    const match = requestResult(row);
+    if (!match) return el('span', { class: 'tag dim' }, 'not checked');
+    if (match.status === 'filled') {
+      return el('span', { class: 'tag warn', title: match.reason || '' }, match.reason || 'already filled');
+    }
+    if (!match.fillable) {
+      return el('span', { class: 'tag dim', title: match.reason || '' },
+                match.reason || match.status || 'nothing usable');
+    }
+    return el('span', {},
+      el('span', { class: 'tag ok' }, `${(match.confidence * 100).toFixed(0)}% match`),
+      ' ',
+      // Whether the tracker already has it. A request left open after somebody
+      // uploaded the release is not worth filling twice.
+      match.already_on_tracker === true
+        ? el('a', { class: 'tag warn', href: match.tracker_group_url || '#', target: '_blank', rel: 'noopener' },
+             'already on tracker')
+        : match.already_on_tracker === false
+          ? el('span', { class: 'tag dim' }, 'not on tracker')
+          : null,
+      ' ',
+      // Opens both sides rather than throwing you at Deezer: deciding whether
+      // this fills that request means reading them together.
+      el('button', {
+        class: 'link',
+        onclick: () => go(addr(`/requests/${encodeURIComponent(match.tracker || state.requestsTracker || '')}`
+                               + `/${encodeURIComponent(match.request_id)}`)),
+      }, match.deezer_title || 'Compare'),
+      ' ',
+      el('button', { class: 'ghost', onclick: () => download(match.deezer_id) }, 'Download'));
+  }
+
+  function requestsPick() {
+    const shown = tableView('requests').shown || state.requestRows;
+    const n = countSelected(shown, state.selectedRequests);
+    $$('.requests-check-btn').forEach((b) => {
+      b.disabled = n === 0;
+      b.textContent = n ? `Check ${n} selected` : 'Check selected';
+    });
+    const label = $('#requests-selected');
+    if (label) label.textContent = `${n} of ${shown.length} shown`;
   }
 
   function renderRequestRows() {
@@ -3314,69 +3814,91 @@
         el('button', {
           class: 'primary requests-check-btn',
           disabled: state.selectedRequests.size === 0,
-          onclick: () => requestsCheck([...state.selectedRequests]),
-        }, `Check ${state.selectedRequests.size} selected`),
-        el('span', { class: 'hint' },
-           `${state.selectedRequests.size} of ${state.requestRows.length} selected — one call each.`),
-      ),
-      el(
-        'table',
-        { class: 'table' },
-        el('thead', {}, el(
-          'tr',
-          {},
-          el('th', {}, selectAllBox(
-            state.requestRows.map((r) => r.id),
-            state.selectedRequests,
-            () => renderRequestRows(),
-          )),
-          el('th', {}, 'Request'), el('th', {}, 'Year'), el('th', {}, 'Bounty'),
-          el('th', {}, 'Age'), el('th', {}, 'Filled'), el('th', {}, 'Result'),
-        )),
-        el(
-          'tbody',
-          {},
-          ...state.requestRows.map((r) =>
-            el(
-              'tr',
-              { 'data-request': r.id },
-              el(
-                'td',
-                {},
-                el('input', {
-                  type: 'checkbox',
-                  checked: state.selectedRequests.has(r.id),
-                  onclick: (e) => pickRequest(r.id, e),
-                }),
-              ),
-              el('td', {}, el('a', {
-                class: 'rowlink',
-                href: r.url,
-                title: 'Open the request beside the Deezer release',
-                onclick: (e) => {
-                  e.preventDefault();
-                  go(addr(`/requests/${encodeURIComponent(state.requestsTracker || '')}`
-                          + `/${encodeURIComponent(r.id)}`));
-                },
-              }, `${r.artist} — ${r.title}`)),
-              el('td', {}, r.year || ''),
-              el('td', {}, r.bounty || ''),
-              // How long it has sat open. A request from 2019 that nothing has
-              // filled is a different proposition from one raised yesterday,
-              // and the row already carried the timestamp to say so.
-              el('td', { class: 'req-age', title: r.created || '' }, r.age || ''),
-              // Filled or not, stated rather than inferred. A filled request
-              // cannot be filled again, so checking one is wasted budget.
-              el('td', {},
-                 r.filled
-                   ? el('span', { class: 'tag dim', title: r.filled_by ? `by ${r.filled_by}` : '' }, 'filled')
-                   : el('span', { class: 'tag ok' }, 'open')),
-              el('td', { class: 'result' }, el('span', { class: 'tag dim' }, 'not checked')),
-            ),
+          onclick: () => requestsCheck(
+            (tableView('requests').shown || state.requestRows)
+              .filter((r) => state.selectedRequests.has(r.id))
+              .map((r) => ({ id: r.id, tracker: r.tracker || state.requestsTracker })),
           ),
-        ),
+        }, state.selectedRequests.size ? `Check ${state.selectedRequests.size} selected` : 'Check selected'),
+        el('span', { class: 'hint', id: 'requests-selected' }),
       ),
+      // The same table as every other list, so the filters sit in the columns
+      // they filter. This one had none at all: a search that came back with
+      // three hundred requests could only be read top to bottom.
+      dataTable({
+        name: 'requests',
+        rows: state.requestRows,
+        selection: { set: state.selectedRequests, onChange: requestsPick },
+        onShown: requestsPick,
+        // The live result cells find their row through this, so a check can
+        // fill them in without rebuilding the table under the reader.
+        rowAttrs: (r) => ({ 'data-request': r.id }),
+        empty: 'Nothing matched. Widen the filters, or fetch more pages.',
+        columns: [
+          {
+            label: 'Request',
+            value: (r) => `${r.artist || ''} ${r.title || ''} ${r.id}`.trim(),
+            filter: 'text',
+            class: 'req-name',
+            cell: (r) => el('a', {
+              class: 'rowlink',
+              href: r.url,
+              title: 'Open the request beside the Deezer release',
+              onclick: (e) => {
+                e.preventDefault();
+                go(addr(`/requests/${encodeURIComponent(r.tracker || state.requestsTracker || '')}`
+                        + `/${encodeURIComponent(r.id)}`));
+              },
+            }, `${r.artist || '?'} — ${r.title || `Request ${r.id}`}`),
+          },
+          {
+            label: 'Year',
+            value: (r) => Number(String(r.year || '').slice(0, 4)) || 0,
+            filter: 'range',
+            lowLabel: 'from',
+            highLabel: 'to',
+            class: 'nowrap req-year',
+            cell: (r) => el('span', {}, r.year || ''),
+          },
+          {
+            // Compared in GB, which is the unit the tracker writes it in.
+            label: 'Bounty (GB)',
+            value: (r) => bountyBytes(r.bounty) / (1024 ** 3),
+            filter: 'range',
+            class: 'nowrap req-bounty',
+            cell: (r) => el('span', {}, r.bounty || ''),
+          },
+          {
+            // How long it has sat open. A request from 2019 that nothing has
+            // filled is a different proposition from one raised yesterday.
+            label: 'Added',
+            value: (r) => (r.created ? daysAgo(Date.parse(r.created) / 1000) : -1),
+            filter: 'days',
+            class: 'nowrap',
+            cell: (r) => el('span', { title: r.created || '' }, r.age || '—'),
+          },
+          {
+            // Filled or not, stated rather than inferred. A filled request
+            // cannot be filled again.
+            label: 'Filled',
+            value: (r) => (r.filled ? 'filled' : 'open'),
+            filter: 'choice',
+            class: 'req-filled',
+            cell: (r) => (r.filled
+              ? el('span', { class: 'tag dim', title: r.filled_by ? `by ${r.filled_by}` : '' }, 'filled')
+              : el('span', { class: 'tag ok' }, 'open')),
+          },
+          {
+            label: 'Result',
+            value: requestOutcome,
+            filter: 'text',
+            class: 'result',
+            cell: requestResultCell,
+          },
+        ],
+      }),
     );
+    requestsPick();
   }
 
   // Check a specific set of request ids.
@@ -3391,7 +3913,8 @@
   // the requests once the search has finished, or a page at a time while the
   // search is still going. Both want the same job, the same log line and the
   // same Stop button; only the batching differs.
-  async function runCheckJob(tracker, ids, { recheck = false, prefix = '', onSkipped = null } = {}) {
+  async function runCheckJob(tracker, ids,
+                             { recheck = false, prefix = '', onSkipped = null, onProgress = null } = {}) {
     const log = $('#requests-log');
     const { job_id: jobId } = await api('/api/requests/check', {
       method: 'POST',
@@ -3407,7 +3930,8 @@
     const job = await new Promise((resolve) => {
       followJob(jobId, {
         onUpdate: (j) => {
-          jobProgress(log, j, prefix);
+          if (onProgress) onProgress(j);
+          else jobProgress(log, j, prefix);
           j.results.forEach(applyRequestResult);
           const note = j.events.find((e) => e.event === 'skipped' && e.count);
           if (note && !reported) {
@@ -3433,6 +3957,7 @@
     const log = $('#requests-log');
     log.hidden = false;
     log.textContent = 'Starting…';
+    clearSkipped();
     $$('.requests-check-btn').forEach((b) => { b.disabled = true; });
 
     // Pasted or uploaded ids have no rows yet, so stand some up to fill in.
@@ -3459,7 +3984,7 @@
       renderRequestRows();
     }
 
-    const done = () => $$('.requests-check-btn').forEach((b) => { b.disabled = false; });
+    const done = () => requestsPick();
 
     // One call per tracker, in order. A paste can name both, and the tracker
     // is part of what identifies a request rather than a mode the page is in.
@@ -3488,12 +4013,27 @@
       done();
       refreshStatus();
       jobFinished(log, stoppedEarly
-        ? `Stopped early to protect the budget after ${stoppedEarly.checked} request(s).`
+        ? `Stopped after ${stoppedEarly.checked} request(s): the tracker will not answer any more just yet. `
+          + 'Run it again shortly.'
         : `Done. ${checked} request(s) checked.`);
     } catch (e) {
       done();
       toast(e.message, 'bad');
     }
+  }
+
+  /**
+   * Clear the skipped panel.
+   *
+   * Called at the start of every run, because the panel is about the run that
+   * put it there. It used to be appended after the log with nothing ever
+   * taking it away, so a second search stacked a second panel on the first,
+   * a third on those, and the top of the results was a pile of notes about
+   * searches that had already finished.
+   */
+  function clearSkipped() {
+    const host = $('#requests-skipped');
+    if (host) { host.replaceChildren(); host.hidden = true; }
   }
 
   // What a run did not do, and why.
@@ -3505,28 +4045,40 @@
   // anyway.
   function showSkipped(tracker, note) {
     const rows = note.requests || [];
-    const host = $('#requests-log');
+    const host = $('#requests-skipped');
+    if (!host) return;
     const window_ = note.recheck_after_days;
     const summary = window_
       ? `${note.count} already checked in the last ${window_} day${window_ === 1 ? '' : 's'} — skipped.`
       : `${note.count} already checked — skipped.`;
 
-    host.after(el('div', { class: 'panel skipped-note' },
+    // One panel, replaced rather than added to: this is the state of the run
+    // you are watching, not a log of every run this session.
+    host.hidden = false;
+    host.replaceChildren(el('div', { class: 'panel skipped-note' },
       el('div', { class: 'row' },
         el('strong', {}, summary),
         el('button', {
-          onclick: async (e) => {
-            e.target.closest('.skipped-note').remove();
+          onclick: async () => {
+            clearSkipped();
             await requestsCheck(rows.map((r) => ({ id: r.id, tracker: r.tracker })),
                                 { placeholders: true, recheck: true });
           },
         }, 'Check them anyway'),
         el('button', {
-          onclick: (e) => {
-            e.target.closest('.skipped-note').remove();
+          onclick: () => {
+            clearSkipped();
             showRequestTab('history');
           },
-        }, 'Show me what they said')),
+        }, 'Show me what they said'),
+        // Somewhere to put it that is not "do one of the two things it
+        // suggests". A note you have read should be dismissable.
+        el('button', {
+          class: 'ghost note-dismiss',
+          title: 'Dismiss',
+          'aria-label': 'Dismiss',
+          onclick: clearSkipped,
+        }, '\u00d7')),
       // The first few by name, so the number is not the only thing on offer.
       el('ul', { class: 'skipped-list' },
         ...rows.slice(0, 8).map((r) =>
@@ -3741,15 +4293,15 @@
         },
         {
           label: 'Added',
-          value: (r) => r.added_at || 0,
-          filter: false,
+          value: (r) => daysAgo(r.added_at),
+          filter: 'days',
           class: 'nowrap',
-          cell: (r) => el('span', {}, r.added_at ? ago(r.added_at) : '—'),
+          cell: (r) => whenCell(r.added_at),
         },
         {
           label: 'Days since lookup',
           value: (r) => (r.checked_days_ago === null ? -1 : r.checked_days_ago),
-          filter: 'range',
+          filter: 'days',
           class: 'nowrap',
           cell: (r) => {
             const days = r.checked_days_ago;
@@ -3893,6 +4445,26 @@
           cell: (r) => el('span', {}, r.tracker || '—'),
         },
         {
+          // What the check found on each tracker, as links -- the same column
+          // the queue and the scan history carry. A row that says a request
+          // can be filled and that the tracker already has the release is
+          // saying something you want to go and look at.
+          label: 'Trackers',
+          class: 'found-trackers',
+          value: (r) => (r.found_on || r.missing_from ? trackerSummary(r) : ''),
+          filter: 'choice',
+          cell: (r) => {
+            const tags = (r.found_on || []).length || (r.missing_from || []).length
+              ? trackerTags(r)
+              : [];
+            if (r.already_on_tracker === true && r.tracker_group_url) {
+              tags.push(trackerTag(r.tracker, 'warn', 'already on tracker', r.tracker_group_url,
+                                   'Open the release the tracker already has'));
+            }
+            return el('span', {}, ...(tags.length ? tags : [el('span', { class: 'tag dim' }, '—')]));
+          },
+        },
+        {
           label: 'Outcome',
           value: (r) => (HISTORY_STATUS[r.status] || [r.status || 'Unknown'])[0],
           filter: 'choice',
@@ -3923,9 +4495,12 @@
           cell: (r) => el('span', {}, r.bounty || '—'),
         },
         {
-          label: 'Opened',
-          value: (r) => r.created || '',
-          filter: false,
+          // What the tracker calls the moment a request was raised. "Opened"
+          // was the odd one out: every other list in the app calls this
+          // column Added, and two names for one idea is one too many.
+          label: 'Added',
+          value: (r) => (r.created ? daysAgo(Date.parse(r.created) / 1000) : -1),
+          filter: 'days',
           class: 'nowrap',
           cell: (r) => (r.created_age
             ? dateCell(`${r.created_age} ago`, (r.created || '').slice(0, 10), '')
@@ -3934,7 +4509,7 @@
         {
           label: 'Days since lookup',
           value: (r) => (r.checked_days_ago === null ? -1 : r.checked_days_ago),
-          filter: 'range',
+          filter: 'days',
           class: 'nowrap',
           cell: (r) => {
             const days = r.checked_days_ago;
@@ -4013,81 +4588,73 @@
   function fillPastedRequestRow(match) {
     const id = String(match.request_id);
     const row = state.requestRows.find((r) => String(r.id) === id);
-    const tr = $(`#requests-results tr[data-request="${id}"]`);
-    if (!row || !tr) return;
+    if (!row) return;
 
     const learned = {
       artist: match.artist || '',
       title: match.album || '',
       year: match.year || '',
       bounty: match.bounty || '',
+      created: match.created || '',
       url: match.request_url || '',
       tracker: match.tracker || row.tracker || '',
     };
     let touched = false;
     Object.entries(learned).forEach(([key, value]) => {
-      const blank = !row[key] || (key === 'url' && row.url === '#') || (key === 'title' && row.title === `Request ${id}`);
+      const blank = !row[key] || (key === 'url' && row.url === '#')
+        || (key === 'title' && row.title === `Request ${id}`);
       if (value && blank) { row[key] = value; touched = true; }
     });
     if (!touched) return;
 
-    const link = tr.children[1].querySelector('a');
+    // Patched by class rather than by column position. The cells used to be
+    // found as tr.children[2] and tr.children[3], which is a promise about the
+    // order of the columns that the table can no longer keep -- sorting or
+    // filtering rearranges nothing, but adding one column would have written
+    // the year into the bounty.
+    const tr = $(`#requests-results tr[data-request="${CSS.escape(id)}"]`);
+    if (!tr) return;
+    const link = tr.querySelector('.req-name a');
     if (link) {
       link.textContent = row.artist || row.title ? `${row.artist} — ${row.title}` : `Request ${id}`;
       if (row.url && row.url !== '#') link.href = row.url;
     }
-    tr.children[2].textContent = row.year || '';
-    tr.children[3].textContent = row.bounty || '';
+    const year = tr.querySelector('.req-year');
+    if (year) year.textContent = row.year || '';
+    const bounty = tr.querySelector('.req-bounty');
+    if (bounty) bounty.textContent = row.bounty || '';
   }
 
   function applyRequestResult(match) {
-    const cell = $(`#requests-results tr[data-request="${match.request_id}"] .result`);
-    if (!cell) return;
+    const id = String(match.request_id);
+    // Kept as data first. The cell is a rendering of it, so a sort or a filter
+    // afterwards redraws the answer rather than losing it.
+    state.requestResults.set(resultKey(match.tracker, id), match);
+    if (match.fillable) state.requestMatches.set(id, match);
+
     // A pasted request arrives as a placeholder that knows nothing but its own
     // id, and the check is what learns the rest. Without this the row stayed
     // "— Request 80755" with an empty year and bounty even after the tracker
     // had answered with all of it.
     fillPastedRequestRow(match);
+
+    const tr = $(`#requests-results tr[data-request="${CSS.escape(id)}"]`);
+    if (!tr) return;
+    const row = state.requestRows.find((r) => String(r.id) === id);
+    const cell = tr.querySelector('.result');
+    if (cell && row) cell.replaceChildren(requestResultCell(row));
     // A request that was already filled is not a failed check, it is a closed
-    // request -- so it says so, and the Filled column is corrected in place for
-    // a row that was fetched before somebody filled it.
-    if (match.status === 'filled') {
-      cell.replaceChildren(el('span', { class: 'tag warn', title: match.reason || '' }, match.reason || 'already filled'));
-      const row = cell.closest('tr');
-      const filledCell = row && row.children[5];
-      if (filledCell) {
-        filledCell.replaceChildren(
-          el('span', { class: 'tag dim', title: match.filled_by ? `by ${match.filled_by}` : '' }, 'filled'));
+    // request -- so the Filled column is corrected in place for a row that was
+    // fetched before somebody filled it.
+    if (match.status === 'filled' && row) {
+      row.filled = true;
+      row.filled_by = match.filled_by || row.filled_by || '';
+      const filled = tr.querySelector('.req-filled');
+      if (filled) {
+        filled.replaceChildren(
+          el('span', { class: 'tag dim', title: row.filled_by ? `by ${row.filled_by}` : '' }, 'filled'));
       }
-      return;
     }
-    if (!match.fillable) {
-      cell.replaceChildren(el('span', { class: 'tag dim', title: match.reason || '' }, match.reason || match.status));
-      return;
-    }
-    state.requestMatches.set(String(match.request_id), match);
-    cell.replaceChildren(
-      el('span', { class: 'tag ok' }, `${(match.confidence * 100).toFixed(0)}% match`),
-      ' ',
-      // Whether the tracker already has it. A request left open after somebody
-      // uploaded the release is not worth filling twice.
-      match.already_on_tracker === true
-        ? el('a', { class: 'tag warn', href: match.tracker_group_url || '#', target: '_blank', rel: 'noopener' },
-             'already on tracker')
-        : match.already_on_tracker === false
-          ? el('span', { class: 'tag dim' }, 'not on tracker')
-          : null,
-      ' ',
-      // Opens both sides rather than throwing you at Deezer: deciding whether
-      // this fills that request means reading them together.
-      el('button', {
-        class: 'link',
-        onclick: () => go(addr(`/requests/${encodeURIComponent(match.tracker || state.requestsTracker || '')}`
-                               + `/${encodeURIComponent(match.request_id)}`)),
-      }, match.deezer_title || 'Compare'),
-      ' ',
-      el('button', { class: 'ghost', onclick: () => download(match.deezer_id) }, 'Download'),
-    );
   }
 
   // ------------------------------------------------------- request compare
@@ -4348,48 +4915,70 @@
     const body = $('#found-body');
     body.replaceChildren(spinner('Loading'));
     try {
-      const { found, blacklisted, held, held_count: heldCount, rule,
+      const { found, blacklisted, held_count: heldCount, rule,
               held_groups: heldGroups = [], settled_count: settledCount = 0,
               settled_groups: settledGroups = [] } = await api('/api/found');
       state.found = found;
-      state.foundHeld = held || [];
       state.foundRule = rule || '';
       state.selectedFound = new Set(found.map((f) => f.id));
       $('#found-restore').hidden = !blacklisted;
       $('#found-restore').textContent = `Clear blacklist (${blacklisted})`;
 
-      state.heldGroups = heldGroups;
-
-      // Releases dropped for good are not listed -- there is nothing to do
-      // with them -- but the number is still said, so a queue that went quiet
-      // is explained rather than just short.
+      // What did not make the queue is a count and a reason, not a second
+      // list underneath the first.
+      //
+      // It used to be a table you could open, and everything in it was
+      // something nobody wanted: releases every tracker already has, releases
+      // Deezer cannot supply, releases a rule you set deliberately excluded.
+      // Offering all of that as a list to work through made the queue look
+      // like it was hiding work from you when it was doing its job. The line
+      // stays, because a list that quietly got shorter is worse; the table
+      // does not.
       const dropped = settledCount
         ? `${settledCount} dropped: ${settledGroups.map((g) => `${g.count} ${g.label}`).join('; ')}.`
         : '';
-      state.droppedNote = dropped;
+      const parts = heldGroups.map((g) => (g.key === 'rules'
+        ? `${g.count} by your queue rules, which let through ${state.foundRule}`
+        : `${g.count} ${g.label}`));
+      const excluded = heldCount ? `${heldCount} excluded: ${parts.join('; ')}.` : '';
 
-      // What was kept out, and whether any of it can still be acted on. The
-      // toggle only appears when there is a list behind it.
       const heldRow = $('#found-held-row');
       heldRow.hidden = !heldCount && !settledCount;
-      $('#found-held-toggle').hidden = !heldCount;
-      if (!heldCount && settledCount) $('#found-held').textContent = dropped;
-      if (heldCount) {
-        // Only one of these groups is a setting, and it is usually the small
-        // one. Calling all of them "your queue rules" sent people to Settings
-        // to widen a rule that had nothing to do with it.
-        const parts = heldGroups.map((g) => {
-          if (g.key === 'rules') return `${g.count} by your queue rules, which let through ${state.foundRule}`;
-          return `${g.count} ${g.label}`;
-        });
-        $('#found-held').textContent = `${heldCount} excluded: ${parts.join('; ')}. ${dropped}`.trim();
-        $('#found-held-toggle').textContent = state.showHeld ? 'Hide excluded' : 'Show excluded';
-      }
+      $('#found-held').textContent = [excluded, dropped].filter(Boolean).join(' ');
 
+      renderQueueUpkeep();
       renderFound();
     } catch (e) {
       body.replaceChildren(empty(e.message));
     }
+  }
+
+  /**
+   * Whether the queue is keeping itself honest, and when it last checked.
+   *
+   * A queue row claims nobody has uploaded the release yet, and that stops
+   * being true without anyone telling you: somebody else posts it, or the
+   * request behind the row gets filled, and the row sits there for months
+   * looking like work. Rows past the window are confirmed again in the
+   * background, one at a time, and only while nothing else is running.
+   *
+   * The line is here rather than left to be inferred, because a queue that
+   * silently drops rows is as confusing as one that silently keeps stale ones.
+   */
+  function renderQueueUpkeep() {
+    const host = $('#found-upkeep');
+    if (!host) return;
+    const upkeep = state.queueRecheck;
+    if (!upkeep || !upkeep.enabled) {
+      host.textContent = 'Rows are only confirmed again when you ask. '
+        + 'Settings → What reaches the queue can do it on a schedule.';
+      return;
+    }
+    const days = upkeep.after_days;
+    const when = upkeep.last_run ? `Last confirmed ${ago(upkeep.last_run)}.` : '';
+    host.textContent =
+      `Rows older than ${days} day${days === 1 ? '' : 's'} are confirmed again in the background, `
+      + `while nothing else is running. ${when}`.trim();
   }
 
   // The tracker options come from the rows themselves rather than a fixed
@@ -4410,16 +4999,8 @@
     const body = $('#found-body');
     railCount('#found-count-rail', state.found.length);
     if (!state.found.length) {
-      body.replaceChildren(
-        state.foundHeld.length
-          ? empty(`The queue is empty. ${state.foundHeld.length} release(s) were excluded — `
-              + 'see the list below, or widen the queue rule in Settings.')
-          : empty(state.droppedNote
-              ? `The queue is empty. ${state.droppedNote}`
-              : 'The queue is empty. Run a scan, or look up some requests.'),
-      );
+      body.replaceChildren(empty('The queue is empty. Run a scan, or look up some requests.'));
       $('#found-count').textContent = '';
-      if (state.showHeld) body.append(heldTable());
       return;
     }
     const rows = state.found;
@@ -4460,121 +5041,20 @@
         },
         {
           label: 'Added',
-          value: (f) => f.added_at || 0,
-          filter: false,
+          value: (f) => daysAgo(f.added_at),
+          filter: 'days',
           class: 'nowrap',
-          cell: (f) => el('span', {}, f.added_at ? ago(f.added_at) : '—'),
+          cell: (f) => whenCell(f.added_at),
         },
         {
           label: 'Last checked',
-          value: (f) => f.checked_at || 0,
-          filter: false,
+          value: (f) => daysAgo(f.checked_at),
+          filter: 'days',
           class: 'nowrap',
-          cell: (f) => el('span', {}, f.checked_at ? ago(f.checked_at) : '—'),
+          cell: (f) => whenCell(f.checked_at, staleNote(f.checked_at)),
         },
       ],
     }));
-    if (state.showHeld) body.append(heldTable());
-  }
-
-  // Releases that were checked and are not in the queue, each saying what is
-  // actually keeping it out.
-  //
-  // This used to be headed "Held back by your queue rules", which was wrong
-  // for most of it: only one of the reasons is a setting, and a release that
-  // every tracker already has is not being held by anything -- there is
-  // nothing to upload. It also had no way to act on a row, so a list of
-  // things you did not want was a list you could only look at.
-  function heldPick() {
-    // Counts come from the rows the table is showing, not from the boxes: a
-    // row with no id used to add `undefined` to the set, so "17 selected" was
-    // one more than the list held and clearing left that one behind.
-    const n = countSelected(tableView('held').shown || state.foundHeld, state.selectedHeld);
-    $$('.held-action').forEach((b) => { b.disabled = n === 0; });
-    const label = $('#held-selected');
-    if (label) label.textContent = n ? `${n} selected` : '';
-  }
-
-  async function heldAct(what) {
-    const shown = tableView('held').shown || state.foundHeld;
-    const ids = shown.filter((r) => state.selectedHeld.has(r.id)).map((r) => r.id);
-    if (!ids.length) return;
-    try {
-      if (what === 'recheck') {
-        const rows = shown.filter((r) => ids.includes(r.id));
-        state.selectedHeld = new Set();
-        await recheckReleases(rows);
-        return;
-      }
-      await api('/api/found/dismiss', { method: 'POST', body: { ids, blacklist: what === 'blacklist' } });
-      toast(what === 'blacklist'
-        ? `${ids.length} blacklisted. No scan will list them again.`
-        : `${ids.length} removed.`, 'ok');
-      state.selectedHeld = new Set();
-      await loadFound();
-    } catch (e) {
-      toast(e.message, 'bad');
-    }
-  }
-
-  function heldTable() {
-    if (!state.foundHeld.length) return empty('Every checked release is in the queue.');
-
-    // What each group needs, said once rather than repeated down a column.
-    const advice = (state.heldGroups || []).map((g) => {
-      if (g.fix === 'recheck') {
-        return el('li', {}, `${g.count} ${g.label}. Select them and re-check.`);
-      }
-      if (g.fix === 'settings') {
-        return el('li', {}, `${g.count} excluded by your queue rules. Widen the rule in Settings to admit them.`);
-      }
-      return el('li', {}, `${g.count} ${g.label}.`);
-    });
-
-    return el('div', { class: 'held-block' },
-      el('h3', { class: 'section-head-plain' },
-         `Excluded from the queue (${state.foundHeld.length})`),
-      advice.length ? el('ul', { class: 'held-why' }, ...advice) : null,
-      el('div', { class: 'row held-actions' },
-        el('button', { class: 'held-action', disabled: true, onclick: () => heldAct('recheck') },
-           'Re-check on trackers'),
-        el('button', { class: 'held-action', disabled: true, onclick: () => heldAct('remove') },
-           'Remove'),
-        el('button', { class: 'held-action danger', disabled: true, onclick: () => heldAct('blacklist') },
-           'Blacklist'),
-        el('span', { class: 'hint', id: 'held-selected' })),
-      dataTable({
-        name: 'held',
-        rows: state.foundHeld,
-        selection: { set: state.selectedHeld, onChange: heldPick },
-        onShown: heldPick,
-        empty: 'Every checked release is in the queue.',
-        columns: [
-          {
-            label: 'Release',
-            value: (f) => `${f.artist || ''} ${f.title || ''}`.trim(),
-            filter: 'text',
-            cell: (f) => el('a', {
-              href: albumHref(f.album_id),
-              onclick: (e) => { e.preventDefault(); goAlbum(f.album_id); },
-            }, `${f.artist || ''} — ${f.title || ''}`),
-          },
-          {
-            label: 'Trackers',
-            class: 'found-trackers',
-            value: (f) => trackerSummary(f),
-            filter: 'choice',
-            cell: (f) => el('span', {}, ...trackerTags(f)),
-          },
-          {
-            label: 'Exclusion reason',
-            value: (f) => f.held_reason || '',
-            filter: 'choice',
-            class: 'card-sub',
-            cell: (f) => el('span', {}, f.held_reason || ''),
-          },
-        ],
-      }));
   }
 
   // How a release got into the queue. Both can be true at once -- a scan found
@@ -4617,15 +5097,83 @@
     return [...missing, ...found].join(', ');
   }
 
+  /**
+   * One tracker verdict, as somewhere to go.
+   *
+   * "OPS is missing this" and "RED has it" are both claims about a page that
+   * exists, and both used to be dead text -- so confirming either meant
+   * copying the artist into the tracker's own search by hand. A tracker that
+   * has it links to the group it matched; one that does not links to what that
+   * artist already has there, which is where you would have gone anyway.
+   *
+   * @param {string} code - Tracker code.
+   * @param {string} cls - Tag colour class.
+   * @param {string} text - What the tag says.
+   * @param {string} href - Where it goes, or "" for a tag with no page behind it.
+   * @param {string} title - The tooltip.
+   */
+  function trackerTag(code, cls, text, href, title) {
+    if (!href) return el('span', { class: `tag ${cls}` }, text);
+    return el('a', {
+      class: `tag ${cls} tag-link`,
+      href,
+      target: '_blank',
+      rel: 'noopener',
+      title,
+      // A tag inside a row that opens something else on click: the link is the
+      // more specific intent, so it wins.
+      onclick: (e) => e.stopPropagation(),
+    }, text);
+  }
+
+  /** Where a tracker lives, from the status the sidebar already polls. */
+  const trackerHome = (code) => (state.trackers.find((t) => t.code === code) || {}).url || '';
+
+  /**
+   * Where each tracker verdict on a row leads.
+   *
+   * The stored rows carry this from the server, because it knows which group
+   * matched. A result that has only just arrived over a job poll does not, so
+   * it is worked out from the same three facts here rather than being the one
+   * place in the app where a verdict is not a link.
+   *
+   * @param {object} row - Anything with found_on, missing_from and a name.
+   * @returns {Object<string,string>} Tracker code to URL.
+   */
+  function trackerLinks(row) {
+    if (row.tracker_links && Object.keys(row.tracker_links).length) return row.tracker_links;
+    const groups = row.group_ids || {};
+    const terms = encodeURIComponent([row.artist, row.title].filter(Boolean).join(' '));
+    const out = {};
+    for (const code of row.found_on || []) {
+      const home = trackerHome(code);
+      if (!home) continue;
+      out[code] = groups[code]
+        ? `${home}/torrents.php?id=${groups[code]}`
+        : `${home}/torrents.php?searchstr=${terms}`;
+    }
+    for (const code of row.missing_from || []) {
+      const home = trackerHome(code);
+      if (!home || out[code]) continue;
+      out[code] = row.artist
+        ? `${home}/artist.php?artistname=${encodeURIComponent(row.artist)}`
+        : `${home}/torrents.php?searchstr=${terms}`;
+    }
+    return out;
+  }
+
   function trackerTags(row) {
     const missing = row.missing_from || [];
     const found = row.found_on || [];
+    const links = trackerLinks(row);
     if (!missing.length && !found.length) {
       return [el('span', { class: 'tag dim' }, 'not checked on any tracker')];
     }
     return [
-      ...missing.map((t) => el('span', { class: 'tag ok' }, `${t} missing`)),
-      ...found.map((t) => el('span', { class: 'tag dim' }, `${t} has it`)),
+      ...missing.map((t) => trackerTag(t, 'ok', `${t} missing`, links[t],
+                                       `Open what ${row.artist || 'this artist'} already has on ${t}`)),
+      ...found.map((t) => trackerTag(t, 'dim', `${t} has it`, links[t],
+                                     `Open the release on ${t}`)),
     ];
   }
 
@@ -4717,6 +5265,31 @@ They will not be listed again, even if a later scan finds them.`)) {
 
   // ---------------------------------------------------------------- uploads
 
+  const folderKey = (f) => f.path;
+
+  /** A byte count as the folder list says it. */
+  function fileSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (!n) return '';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = n;
+    let i = 0;
+    while (value >= 1024 && i < units.length - 1) { value /= 1024; i += 1; }
+    return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+  }
+
+  function foldersPick() {
+    const shown = tableView('folders').shown || state.folders || [];
+    const n = countSelected(shown, state.selectedFolders, folderKey);
+    const button = $('#folders-upload');
+    if (button) {
+      button.disabled = n === 0;
+      button.textContent = n > 1 ? `Upload ${n} in turn` : 'Upload selected';
+    }
+    const label = $('#folders-selected');
+    if (label) label.textContent = n ? `${n} of ${shown.length} selected` : '';
+  }
+
   async function loadFolders() {
     const list = $('#folders-list');
     list.replaceChildren(spinner('Reading download folder'));
@@ -4724,6 +5297,12 @@ They will not be listed again, even if a later scan finds them.`)) {
       const { folders, directory, linking, error: dirError } = await api('/api/folders');
       $('#uploads-dir').textContent = directory;
       state.linking = linking;
+      state.folders = folders;
+      // A folder that has been uploaded or deleted since the last read should
+      // not still be ticked and counted.
+      const alive = new Set(folders.map(folderKey));
+      [...state.selectedFolders].forEach((k) => alive.has(k) || state.selectedFolders.delete(k));
+
       $('#linking-note').textContent = linking
         ? 'Linking is on: each tracker gets its own hardlinked folder under the seeding directory, so the bytes exist once.'
         : 'Linking is off — every tracker will seed from the same folder. Set [linking] in your config for cross-seed style layout.';
@@ -4734,37 +5313,166 @@ They will not be listed again, even if a later scan finds them.`)) {
       }
       if (!folders.length) {
         list.replaceChildren(empty('Nothing here yet. Finished downloads turn up ready to upload.'));
+        foldersPick();
         return;
       }
-      list.replaceChildren(
-        el(
-          'table',
-          { class: 'table' },
-          el('thead', {}, el('tr', {}, el('th', {}, 'Folder'), el('th', {}, 'Tracks'), el('th', {}, ''))),
-          el(
-            'tbody',
-            {},
-            ...folders.map((f) =>
-              el(
-                'tr',
-                {},
-                el('td', {}, f.name),
-                el('td', {}, String(f.tracks)),
-                el(
-                  'td',
-                  {},
-                  el('button', { class: 'primary', onclick: () => startUpload(f.path) }, 'Upload'),
-                  el('button', { class: 'danger', onclick: () => deleteFolder(f.path, f.name, loadFolders) },
-                     'Delete'),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
+      list.replaceChildren(dataTable({
+        name: 'folders',
+        rows: folders,
+        selection: { set: state.selectedFolders, onChange: foldersPick },
+        onShown: foldersPick,
+        idOf: folderKey,
+        empty: 'Nothing here yet.',
+        columns: [
+          {
+            label: 'Folder',
+            value: (f) => f.name,
+            filter: 'text',
+            cell: (f) => el('span', {},
+              el('div', {}, f.name),
+              queuePositionOf(f) !== null
+                ? el('span', { class: 'hint' },
+                     queuePositionOf(f) === 0 ? 'uploading now' : `queued, #${queuePositionOf(f)}`)
+                : null),
+          },
+          {
+            label: 'Tracks',
+            value: (f) => Number(f.tracks) || 0,
+            filter: 'range',
+            class: 'nowrap',
+            cell: (f) => el('span', {}, String(f.tracks)),
+          },
+          {
+            label: 'Size',
+            value: (f) => (Number(f.bytes) || 0) / (1024 ** 3),
+            filter: 'range',
+            class: 'nowrap',
+            cell: (f) => el('span', {}, fileSize(f.bytes)),
+          },
+          {
+            label: 'Finished',
+            value: (f) => daysAgo(f.modified),
+            filter: 'days',
+            class: 'nowrap',
+            cell: (f) => whenCell(f.modified),
+          },
+          {
+            label: '',
+            filter: false,
+            class: 'row-actions',
+            cell: (f) => el('span', {},
+              el('button', { class: 'primary', onclick: () => queueUploads([f]) }, 'Upload'),
+              el('button', { class: 'danger', onclick: () => deleteFolder(f.path, f.name, loadFolders) },
+                 'Delete')),
+          },
+        ],
+      }));
+      foldersPick();
     } catch (e) {
       list.replaceChildren(empty(e.message));
     }
+  }
+
+  // ------------------------------------------------------------ the queue
+  //
+  // Uploading was one folder at a time and only ever the one you had just
+  // pressed: a night's worth of releases meant sitting at the page pressing
+  // Upload, waiting, pressing Upload. They queue now, and the queue runs
+  // itself -- each one starts when the one before it finishes or is called
+  // off, and the questions an upload asks are still asked one release at a
+  // time, which is the reason it is a queue rather than a free-for-all.
+
+  /** Where a folder sits in the queue: 0 for the one running, or null. */
+  function queuePositionOf(folder) {
+    if (state.uploadCurrent && state.uploadCurrent.path === folder.path) return 0;
+    const at = state.uploadQueue.findIndex((q) => q.path === folder.path);
+    return at < 0 ? null : at + 1;
+  }
+
+  function renderUploadQueue() {
+    const host = $('#upload-queue');
+    if (!host) return;
+    const waiting = state.uploadQueue.length;
+    if (!state.uploadCurrent && !waiting) { host.hidden = true; host.replaceChildren(); return; }
+
+    host.hidden = false;
+    host.replaceChildren(el('div', { class: 'panel upload-queue' },
+      el('div', { class: 'row' },
+        el('strong', {}, state.uploadCurrent
+          ? `Uploading ${state.uploadCurrent.name}`
+          : 'Starting the next upload'),
+        el('span', { class: 'hint' },
+           waiting ? `${waiting} waiting behind it` : 'last one in the queue'),
+        // Cancelling the one on screen only ever stopped that one, and the
+        // rest started immediately afterwards -- which is not what anybody
+        // pressing Cancel on a batch means.
+        waiting
+          ? el('button', { class: 'danger', onclick: cancelQueuedUploads },
+               `Cancel the other ${waiting}`)
+          : null),
+      waiting
+        ? el('ol', { class: 'queue-list' },
+            ...state.uploadQueue.map((q) =>
+              el('li', {},
+                q.name,
+                el('button', {
+                  class: 'linkbtn',
+                  title: 'Take this one out of the queue',
+                  onclick: () => {
+                    state.uploadQueue = state.uploadQueue.filter((other) => other.path !== q.path);
+                    renderUploadQueue();
+                    loadFolders();
+                  },
+                }, 'remove'))))
+        : null));
+  }
+
+  /**
+   * Add folders to the upload queue and start it if it is idle.
+   *
+   * @param {Array} folders - Rows from the folder list.
+   */
+  function queueUploads(folders) {
+    if (!state.uploadTrackers.length) return toast('Pick at least one tracker to upload to', 'bad');
+    const known = new Set([
+      ...state.uploadQueue.map((q) => q.path),
+      state.uploadCurrent ? state.uploadCurrent.path : '',
+    ]);
+    const fresh = folders.filter((f) => !known.has(f.path));
+    if (!fresh.length) return toast('Already queued', '');
+
+    state.uploadQueue.push(...fresh.map((f) => ({ path: f.path, name: f.name })));
+    state.selectedFolders.clear();
+    renderUploadQueue();
+    foldersPick();
+    if (fresh.length > 1) toast(`${fresh.length} queued. They upload one after another.`, 'ok');
+    return runUploadQueue();
+  }
+
+  /** Empty the queue, leaving whatever is running to finish or be cancelled. */
+  function cancelQueuedUploads() {
+    const dropped = state.uploadQueue.length;
+    state.uploadQueue = [];
+    renderUploadQueue();
+    loadFolders();
+    if (dropped) toast(`${dropped} removed from the queue. The one running was left alone.`, 'ok');
+  }
+
+  /** Work through the queue, one upload at a time. */
+  async function runUploadQueue() {
+    if (state.uploadCurrent) return;
+    while (state.uploadQueue.length) {
+      const next = state.uploadQueue.shift();
+      state.uploadCurrent = next;
+      renderUploadQueue();
+      // eslint-disable-next-line no-await-in-loop -- the point of a queue: an
+      // upload asks questions, and two of them asking at once gives you a
+      // prompt you cannot tell the release for.
+      await startUpload(next.path, null, next.albumId);
+      state.uploadCurrent = null;
+      renderUploadQueue();
+    }
+    loadFolders();
   }
 
   // `albumId` is passed on when the upload came from a Deezer release, so a
@@ -5861,6 +6569,33 @@ They will not be listed again, even if a later scan finds them.`)) {
       markDirty();
     };
 
+    /**
+     * One setting, in three parts, always in the same order.
+     *
+     * The page lays these out in a grid, and a grid can only line up a row of
+     * settings if every one of them has the same parts in the same places.
+     * They did not: a checkbox had no control row at all and sat level with
+     * its neighbours' labels, a field with a long note pushed the one beside
+     * it out of line, and a two-line label shunted its own box down while the
+     * box next to it stayed put. Nothing on the page shared a baseline with
+     * anything else.
+     *
+     * The help slot is present even when empty, because an absent row is a
+     * row the grid cannot reserve.
+     *
+     * @param {Node|null} head - The label row, or null for a control that
+     *   carries its own label (a checkbox).
+     * @param {Node|Node[]} control - The control row.
+     * @returns {HTMLElement} The setting.
+     */
+    const setting = (head, ...control) => el(
+      'div',
+      { class: 'setting' },
+      el('div', { class: 'setting-head' }, head),
+      el('div', { class: 'setting-control' }, ...control.filter(Boolean)),
+      el('p', { class: 'hint setting-help' }, field.help || ''),
+    );
+
     // A size is a number and a unit. Storing bytes is right; asking you to type
     // 1073741824 and count the digits is not.
     if (field.kind === 'bytes') {
@@ -5878,24 +6613,16 @@ They will not be listed again, even if a later scan finds them.`)) {
       };
       size.addEventListener('input', push);
       units.addEventListener('change', push);
-      return el(
-        'div',
-        { class: 'setting' },
-        el('label', {}, field.label),
-        el('div', { class: 'bytes-input' }, size, units),
-        field.help ? el('p', { class: 'hint setting-help' }, field.help) : null,
-      );
+      return setting(el('label', {}, field.label), el('div', { class: 'bytes-input' }, size, units));
     }
 
     let input;
     if (field.kind === 'bool') {
       input = el('input', { type: 'checkbox', checked: !!value, onchange: onInput });
-      return el(
-        'div',
-        { class: 'setting' },
-        el('label', { class: 'check' }, input, field.label),
-        field.help ? el('p', { class: 'hint setting-help' }, field.help) : null,
-      );
+      // The checkbox carries its own label, so the head row is empty and the
+      // tick lines up with the boxes and dropdowns beside it rather than with
+      // their labels.
+      return setting(null, el('label', { class: 'check' }, input, field.label));
     }
 
     if (field.kind === 'choice') {
@@ -5955,15 +6682,13 @@ They will not be listed again, even if a later scan finds them.`)) {
                        onclick: (e) => runTest(field.test, e.target, resultBox) }, 'Test')
       : null;
 
-    return el(
-      'div',
-      { class: 'setting' },
-      el('div', { class: 'setting-head' },
-         el('label', {}, field.label, configured ? el('span', { class: 'tag ok saved-tag' }, 'saved') : null),
-         test),
+    return setting(
+      [
+        el('label', {}, field.label, configured ? el('span', { class: 'tag ok saved-tag' }, 'saved') : null),
+        test,
+      ],
       input,
       resultBox,
-      field.help ? el('p', { class: 'hint setting-help' }, field.help) : null,
     );
   }
 
@@ -6116,7 +6841,9 @@ They will not be listed again, even if a later scan finds them.`)) {
           el('button', { onclick: () => clearHistory('albums') }, 'Clear album history'),
           el('button', { onclick: () => clearHistory('requests') }, 'Clear request history'),
         ),
-        el('p', { class: 'hint' }, 'Clearing history makes the next scan re-check everything, costing tracker budget again.'),
+        el('p', { class: 'hint' },
+           'Clearing history makes the next scan look everything up again from scratch, which takes '
+           + 'as long as the first scan did and uses the same tracker allowance.'),
       ),
       el('section', { class: 'panel', id: 'accounts-panel' },
          settingsHeading('h2', 'users', 'Accounts'), spinner('Loading')),
@@ -6266,13 +6993,25 @@ They will not be listed again, even if a later scan finds them.`)) {
   }
 
   // One labelled control, in the shape the rest of the settings page uses.
+  /**
+   * One field on the torrent-client editor.
+   *
+   * Three parts in three rows, matching settingField() on the settings page,
+   * because both of them are laid out on .settings-grid and a grid can only
+   * line a row up if every cell in it has the same shape.
+   *
+   * @param {string|Node|null} label - The label, or null for a control that
+   *   carries its own (a checkbox).
+   * @param {Node} control - The control.
+   * @param {string} [help] - The note under it.
+   */
   function settingBox(label, control, help) {
     return el(
       'div',
       { class: 'setting' },
-      el('label', {}, label),
-      control,
-      help ? el('p', { class: 'hint setting-help' }, help) : null,
+      el('div', { class: 'setting-head' }, label ? el('label', {}, label) : null),
+      el('div', { class: 'setting-control' }, control),
+      el('p', { class: 'hint setting-help' }, help || ''),
     );
   }
 
@@ -6335,7 +7074,8 @@ They will not be listed again, even if a later scan finds them.`)) {
     ));
 
     if (spec.secure) {
-      grid.append(el('div', { class: 'setting' },
+      grid.append(settingBox(
+        null,
         el('label', { class: 'check' },
            el('input', { type: 'checkbox', checked: !!conn.secure,
                          onchange: (e) => (conn.secure = e.target.checked) }),
@@ -6369,12 +7109,13 @@ They will not be listed again, even if a later scan finds them.`)) {
           (field.labels && field.labels[value] !== undefined ? field.labels[value] : value);
 
         if (field.kind === 'bool') {
-          grid.append(el('div', { class: 'setting' },
+          grid.append(settingBox(
+            null,
             el('label', { class: 'check' },
                el('input', { type: 'checkbox', checked: !!box[field.key],
                              onchange: (e) => (box[field.key] = e.target.checked) }),
                field.label),
-            field.help ? el('p', { class: 'hint setting-help' }, field.help) : null));
+            field.help));
           return;
         }
 
@@ -6682,14 +7423,13 @@ They will not be listed again, even if a later scan finds them.`)) {
     $('#found-blacklist').addEventListener('click', () => dismissFound(true));
     $('#found-restore').addEventListener('click', restoreFound);
 
-    // Filtering is local: it never refetches, so it stays instant on a long
-    // queue and costs no tracker budget.
-    // Showing the excluded rows changes what the list is, so it is part of
-    // where you are: a queue read with them shown survives a reload, and the
-    // toggle is something Back can undo.
-    $('#found-held-toggle').addEventListener('click', () =>
-      go(addr('/queue', { held: state.showHeld ? '' : '1' })));
     $('#folders-refresh').addEventListener('click', loadFolders);
+    // Several at once, uploaded one after another. Pressing Upload on each of
+    // eight folders and waiting between them was the whole evening.
+    $('#folders-upload').addEventListener('click', () => {
+      const shown = tableView('folders').shown || state.folders || [];
+      queueUploads(shown.filter((f) => state.selectedFolders.has(f.path)));
+    });
     $('#upload-dry-run').addEventListener('change', (e) =>
       setUploadFlag('upload.dry_run', e.target, 'Dry run'));
     $('#upload-yes-all').addEventListener('change', (e) =>

@@ -203,7 +203,7 @@ own. A section holding four image-host keys cannot be answered by one button at 
 | Torrent client | Connects to every configured client and reports its version |
 | Discord | Posts a test message |
 | Paths | Checks every directory exists and is writable |
-| ptpimg / ptscreens / oeimg / imgbb | Each key against its own host. Nothing is uploaded — a settings test should not put a real file on a public host |
+| ptscreens / oeimg / imgbb | Each key against its own host. Nothing is uploaded — a settings test should not put a real file on a public host |
 | Discogs / Apple Music / Qobuz / Tidal | Each token against its own API, with a known lookup |
 
 ### Logs

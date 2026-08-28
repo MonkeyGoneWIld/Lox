@@ -150,15 +150,17 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "checker",
         "Tracker budget",
-        "Nothing contacts a tracker until you press a check button. These numbers bound what one press can cost. "
+        "How much lox is allowed to ask a tracker for, and how fast. These bound what one press of a check "
+        "button can cost, and they bound the background confirmation of stale queue rows the same way. "
         "The defaults are conservative guesses, not measured limits.",
         category="Accounts",
     ),
     Section(
         "queue",
         "What reaches the queue",
-        "Everything a check found is kept. This decides which of it is worth acting on, and it is applied when "
-        "the queue is drawn -- so widening it brings rows back without spending tracker budget again.",
+        "Everything a check found is kept. This decides which of it is worth acting on. The rule is applied "
+        "when the queue is drawn, so widening it brings rows straight back -- nothing is re-checked and "
+        "nothing was thrown away.",
         category="Accounts",
     ),
     Section("upload", "Uploading", "How the pipeline behaves while it works through a release.",
@@ -230,7 +232,12 @@ FIELDS: tuple[Field, ...] = (
           "Where downloads land. Defaults to the main download directory."),
     Field("metadata.deezer.preferred_format", "Preferred quality", "choice", "deezer",
           choices=("FLAC", "MP3_320", "MP3_128")),
-    Field("metadata.deezer.format_fallback", "Accept lower quality if unavailable", "bool", "deezer"),
+    Field("metadata.deezer.format_fallback", "Accept lower quality if unavailable", "bool", "deezer",
+          "Off, a release Deezer will not serve as FLAC fails instead of downloading. Either way you are "
+          "asked before a lower-quality download is kept."),
+    Field("metadata.deezer.confirm_lower_quality", "Ask before keeping a lower-quality download", "bool", "deezer",
+          "A download that came back below your preferred quality stops and asks: keep it, or throw the "
+          "folder away. Off, it is kept without asking."),
     Field("metadata.deezer.concurrent_downloads", "Simultaneous track downloads", "int", "deezer",
           minimum=1, maximum=8),
 
@@ -282,15 +289,22 @@ FIELDS: tuple[Field, ...] = (
     Field("checker.queue_requests_too", "Also queue anything that fills an open request", "bool", "queue",
           "Even when it does not match the rule above. An open request is a reason to upload on its own."),
 
-    Field("checker.request_recheck_after_days", "Re-check a request after", "int", "queue",
-          "Days. A request already looked up is skipped inside this window -- what Deezer has and what the "
-          "request wants barely move, and asking again costs a tracker call and a Deezer search for an "
-          "answer you already have. 0 never re-checks one that has an answer.",
+    # Edited on the Requests tab, beside the search it governs, which is the
+    # only place it means anything: it decides how long a request lookup is
+    # trusted for. Under "What reaches the queue" it read as a rule about the
+    # queue, which it is not -- nothing in the queue consults it, and a queue
+    # row you re-check by hand is always re-checked.
+    Field("checker.request_recheck_after_days", "Look up a request again after", "int", "checker",
+          "Days. 0 keeps an answer for good.", minimum=0, maximum=3650, on_page="requests"),
+
+    Field("checker.queue_recheck_after_days", "Confirm a queue row again after", "int", "queue",
+          "Days. A queue row says nobody has uploaded the release yet, and that stops being true without "
+          "anyone telling you. Rows older than this are confirmed again in the background, one at a time, "
+          "and only while nothing else is running. 0 turns it off.",
           minimum=0, maximum=3650),
 
     Field("checker.state_dir", "Scan history directory", "path", "paths",
-          "Which albums and requests have already been checked, so a rescan does not spend tracker budget "
-          "asking again."),
+          "Where lox keeps what it has already looked up, and the saved searches on the Scan tab."),
 
     # --- Linking ------------------------------------------------------
     Field("linking.enabled", "Hardlink releases per tracker", "bool", "linking"),

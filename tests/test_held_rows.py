@@ -228,25 +228,33 @@ def store_checks() -> None:
 
 
 def page_checks() -> None:
-    """The page has to offer something to do with what it shows."""
+    """What did not reach the queue is a count and a reason, not a list.
+
+    It used to be a table you could open under the queue, and everything in it
+    was something nobody wanted: releases every tracker already has, releases
+    Deezer cannot supply, releases a rule the operator set deliberately keeps
+    out. Offering all of that as work to get through made the queue look like
+    it was hiding things, and re-checking could not clear it -- the answer came
+    back the same and the row went straight back.
+
+    The count and the reasons stay, because a list that quietly got shorter is
+    worse than one that says why. The table does not.
+    """
     with open(os.path.join(os.path.dirname(ROOT), "lox", "web", "static", "scripts", "app.js"),
               encoding="utf-8") as handle:
         js = handle.read()
 
     check("the heading no longer blames the queue rules for all of it",
           "Held back by your queue rules (${" not in js, "")
-    check("and says what the list actually is",
-          "Excluded from the queue" in js, "")
-    check("rows that are out can be selected", "function heldPick" in js, "")
-    check("removed", "heldAct('remove')" in js, "")
-    check("blacklisted", "heldAct('blacklist')" in js, "")
-    check("and re-checked, which is the one that fixes the biggest group",
-          "heldAct('recheck')" in js, "")
-    check("the re-check is the same one the queue uses",
-          "function recheckReleases" in js, "")
-    check("each group says what can be done about it",
-          "Select them and re-check." in js
-          and "Widen the rule in Settings" in js, "")
+    check("the excluded rows are not a second list under the queue",
+          "Excluded from the queue" not in js and "function heldTable" not in js, "")
+    check("nor a set of actions on rows nobody wanted",
+          "function heldAct" not in js and "function heldPick" not in js, "")
+    check("the queue still says how many were excluded",
+          "${heldCount} excluded" in js, "")
+    check("and by which rule", "which let through ${state.foundRule}" in js, "")
+    check("a re-check is still available from the queue itself",
+          "function recheckReleases" in js and "function recheckFound" in js, "")
 
 
 def main() -> int:

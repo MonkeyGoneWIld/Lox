@@ -138,8 +138,7 @@ const routes = [
   ['/requests?tracker=ops', ['showRequests', 'find', 'ops']],
   ['/requests/history', ['showRequests', 'history', '']],
   ['/requests/red/80755', ['openRequest', 'red', '80755']],
-  ['/queue', ['showQueue', false]],
-  ['/queue?held=1', ['showQueue', true]],
+  ['/queue', ['showQueue']],
   ['/downloading', ['setView', 'downloads']],
   ['/uploading', ['setView', 'uploads']],
   ['/album/1000982941', ['openAlbum', '1000982941']],
@@ -251,9 +250,11 @@ routes.forEach(([address, want]) => {
   app.state.scanTab = 'history';
   check('Scan the same', app.navAddr('missing') === '/scan/history', app.navAddr('missing'));
 
-  app.state.showHeld = true;
-  check('and the Queue remembers that the excluded rows were showing',
-    app.navAddr('found') === '/queue?held=1', app.navAddr('found'));
+  // The Queue has one address now. The list of rows the rules kept out was
+  // removed -- everything in it was something nobody wanted, and offering it
+  // as a second list to work through made the queue look like it was hiding
+  // work -- so there is no longer a second state for the address to carry.
+  check('the Queue has one address', app.navAddr('found') === '/queue', app.navAddr('found'));
 
   app.state.settingsSection = 'torrent';
   check('Settings goes back to the section you were reading',

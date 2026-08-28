@@ -24,7 +24,7 @@ import msgspec
 
 from lox import cfg, debug
 from lox.errors import RequestError
-from lox.trackers import get_class, tracker_list
+from lox.trackers import base_url, get_class, tracker_list
 from lox.trackers.base import RetryableError
 
 # Everything a tracker call can plausibly fail with. Anything else is a bug and
@@ -65,6 +65,9 @@ class TrackerStatus(msgspec.Struct):
         now = time.time()
         return {
             "code": self.code,
+            # Where the tracker lives, so the UI can turn "OPS is missing this"
+            # into a link to OPS rather than a label you have to act on by hand.
+            "url": base_url(self.code),
             "configured": self.configured,
             "budget": self.budget,
             "window": self.window,

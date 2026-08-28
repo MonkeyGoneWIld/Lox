@@ -19,8 +19,10 @@ from urllib.parse import quote
 import msgspec
 from aiohttp import web
 
+import lox.trackers
 from lox import cfg, debug, settings
 from lox.checker import queue_rules, recheck
+from lox.checker.autorecheck import QueueRecheck
 from lox.checker.deezer_requests import DeezerRequestChecker, age_of
 from lox.checker.gateway import TrackerGateway
 from lox.checker.missing import (
@@ -251,17 +253,43 @@ async def setup_services(app: web.Application) -> None:
     app["request_checker"] = DeezerRequestChecker(gw, gateway, store)
     app["watchlists"] = WatchlistManager(gw, store)
     app["notifier"] = DiscordNotifier()
-    app["jobs"] = JobRegistry()
-    app["flows"] = FlowRegistry()
+    jobs = JobRegistry()
+    flows = FlowRegistry()
+    app["jobs"] = jobs
+    app["flows"] = flows
     # Beside settings.toml, so accounts live on the same mounted volume as
     # everything else the UI writes.
     app["accounts"] = AccountStore(os.path.dirname(settings.path))
 
+    def busy() -> bool:
+        """True while the operator has something of their own running.
+
+        The queue confirmation yields to every one of these. Sharing a tracker
+        budget with a scan somebody is watching is how a background task earns
+        a reputation for breaking things.
+        """
+        return (
+            any(j.status == "running" for j in jobs.jobs.values())
+            or any(f.state in ("running", "waiting") for f in flows.flows.values())
+            or any(d.status in ("queued", "running") for d in app["downloader"].jobs.values())
+        )
+
+    app["queue_recheck"] = QueueRecheck(app["scanner"], gateway, store, busy)
+    app["queue_recheck"].start()
+
 
 async def teardown_services(app: web.Application) -> None:
     """Close service objects when the server stops."""
+    recheck_task: QueueRecheck | None = app.get("queue_recheck")
+    if recheck_task:
+        await recheck_task.stop()
     downloader: Downloader = app["downloader"]
     await downloader.stop()
+    # Anything written but not yet flushed -- a saved search, the tail of a
+    # scan -- reaches disk before the process goes. The store batches writes,
+    # so without this a shutdown is the one moment it can lose them.
+    with contextlib.suppress(OSError):
+        app["store"].flush()
     gw: DeezerGW = app["gw"]
     await gw.close()
 
@@ -299,6 +327,9 @@ async def api_status(request: web.Request) -> web.Response:
                 "format": downloader.preferred_format,
             },
             "notifications": {"enabled": request.app["notifier"].enabled},
+            # Whether stale queue rows are being confirmed in the background,
+            # and what the last pass did.
+            "queue_recheck": request.app["queue_recheck"].status(),
             # The two upload switches worth flipping without leaving the page
             # you flip them for. Polled, so changing one on the settings page
             # moves the toggle here and vice versa -- there is one setting, not
@@ -715,17 +746,23 @@ HELD_SAMPLE = 200
 #: The key is matched against the reason the rule produced; ``fix`` is what the
 #: user can actually do about it, and None means nothing -- which is worth
 #: saying rather than implying a setting exists.
+#: Each entry is (key, the phrase to look for in a held reason, what to call
+#: the group on screen, what would fix it).
+#:
+#: The labels are noun phrases rather than verb phrases, because the page puts
+#: a count in front of them: "1 are already on every tracker" is what a plural
+#: verb does to a group of one.
 HELD_KINDS: tuple[tuple[str, str, str, str | None], ...] = (
     ("nothing_to_do", "already on every tracker",
-     "are already on every tracker that was checked", None),
+     "already on every tracker that was checked", None),
     ("unproven", "not checked yet",
-     "have not been checked against Deezer", "recheck"),
+     "not yet checked against Deezer", "recheck"),
     ("lossy", "not all FLAC",
-     "have no lossless source on Deezer, and no open request accepts lossy", None),
+     "with no lossless source on Deezer, and no open request that accepts lossy", None),
     ("unavailable", "tracks can be downloaded",
-     "cannot be downloaded in full from Deezer", None),
+     "that cannot be downloaded in full from Deezer", None),
     ("unreleased", "not released yet",
-     "are not released yet", None),
+     "not released yet", None),
 )
 
 
@@ -811,6 +848,41 @@ def _as_year(value: Any) -> float:
         return 0.0
 
 
+def _tracker_links(entry: dict[str, Any], artist: str, title: str) -> dict[str, str]:
+    """Where each tracker verdict on a row actually leads.
+
+    "OPS has it" and "RED is missing it" are both facts with an address, and
+    both were dead text. A tracker that has the release links to the group it
+    matched; one that does not links to a search for the release on that
+    tracker, which is where you would go to check by hand anyway.
+
+    Args:
+        entry: A stored album or request record.
+        artist: Billed artist, for the search terms.
+        title: Release title, for the search terms.
+
+    Returns:
+        Tracker code to URL, for every code the record mentions.
+    """
+    groups = entry.get("group_ids") or {}
+    terms = " ".join(part for part in (artist, title) if part).strip()
+    links: dict[str, str] = {}
+    for code in entry.get("found_on") or ():
+        code = str(code).upper()
+        links[code] = lox.trackers.group_url(code, groups.get(code)) or lox.trackers.search_url(code, terms)
+    for code in entry.get("missing_from") or ():
+        code = str(code).upper()
+        # Nothing to link to on a tracker that does not have it, so the link is
+        # the next best question: what this artist already has there. Gazelle
+        # resolves an artist page by name, and falls back to a search when the
+        # release has no billed artist to ask about.
+        links.setdefault(
+            code,
+            lox.trackers.artist_url(code, artist) or lox.trackers.search_url(code, terms),
+        )
+    return {code: url for code, url in links.items() if url}
+
+
 
 @routes.get("/api/found")
 async def api_found(request: web.Request) -> web.Response:
@@ -838,6 +910,8 @@ async def api_found(request: web.Request) -> web.Response:
         # that checked OPS between them know about both.
         for key in ("missing_from", "found_on"):
             existing[key] = sorted({*existing.get(key, ()), *row.get(key, ())})
+        existing["tracker_links"] = {**(row.get("tracker_links") or {}),
+                                     **(existing.get("tracker_links") or {})}
         # A release that fills a request is a request row, whichever arrived
         # first: the request is the more useful thing to say about it, and it
         # carries the link and the bounty.
@@ -902,6 +976,7 @@ async def api_found(request: web.Request) -> web.Response:
                 "artist": entry.get("artist") or "",
                 "missing_from": entry.get("missing_from") or [],
                 "found_on": entry.get("found_on") or [],
+                "tracker_links": _tracker_links(entry, entry.get("artist") or "", entry.get("title") or ""),
                 "checked_at": entry.get("checked_at"),
                 "added_at": entry.get("first_seen") or entry.get("checked_at"),
                 "url": f"https://www.deezer.com/album/{album_id}",
@@ -947,6 +1022,11 @@ async def api_found(request: web.Request) -> web.Response:
                 # the last check actually found rather than only that it exists.
                 "found_on": entry.get("found_on") or [],
                 "missing_from": entry.get("missing_from") or [],
+                "tracker_links": _tracker_links(
+                    entry,
+                    entry.get("artist") or entry.get("deezer_artist") or "",
+                    entry.get("album") or entry.get("deezer_title") or "",
+                ),
                 "confidence": entry.get("confidence"),
                 "request_url": entry.get("request_url") or "",
                 "checked_at": entry.get("checked_at"),
@@ -1340,14 +1420,28 @@ async def api_download(request: web.Request) -> web.Response:
     if problem:
         return error(f"{problem} Fix it under Settings → Paths, or check the volume mount.")
 
+    # "Fetch it anyway": take whatever quality Deezer will serve for these
+    # albums, whatever metadata.deezer.format_fallback says. The setting is how
+    # you stop lox quietly fetching MP3 for everything; it should not also be
+    # what stops you fetching the one release you have decided you want.
+    allow_lossy = bool(body.get("allow_lossy"))
+
     queued, failed = [], []
     for album_id in album_ids:
         try:
-            job = await downloader.enqueue(album_id)
+            job = await downloader.enqueue(album_id, allow_lossy=allow_lossy)
             queued.append(job.as_dict())
         except Exception as e:  # noqa: BLE001 - reported per album
             failed.append({"album_id": str(album_id), "error": str(e)})
-    return json_response({"queued": queued, "failed": failed})
+    return json_response(
+        {"queued": queued, "failed": failed, "confirm_lower_quality": _confirm_lower_quality()}
+    )
+
+
+def _confirm_lower_quality() -> bool:
+    """Whether a download below the preferred quality should stop and ask."""
+    deezer = getattr(cfg.metadata, "deezer", None)
+    return bool(getattr(deezer, "confirm_lower_quality", True))
 
 
 @routes.get("/api/downloads")
@@ -1355,7 +1449,50 @@ async def api_downloads(request: web.Request) -> web.Response:
     """List every download job, newest first."""
     downloader: Downloader = request.app["downloader"]
     jobs = sorted(downloader.jobs.values(), key=lambda j: j.started or 0, reverse=True)
-    return json_response({"jobs": [j.as_dict() for j in jobs]})
+    return json_response(
+        {"jobs": [j.as_dict() for j in jobs], "confirm_lower_quality": _confirm_lower_quality()}
+    )
+
+
+@routes.post("/api/downloads/{job_id}/quality")
+async def api_download_quality(request: web.Request) -> web.Response:
+    """Answer the "this came back below FLAC" question for one download.
+
+    Two answers, and both of them are final for that job: keep the files, or
+    throw the folder away. Nothing decides this on the operator's behalf --
+    a lossy release is sometimes exactly what was wanted, and sometimes the
+    thing that would have been rejected on upload.
+    """
+    body = await request.json()
+    keep = bool(body.get("keep"))
+    downloader: Downloader = request.app["downloader"]
+    job = downloader.jobs.get(request.match_info["job_id"])
+    if job is None:
+        return error("no such download", status=404)
+
+    job.decision = "kept" if keep else "discarded"
+    if keep:
+        return json_response({"decision": job.decision, "folder": job.folder})
+
+    # Stop it first if it is still going: deleting the folder underneath a
+    # running download would leave it writing tracks into nothing.
+    downloader.cancel(job.id)
+    removed = False
+    if job.folder:
+        try:
+            folder = resolve_release_path(request.app, job.folder)
+        except ValueError as e:
+            return error(str(e))
+        removed = await asyncio.to_thread(_remove_tree, folder)
+    return json_response({"decision": job.decision, "deleted": removed})
+
+
+def _remove_tree(folder: str) -> bool:
+    """Delete a release folder, reporting whether it was there to delete."""
+    if not os.path.isdir(folder):
+        return False
+    shutil.rmtree(folder)
+    return True
 
 
 @routes.post("/api/downloads/{job_id}/cancel")
@@ -1554,6 +1691,7 @@ async def api_scan_history(request: web.Request) -> web.Response:
             "source": entry.get("source") or "",
             "found_on": entry.get("found_on") or [],
             "missing_from": entry.get("missing_from") or [],
+            "tracker_links": _tracker_links(entry, entry.get("artist") or "", entry.get("title") or ""),
             "all_flac": entry.get("all_flac"),
             "deezer_tracks": entry.get("deezer_tracks"),
             "release_date": entry.get("release_date") or "",
@@ -1686,10 +1824,14 @@ async def api_requests_history(request: web.Request) -> web.Response:
             "confidence": entry.get("confidence"),
             "filled": bool(entry.get("filled")),
             "already_on_tracker": entry.get("already_on_tracker"),
+            "tracker_group_url": entry.get("tracker_group_url") or "",
+            "found_on": entry.get("found_on") or [],
+            "missing_from": entry.get("missing_from") or [],
             "all_flac": entry.get("all_flac"),
             "checked_at": entry.get("checked_at"),
             "checked_days_ago": age,
         }
+        row["tracker_links"] = _tracker_links(entry, row["artist"], row["album"])
         if want_status and row["status"] not in want_status:
             continue
         if want_tracker and row["tracker"] != want_tracker:
