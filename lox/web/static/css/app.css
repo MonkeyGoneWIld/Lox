@@ -1331,9 +1331,12 @@ select {
 
 select.th-filter { padding-right: 22px; }
 
-/* A lower and an upper limit, side by side and equally wide. */
-.th-range-pair { display: flex; align-items: center; gap: 5px; max-width: 220px; width: 100%; }
+/* A lower and an upper limit, side by side and equally wide -- and, for a
+   date column, what the two of them are measured in. Two bare numbers over a
+   column of dates is not a question anybody can answer. */
+.th-range-pair { display: flex; align-items: center; gap: 5px; max-width: 260px; width: 100%; }
 .th-range-pair .th-range { flex: 1 1 0; min-width: 0; }
+.th-range-pair .th-unit { flex: 0 0 auto; width: auto; min-width: 74px; }
 
 /* What a run passed over. Sits under the log it belongs to, and goes when it
    is acted on. */
@@ -1709,10 +1712,23 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 
 /* One tag per tracker on a Found row. They wrap rather than stretching the
    column, so three trackers do not squeeze the release title. */
-.found-trackers { display: flex; flex-wrap: wrap; gap: 5px; }
+/* The tags lay themselves out; the cell does not.
+   `display: flex` on a <td> takes it out of the row's own height calculation,
+   so the cell stopped at the height of its tags while the row went on -- and
+   the cell's bottom border drew there, as a short bright line under the tags
+   with the real row line below it. It also made the whole group one flex item
+   pinned to the left of a centred column. Both go away by leaving the cell a
+   cell and letting the wrapper inside it do the arranging. */
+.found-trackers > span,
+.found-sources > span {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
 /* Both ways a release can have got here, side by side rather than run
    together: it used to be two rows, so the gap is the whole point. */
-.found-sources { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Reading the queue you have, as opposed to the Settings rules that decide
@@ -2036,3 +2052,44 @@ a.tag-link:hover { filter: brightness(1.15); text-decoration: underline; }
 .spectral-zoom { width: 13.85%; margin-left: 0; }
 .spectral-full, .spectral-zoom { display: block; line-height: 0; border: 0; border-radius: 0; }
 .spectral-pair img { border: 0; border-radius: 0; }
+
+
+/* ---------- upload history ---------- */
+/* An upload cannot be run again to find out what it did, so what it did is
+   kept: what it was posted as, which tracker took it, and everything it
+   printed on the way. Folded away by default -- the list is for finding one,
+   the disclosure is for reading it. */
+.upload-row > summary { cursor: pointer; }
+.upload-detail { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.upload-desc {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.upload-log { max-height: 320px; overflow: auto; }
+.upload-log .joblog-line.warning { color: var(--warn); }
+.upload-log .joblog-line.error { color: var(--bad); }
+
+/* ---------- a channel with no artwork ---------- */
+/* Deezer gives most of its channels a colour and no picture, which left two
+   thirds of the grid as plain rectangles you had to read the caption under to
+   tell apart. The initial is drawn on the colour instead: it is not artwork,
+   but it is something to aim at. */
+.card-art.card-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: rgb(255 255 255 / 0.82);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+}

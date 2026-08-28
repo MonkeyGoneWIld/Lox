@@ -56,8 +56,21 @@ async def prepare_and_upload(
     Returns:
         Tuple of (torrent_id, group_id, torrent_path, torrent_content).
     Raises:
-        UploadError: If the tracker rejects the upload.
+        UploadError: If the tracker rejects the upload, or the release is
+            missing something the tracker will not accept without.
     """
+    # The last gate before the post, and the only one the tracker cannot be
+    # asked to be lenient about: a release with no genre is refused, and being
+    # refused after the spectrals, the tagging and the torrent build is an
+    # expensive way to find out. The metadata form checks this too; this is
+    # here because the form can be auto-answered and a genre can be emptied
+    # after it by the blacklist.
+    if not metadata.get("genres"):
+        raise UploadError(
+            f"{gazelle_site.site_code} needs at least one genre and this release has none. "
+            "Add one in the metadata step -- nothing has been posted."
+        )
+
     if not group_id:
         data = compile_data_new_group(
             gazelle_site,

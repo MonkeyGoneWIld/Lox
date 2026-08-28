@@ -325,6 +325,17 @@ class MissingScanner:
             # widened, somebody else uploading it first -- so it is asked
             # again. See lox.checker.recheck.album_verdict for why each case
             # is on the side it is.
+            # Blacklisted means blacklisted. It was consulted only when the
+            # queue was drawn, so a release you had said "never show me this
+            # again" about was still collected, still looked up, still paid a
+            # tracker call for, and still turned up in the middle of a
+            # collection you scanned for something else -- it was only kept off
+            # the final list. The point of saying no is not to be asked again.
+            if self.store.get("dismissed", album_id):
+                skipped.append({"album_id": album_id, "reason": "blacklisted",
+                                "title": "", "artist": ""})
+                continue
+
             if not manual:
                 stored = self.store.get("albums", album_id)
                 keep, why = recheck.album_verdict(

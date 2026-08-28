@@ -669,33 +669,66 @@ class DeezerRequestChecker:
             match.reason = f"track count disagrees with {', '.join(match.verification['disagree'])}"
             return match
 
+        # A release the operator has blacklisted is not an upload, whatever
+        # a request says about it. Checked here rather than when the queue is
+        # drawn, so the row never gets made and no tracker call is spent
+        # confirming something that has already been refused.
+        if self.store.get("dismissed", str(match.deezer_id or "")):
+            match.status = "skipped"
+            match.reason = "the release it matches is blacklisted"
+            return match
+
         match.status = "fillable"
         match.reason = None
 
         # One more question, and the one that decides whether filling is worth
-        # doing: is this release already on the tracker? A request can sit open
-        # for a release somebody uploaded since, and filling it with a duplicate
-        # helps nobody. One search, and only for a match that got this far.
-        try:
-            match.already_on_tracker = await self._on_tracker(tracker, match)
-        except Exception as e:  # noqa: BLE001 - an extra fact, never a failure
-            match.already_on_tracker = None
-            match.reason = None
-            debug.log("tracker search for request %s failed: %s", match.request_id, e, level=30)
+        # doing: who already has this release? A request can sit open for
+        # something somebody uploaded since, and filling it with a duplicate
+        # helps nobody.
+        #
+        # Every configured tracker, not only the one the request is on. The
+        # release is the same release whoever is asked, and asking only the
+        # requesting tracker produced a queue row that knew about OPS and
+        # nothing about RED -- so the upload that followed either skipped a
+        # tracker that wanted it or offered one that already had it.
+        await self._locate(match)
 
-        # Said again in the words the queue reads. The search above is a real
-        # tracker verdict about a real release -- the same verdict a scan
-        # produces -- and recording it only as a boolean meant the queue could
-        # not tell it apart from a release nobody had asked about.
-        if match.already_on_tracker is True:
-            match.found_on = [tracker]
-        elif match.already_on_tracker is False:
-            match.missing_from = [tracker]
+        # The requesting tracker's answer, kept as its own field because
+        # "should I fill this request" is a question about that tracker.
+        if tracker in match.found_on:
+            match.already_on_tracker = True
+        elif tracker in match.missing_from:
+            match.already_on_tracker = False
 
         return match
 
+    async def _locate(self, match: RequestMatch) -> None:
+        """Ask every configured tracker whether it already has this release.
+
+        Writes ``found_on``, ``missing_from`` and ``group_ids`` on the match --
+        the same three facts a scan produces, in the same words, so the queue
+        cannot tell a request-matched release apart from a scanned one.
+
+        A tracker with no budget left, or one that errors, is simply not in
+        either list: not asked is not the same as asked and answered.
+        """
+        for code in self.gateway.configured_trackers():
+            if not self.gateway.can_check(code):
+                debug.log("request %s: %s not asked, no budget", match.request_id, code, level=20)
+                continue
+            try:
+                on_it = await self._on_tracker(code, match)
+            except Exception as e:  # noqa: BLE001 - an extra fact, never a failure
+                debug.log("tracker search for request %s on %s failed: %s",
+                          match.request_id, code, e, level=30)
+                continue
+            if on_it is True:
+                match.found_on.append(code)
+            elif on_it is False:
+                match.missing_from.append(code)
+
     async def _on_tracker(self, tracker: str, match: RequestMatch) -> bool | None:
-        """Whether the tracker already has the release this match would fill."""
+        """Whether one tracker already has the release this match would fill."""
         query = " ".join(p for p in (match.deezer_artist, match.deezer_title) if p).strip()
         if not query:
             return None
@@ -719,10 +752,13 @@ class DeezerRequestChecker:
             candidates, match.deezer_artist or "", match.deezer_title or ""
         )
         if best and score >= MIN_TOTAL_SCORE:
-            match.tracker_group_url = f"{self.gateway.api(tracker).base_url}/torrents.php?id={best.get('id')}"
+            # The link belongs to the requesting tracker, which is the one
+            # the "already on tracker" tag on the request row is about.
+            if tracker == match.tracker:
+                match.tracker_group_url = f"{self.gateway.api(tracker).base_url}/torrents.php?id={best.get('id')}"
             group_id = best.get("id")
             if group_id is not None:
                 with contextlib.suppress(TypeError, ValueError):
-                    match.group_ids = {tracker: int(group_id)}
+                    match.group_ids[tracker] = int(group_id)
             return True
         return False

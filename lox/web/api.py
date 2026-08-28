@@ -1125,6 +1125,83 @@ async def api_found(request: web.Request) -> web.Response:
     )
 
 
+UPLOADS = "uploads"
+"""Where finished uploads are kept, so there is something to look back at."""
+
+UPLOAD_HISTORY_LIMIT = 500
+"""How many finished uploads to keep. Each one holds its own log."""
+
+
+def _record_upload(
+    store: CheckerStore,
+    flow: Any,
+    folder: str,
+    trackers: list[str],
+    album_id: str,
+    result: dict[str, Any],
+) -> None:
+    """File what an upload did, including everything it printed while doing it.
+
+    An upload is the one thing in here that cannot be repeated to find out what
+    happened: the torrent is posted, the flow is dropped when the page is
+    closed, and the log with it. Afterwards there was nowhere to see what a
+    release had been posted as, which tracker took it, what the description
+    said, or why one of the two refused.
+
+    Args:
+        store: Where to keep it.
+        flow: The flow that ran it, for its own record of what it printed.
+        folder: The release folder.
+        trackers: The trackers it was asked to go to.
+        album_id: The Deezer release, when the upload came from one.
+        result: What run_uploads reported.
+    """
+    outcomes = result.get("outcomes") or []
+    entry = {
+        "id": getattr(flow, "id", ""),
+        "release": os.path.basename(folder.rstrip("/\\")),
+        "folder": folder,
+        "album_id": album_id,
+        "asked": list(trackers),
+        "succeeded": list(result.get("succeeded") or []),
+        "dry_run": bool(result.get("dry_run")),
+        "started": getattr(flow, "created", None),
+        "finished": time.time(),
+        "state": getattr(flow, "state", ""),
+        "error": getattr(flow, "error", None),
+        "outcomes": [
+            {
+                "tracker": o.get("tracker", ""),
+                "ok": bool(o.get("ok")),
+                "error": o.get("error") or "",
+                "folder": o.get("folder") or "",
+                "url": o.get("url") or "",
+            }
+            for o in outcomes
+        ],
+        # What it would have posted, per torrent -- the fields and the
+        # descriptions, which is the part nobody can reconstruct afterwards.
+        "posts": result.get("posts") or [],
+        "fields": result.get("fields") or {},
+        "descriptions": result.get("descriptions") or {},
+        "log": [
+            {"at": e.get("at"), "level": e.get("level", "info"), "message": e.get("message", "")}
+            for e in (getattr(flow, "events", None) or [])
+        ],
+    }
+    key = entry["id"] or f"{entry['finished']:.0f}"
+    store.put(UPLOADS, key, entry, flush=True)
+
+    # Bounded: each of these carries its own log, and a year of uploads should
+    # not become the largest file in the state directory.
+    kept = store.load(UPLOADS) or {}
+    if len(kept) > UPLOAD_HISTORY_LIMIT:
+        oldest = sorted(kept.items(), key=lambda kv: kv[1].get("finished") or 0)
+        for old_key, _ in oldest[: len(kept) - UPLOAD_HISTORY_LIMIT]:
+            store.delete(UPLOADS, old_key, flush=False)
+        store.flush(UPLOADS)
+
+
 def _forget_download(downloader: Downloader, folder: str) -> None:
     """Drop the finished download a release was uploaded from.
 
@@ -1159,10 +1236,17 @@ def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: li
     """
     stamp = {"uploaded_at": time.time(), "uploaded_to": trackers}
     if album_id:
-        for name in ("albums", "requests"):
-            entry = store.get(name, album_id)
-            if entry is not None:
-                store.put(name, album_id, {**entry, **stamp}, flush=False)
+        entry = store.get("albums", album_id)
+        if entry is not None:
+            store.put("albums", album_id, {**entry, **stamp}, flush=False)
+        # A request is keyed by tracker and request id, never by the release it
+        # would fill -- so looking it up by album id found nothing, the row was
+        # never stamped, and a release uploaded from the queue stayed on the
+        # queue. There can be more than one: two trackers can each have an open
+        # request for the same record.
+        for key, request in list((store.load("requests") or {}).items()):
+            if str(request.get("deezer_id") or "") == str(album_id):
+                store.put("requests", key, {**request, **stamp}, flush=False)
         store.flush()
         return
 
@@ -1213,9 +1297,29 @@ async def api_found_dismiss(request: web.Request) -> web.Response:
         if deezer_id:
             request_keys.setdefault(deezer_id, []).append(request_key)
 
+    # What each release is called, so the blacklist can be read back later.
+    # It used to record the id and nothing else, and the album record it came
+    # from is deleted in the same breath -- so the list of things you had
+    # refused was a column of Deezer ids.
+    named: dict[str, dict[str, Any]] = {}
+    for album_id, entry in (store.load("albums") or {}).items():
+        named[str(album_id)] = {"title": entry.get("title") or "", "artist": entry.get("artist") or ""}
+    for entry in (store.load("requests") or {}).values():
+        deezer_id = str(entry.get("deezer_id") or "")
+        if deezer_id and deezer_id not in named:
+            named[deezer_id] = {
+                "title": entry.get("album") or entry.get("deezer_title") or "",
+                "artist": entry.get("artist") or entry.get("deezer_artist") or "",
+            }
+
     for key in keys:
         if blacklist:
-            store.put("dismissed", key, {"blacklist": True, "at": time.time()}, flush=False)
+            store.put(
+                "dismissed",
+                key,
+                {"blacklist": True, "at": time.time(), **named.get(key, {})},
+                flush=False,
+            )
         else:
             # Forgotten rather than remembered as unwanted: dropping the check
             # result is what lets the next scan surface it again.
@@ -1227,6 +1331,32 @@ async def api_found_dismiss(request: web.Request) -> web.Response:
                 store.delete("requests", request_key, flush=False)
     store.flush()
     return json_response({"dismissed": len(keys), "blacklisted": blacklist})
+
+
+@routes.get("/api/blacklist")
+async def api_blacklist(request: web.Request) -> web.Response:
+    """Every release that has been refused, newest first. No tracker calls.
+
+    Saying "never show me this again" used to be a one-way door: the entry went
+    into a file nothing could read back, and the only way out was to clear the
+    whole blacklist at once. This is the list, with names, so one can be let
+    back in without letting all of them back in.
+    """
+    store: CheckerStore = request.app["store"]
+    rows = [
+        {
+            "id": str(key),
+            "album_id": str(key),
+            "title": entry.get("title") or "",
+            "artist": entry.get("artist") or "",
+            "at": entry.get("at") or entry.get("checked_at"),
+            "url": f"https://www.deezer.com/album/{key}" if str(key).isdigit() else "",
+        }
+        for key, entry in (store.load("dismissed") or {}).items()
+        if entry.get("blacklist")
+    ]
+    rows.sort(key=lambda r: r.get("at") or 0, reverse=True)
+    return json_response({"blacklisted": rows, "total": len(rows)})
 
 
 @routes.post("/api/found/restore")
@@ -2117,6 +2247,7 @@ async def api_upload(request: web.Request) -> web.Response:
         if result.get("succeeded") and not cfg.upload.dry_run:
             _mark_uploaded(store, album_id, folder, result["succeeded"])
             _forget_download(downloader, folder)
+        _record_upload(store, f, folder, trackers, album_id, result)
         return result
 
     label = f"{os.path.basename(folder)} to {', '.join(trackers)}"
@@ -2133,6 +2264,22 @@ async def api_upload(request: web.Request) -> web.Response:
 # ----------------------------------------------------------------------
 # Flows
 # ----------------------------------------------------------------------
+
+
+@routes.get("/api/uploads/history")
+async def api_upload_history(request: web.Request) -> web.Response:
+    """Every upload this install has run, newest first. No tracker calls."""
+    store: CheckerStore = request.app["store"]
+    rows = list((store.load(UPLOADS) or {}).values())
+    rows.sort(key=lambda r: r.get("finished") or 0, reverse=True)
+    return json_response({"uploads": rows, "total": len(rows)})
+
+
+@routes.post("/api/uploads/history/clear")
+async def api_upload_history_clear(request: web.Request) -> web.Response:
+    """Forget the upload history. Nothing already posted is affected."""
+    store: CheckerStore = request.app["store"]
+    return json_response({"cleared": store.clear(UPLOADS)})
 
 
 @routes.get("/api/flows")

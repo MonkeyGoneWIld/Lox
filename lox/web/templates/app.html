@@ -296,6 +296,16 @@
       </section>
 
       <section class="view" id="view-found">
+        <!-- What is waiting to be uploaded, and what has been refused. The
+             blacklist used to be a one-way door: the entry went into a file
+             nothing could read back, and the only way out was to clear the
+             whole thing at once. -->
+        <div class="segmented reqtabs" id="queue-tabs">
+          <button type="button" class="active" data-queuetab="queue">Queue</button>
+          <button type="button" data-queuetab="blacklist">Blacklist</button>
+        </div>
+
+        <div id="queue-tab-queue">
         <div class="panel">
           <h2>Upload Queue</h2>
           <p class="hint">Releases that exist on Deezer and are missing from at least one of
@@ -310,7 +320,6 @@
                  again, the other says never show me this release. -->
             <button id="found-dismiss">Remove</button>
             <button class="danger" id="found-blacklist">Blacklist</button>
-            <button id="found-restore" hidden>Clear blacklist</button>
             <span class="hint" id="found-count"></span>
           </div>
           <!-- A queue row is a claim about somebody else's tracker, and it
@@ -319,6 +328,22 @@
           <div class="joblog" id="found-log" hidden></div>
         </div>
         <div id="found-body"></div>
+        </div>
+
+        <div id="queue-tab-blacklist" hidden>
+          <div class="panel">
+            <h2>Blacklist</h2>
+            <p class="hint">Releases you have refused. Nothing here is collected by a scan, matched to a
+              request or listed in the queue &mdash; saying no once means not being asked again. Take one
+              off and it can be found as normal.</p>
+            <div class="row">
+              <button class="primary" id="blacklist-restore" disabled>Take off the blacklist</button>
+              <button class="danger" id="blacklist-clear">Clear the whole list</button>
+              <span class="hint" id="blacklist-count"></span>
+            </div>
+          </div>
+          <div id="blacklist-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-downloads">
@@ -330,9 +355,20 @@
       </section>
 
       <section class="view" id="view-uploads">
+        <!-- Two halves, as on Requests and Scan: what is waiting to be
+             uploaded, and what has been. An upload is the one thing here that
+             cannot be run again to find out what it did -- the torrent is
+             posted and the flow is gone with the page. -->
+        <div class="segmented reqtabs" id="upload-tabs">
+          <button type="button" class="active" data-uptab="folders">Ready to upload</button>
+          <button type="button" data-uptab="history">Upload History</button>
+        </div>
+
+        <div id="upload-tab-folders">
         <div class="row toolbar">
           <button id="folders-refresh">Refresh folders</button>
           <button class="primary" id="folders-upload" disabled>Upload selected</button>
+          <button class="danger" id="folders-delete" disabled>Delete selected</button>
           <span class="hint" id="folders-selected"></span>
           <!-- Which trackers, and in what order they run when there are two.
                Uploading to both is two uploads in sequence, and which goes
@@ -356,6 +392,22 @@
         <div id="upload-queue" hidden></div>
         <div id="folders-list"></div>
         <div id="upload-flows"></div>
+        </div>
+
+        <div id="upload-tab-history" hidden>
+          <div class="panel">
+            <h2>Upload History</h2>
+            <p class="hint">Every upload this install has run: what it was posted as, which trackers took
+              it, and everything it printed on the way. Kept because an upload cannot be run again to
+              find out what it did.</p>
+            <div class="row">
+              <button id="uphistory-refresh">Refresh</button>
+              <button class="danger" id="uphistory-clear">Clear history</button>
+              <span class="hint" id="uphistory-count"></span>
+            </div>
+          </div>
+          <div id="uphistory-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-settings">

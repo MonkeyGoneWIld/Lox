@@ -273,6 +273,7 @@ async def upload(
     link_for: "Callable[[str, str], Awaitable[str]] | None" = None,
     on_uploaded: "Callable[[str, str | None], None] | None" = None,
     on_tracker: "Callable[[str], None] | None" = None,
+    link_derived: "Callable[[str, str], Awaitable[str]] | None" = None,
 ) -> None:
     """Upload an album folder to Gazelle Site.
 
@@ -318,6 +319,9 @@ async def upload(
             it actually reached rather than inferring it.
         on_tracker: Called with the tracker code as each one starts, so the
             questions that follow can say which tracker they are about.
+        link_derived: Called with ``(tracker, path)`` for a downconversion or
+            transcode, returning where that tracker should seed it from. The
+            derived folder itself is made once for the release.
     """
     path = os.path.abspath(path)
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
@@ -450,6 +454,9 @@ async def upload(
     # Answered once for the release and reused for every tracker after the
     # first. None means nobody has been asked yet.
     downconversion_choice: list[dict[str, Any]] | None = None
+    # And made once too, by task name, so the second tracker hardlinks the
+    # transcode rather than encoding the same tracks again.
+    derived: dict[str, Any] = {}
 
     try:
         while True:
@@ -582,7 +589,9 @@ async def upload(
                 )
                 await execute_downconversion_tasks(
                     selected_tasks,
-                    upload_path,
+                    # Produced from the prepared release, not from this
+                    # tracker's link, so there is one of each to link.
+                    path,
                     gazelle_site,
                     group_id,
                     metadata,
@@ -598,6 +607,10 @@ async def upload(
                     seedbox_uploader,
                     source,
                     url,
+                    produced=derived,
+                    place=(lambda p, tracker=tracker: link_derived(tracker, p))
+                    if link_derived is not None
+                    else None,
                 )
 
             tracker = None
@@ -917,8 +930,16 @@ async def execute_downconversion_tasks(
     seedbox_uploader: UploadManager,
     source: str | None,
     base_url: str,
+    produced: dict[str, str] | None = None,
+    place: "Callable[[str], Awaitable[str]] | None" = None,
 ) -> None:
     """Execute the selected downconversion tasks.
+
+    A transcode is a fact about the release, not about the tracker, so it is
+    made once and then placed for each tracker the same way the lossless folder
+    is: one hardlink, no second encode. Producing it per tracker meant encoding
+    the same thirteen tracks to V0 twice, writing two copies of the result, and
+    taking twice as long to do it.
 
     Args:
         selected_tasks: List of downconversion task dicts.
@@ -938,9 +959,25 @@ async def execute_downconversion_tasks(
         seedbox_uploader: Seedbox upload manager.
         source: Media source.
         base_url: Base URL for the original upload.
+        produced: Folders already made for this release, by task name. Shared
+            across trackers so the second one links rather than re-encodes.
+        place: Called with a produced folder, returning the path this tracker
+            should upload and seed from.
     """
 
     base_path = path
+    produced = {} if produced is None else produced
+
+    async def make(name: str, build: "Callable[[], Awaitable[Any]]") -> Any:
+        """Build a derived folder once, and hand back what was built.
+
+        Returns:
+            Whatever ``build`` returned the first time it ran, so a caller that
+            needs the sample rate as well as the path still gets both.
+        """
+        if name not in produced:
+            produced[name] = await build()
+        return produced[name]
 
     override_lossy_comment = (
         f"Transcode of {base_url}\n[hide=Lossy comment of original torrent]{lossy_comment}[/hide]\n"
@@ -952,11 +989,16 @@ async def execute_downconversion_tasks(
         click.secho(f"\nProcessing: {task['name']}", fg="cyan", bold=True)
 
         if task["action"] == "downconvert":
-            # Execute downconversion
-            sample_rate, new_path = await convert_folder(
-                base_path, bit_depth=task["target_bitdepth"], sample_rate=task["target_sample_rate"]
+            # Made once for the release; the second tracker links it.
+            sample_rate, new_path = await make(
+                task["name"],
+                lambda task=task: convert_folder(
+                    base_path, bit_depth=task["target_bitdepth"], sample_rate=task["target_sample_rate"]
+                ),
             )
             await asyncio.sleep(0.1)
+            if place is not None:
+                new_path = await place(new_path)
 
             # Update metadata for this conversion
             conversion_metadata = metadata.copy()
@@ -995,9 +1037,13 @@ async def execute_downconversion_tasks(
             # Call transcode function
             click.secho(f"  Target encoding: {task['encoding']}", fg="white")
 
-            # Execute transcoding
-            transcoded_path = await transcode_folder(base_path, task["encoding"])
+            # Made once for the release; the second tracker links it.
+            transcoded_path = await make(
+                task["name"], lambda task=task: transcode_folder(base_path, task["encoding"])
+            )
             await asyncio.sleep(0.1)
+            if place is not None:
+                transcoded_path = await place(transcoded_path)
 
             # Update metadata for this transcode
             transcode_metadata = metadata.copy()

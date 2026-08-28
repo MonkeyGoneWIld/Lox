@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import html
 import re
 from typing import Any, cast
@@ -86,6 +87,14 @@ class SearchReleaseData(msgspec.Struct, frozen=True):
     url: str
 
 
+#: Whether the work on this task is an upload.
+#:
+#: A context variable rather than a flag on the client: the client is shared,
+#: the upload runs in its own task, and nothing else running at the same time
+#: should be affected by what this one is doing.
+uploading: contextvars.ContextVar[bool] = contextvars.ContextVar("lox_uploading", default=False)
+
+
 class RetryableError(Exception):
     """Exception for retryable network errors."""
 
@@ -134,6 +143,16 @@ class BaseGazelleApi:
 
     # Rate limiter: 10 requests per 10 seconds (shared across all instances)
     _rate_limiter = AsyncLimiter(10, 10)
+    #: The same allowance again, for an upload in progress.
+    #:
+    #: One bucket for everything meant an upload queued behind whatever the
+    #: checker was doing. A scan makes hundreds of calls and each one takes a
+    #: slot, so pressing Upload while one ran left the pipeline waiting on the
+    #: back of that queue -- and the operator watching a spinner for work that
+    #: had nothing to do with theirs. An upload is one release and a handful of
+    #: calls; it is not what a rate limit is there to protect the tracker from,
+    #: and it is the one thing on this page that a person is waiting for.
+    _upload_limiter = AsyncLimiter(10, 10)
 
     def __init__(self) -> None:
         """Initialize the API client. Subclasses should call this after setting cookie/base_url."""
@@ -208,11 +227,15 @@ class BaseGazelleApi:
         """
         url = self.base_url + "/ajax.php"
         params = {"action": action, **(params or {})}
-        timeout = aiohttp.ClientTimeout(total=5)
+        # Five seconds total was not enough for a tracker that regularly takes
+        # longer than that to answer a request lookup, and a timeout here is
+        # retried five times over -- so a slow answer became five slow answers
+        # and then a failure.
+        timeout = aiohttp.ClientTimeout(total=60)
 
         try:
             async with (
-                self._rate_limiter,
+                self._upload_limiter if uploading.get() else self._rate_limiter,
                 aiohttp.ClientSession(timeout=timeout, cookies=self._get_cookies()) as session,
                 session.get(url, params=params, headers=self.headers, allow_redirects=False) as resp,
             ):

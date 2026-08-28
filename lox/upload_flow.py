@@ -1493,6 +1493,7 @@ async def run_upload(
     auto_rename: bool = False,
     link_for: Any = None,
     on_uploaded: Any = None,
+    link_derived: Any = None,
 ) -> dict[str, Any]:
     """Upload one folder to every chosen tracker, asking the browser as it goes.
 
@@ -1510,6 +1511,8 @@ async def run_upload(
         link_for: Called with ``(tracker, path)`` before each tracker's post,
             returning the path that tracker seeds from.
         on_uploaded: Called with ``(tracker, url)`` after each tracker takes it.
+        link_derived: Called with ``(tracker, path)`` for a transcode, so it is
+            made once and linked rather than encoded again per tracker.
 
     Returns:
         A summary of what happened.
@@ -1526,6 +1529,12 @@ async def run_upload(
     debug.log("upload start trackers=%s folder=%s", ",".join(trackers), folder, level=20)
 
     gazelle = lox.trackers.get_class(first)()
+    # This task is an upload, so its tracker calls take the upload allowance
+    # rather than queueing behind whatever the checker is doing. A scan makes
+    # hundreds of calls; an upload is one release and a person watching it.
+    from lox.trackers.base import uploading  # noqa: PLC0415
+
+    token = uploading.set(True)
     with FlowPrompts(flow, folder) as prompts:
         prompts.tracker = first
 
@@ -1547,8 +1556,10 @@ async def run_upload(
             link_for=link_for,
             on_uploaded=on_uploaded,
             on_tracker=on_tracker,
+            link_derived=link_derived,
         )
 
+    uploading.reset(token)
     flow.progress(f"Finished {', '.join(trackers)}", 100.0)
     debug.log("upload finished trackers=%s folder=%s", ",".join(trackers), folder, level=20)
     posts = prompts.finish_posts()
@@ -1598,6 +1609,9 @@ async def run_uploads(
 
     outcomes: list[dict[str, Any]] = []
     seen: dict[str, str] = {}
+    # Transcodes made beside the download and linked into each tracker's
+    # folder. The originals are duplicates once that is done.
+    derived_links: list[str] = []
     # Which trackers actually took the torrent, recorded as it happens. A run
     # that stops on the second tracker must not report the second as uploaded,
     # nor the first as failed.
@@ -1607,30 +1621,57 @@ async def run_uploads(
         posted_to[tracker] = str(url or "")
         flow.note(f"{tracker} took the upload.")
 
-    async def link_for(tracker: str, path: str) -> str:
-        """Where this tracker should seed from, made from the prepared release."""
+    async def link(tracker: str, path: str, label: str) -> str:
+        """Place one prepared folder where a tracker can seed it from.
+
+        Args:
+            tracker: Tracker code.
+            path: The folder as it was prepared, once, for the release.
+            label: What it is, for the note.
+
+        Returns:
+            Where that tracker seeds it from -- the same bytes, one hardlink.
+        """
         if not cfg.linking.enabled:
             return path
-        if tracker in seen:
-            return seen[tracker]
-        flow.progress(f"Linking for {tracker}")
+        flow.progress(f"Linking {label} for {tracker}")
         try:
-            link = await _to_thread(link_release, path, tracker)
+            made = await _to_thread(link_release, path, tracker)
         except LinkError as e:
             # Not fatal: the tracker can still have the release, it just seeds
             # from the same folder as the others.
-            flow.note(f"{tracker}: linking failed — {e}", "error")
+            flow.note(f"{tracker}: linking {label} failed — {e}", "error")
             return path
-        flow.note(f"{tracker}: {'reused' if link.reused else link.method} {link.files} file(s)")
-        seen[tracker] = link.destination
-        return link.destination
+        flow.note(f"{tracker}: {'reused' if made.reused else made.method} "
+                  f"{made.files} file(s) for {label}")
+        return made.destination
+
+    async def link_for(tracker: str, path: str) -> str:
+        """Where this tracker should seed the release from."""
+        if tracker in seen:
+            return seen[tracker]
+        destination = await link(tracker, path, "the release")
+        seen[tracker] = destination
+        return destination
+
+    async def link_derived(tracker: str, path: str) -> str:
+        """Where this tracker should seed a transcode from.
+
+        A transcode is a fact about the release, not about the tracker: the
+        same thirteen tracks at V0 whoever is being uploaded to. It is made
+        once and linked, exactly like the lossless folder beside it -- encoding
+        it again per tracker wrote a second copy of identical audio and took as
+        long again to do it.
+        """
+        derived_links.append(path)
+        return await link(tracker, path, os.path.basename(path))
 
     result: dict[str, Any] = {}
     with _record_transcodes() as transcoded:
         try:
             posted = await run_upload(
                 flow, folder, trackers, source=source, auto_rename=auto_rename,
-                link_for=link_for, on_uploaded=on_uploaded,
+                link_for=link_for, on_uploaded=on_uploaded, link_derived=link_derived,
             )
         except click.Abort:
             flow.note("Aborted.", "warning")
@@ -1678,11 +1719,12 @@ async def run_uploads(
             result["transcodes"] = []
 
     _discard_spectrals(flow, folder)
-    _clean_up_source(flow, folder, result)
+    _clean_up_source(flow, folder, result, derived_links)
     return result
 
 
-def _clean_up_source(flow: Flow, folder: str, result: dict[str, Any]) -> None:
+def _clean_up_source(flow: Flow, folder: str, result: dict[str, Any],
+                     derived: list[str] | None = None) -> None:
     """Remove the download the release was made from, once it is somewhere else.
 
     A finished upload leaves the release seeding from the per-tracker link
@@ -1709,6 +1751,17 @@ def _clean_up_source(flow: Flow, folder: str, result: dict[str, Any]) -> None:
         return
     if not os.path.isdir(folder):
         return
+    # The transcodes were made beside the download and linked into each
+    # tracker's folder, so the ones here are the same duplicates the release
+    # itself is, and go the same way.
+    for path in dict.fromkeys(derived or ()):
+        if not os.path.isdir(path) or os.path.abspath(path) == os.path.abspath(folder):
+            continue
+        try:
+            shutil.rmtree(path)
+        except OSError as e:
+            flow.note(f"Could not remove {path}: {e}", "warning")
+
     try:
         shutil.rmtree(folder)
     except OSError as e:

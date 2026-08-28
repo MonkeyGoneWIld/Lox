@@ -55,6 +55,9 @@
     watchlists: [],
     // Which saved searches are ticked, so several can be scanned as one job.
     watchSelected: new Set(),
+    queueTab: 'queue',
+    blacklist: [],
+    blacklistSelected: new Set(),
     // Downloads whose quality has already been queried, so a poll every second
     // does not ask the same question every second.
     qualityAsked: new Set(),
@@ -69,6 +72,8 @@
     requestsAbort: null,
     requestTab: 'find',
     scanTab: 'run',
+    uploadTab: 'folders',
+    uploads: [],
     // A channel page inside Browse, and a place on the settings page. Both are
     // somewhere you can be, so both are somewhere with an address.
     exploreChannel: '',
@@ -120,6 +125,22 @@
     el.textContent = message;
     $('#toasts').append(el);
     setTimeout(() => el.remove(), 6000);
+  }
+
+  /**
+   * Replace a node's children, dropping the ones that are not there.
+   *
+   * `replaceChildren` is not `el`: handed a null it appends a text node
+   * reading "null", so a `condition ? node : null` argument prints the word
+   * on the page. It has done exactly that three times now -- under a search
+   * summary, between the tracker chips, and on the accounts panel -- so the
+   * filtering lives here rather than being remembered at each call.
+   *
+   * @param {Element} node - What to fill.
+   * @param {...(Node|null|undefined|false)} children - What to fill it with.
+   */
+  function fill(node, ...children) {
+    node.replaceChildren(...children.flat().filter((c) => c !== null && c !== undefined && c !== false));
   }
 
   function el(tag, attrs = {}, ...children) {
@@ -185,15 +206,16 @@
     for (const column of columns) {
       const wanted = view.filters[column.label];
       // A date column filters the way anybody asks about one: "in the last
-      // week", "older than a month". Both ends are days, and the value is a
-      // timestamp, so the two are the same range filter with a different
-      // reading -- which is why "Added" and "Last checked" had no filter at
-      // all until now.
+      // six hours", "older than three months". Both ends are a number of
+      // something, so the column says which something -- a window measured in
+      // days is not the same question as one measured in hours, and a pair of
+      // boxes with no unit on them is not a question at all.
       if (column.filter === 'range' || column.filter === 'days') {
         // Two limits, either of which may be left empty: "1990 to blank"
         // means everything from 1990 on, which is how people ask.
-        const low = wanted && wanted.low !== '' ? Number(wanted.low) : null;
-        const high = wanted && wanted.high !== '' ? Number(wanted.high) : null;
+        const scale = column.filter === 'days' ? unitSize(wanted && wanted.unit) : 1;
+        const low = wanted && wanted.low !== '' ? Number(wanted.low) * scale : null;
+        const high = wanted && wanted.high !== '' ? Number(wanted.high) * scale : null;
         if (low === null && high === null) continue;
         shown = shown.filter((row) => {
           const value = Number(valueOf(column, row));
@@ -298,24 +320,41 @@
           ...options.map((option) =>
             el('option', { value: option, selected: view.filters[column.label] === option }, option)));
         } else if (column.filter === 'range' || column.filter === 'days') {
-          const current = view.filters[column.label] || { low: '', high: '' };
-          const limit = (which, placeholder) => el('input', {
+          const isDays = column.filter === 'days';
+          const blank = { low: '', high: '', unit: DEFAULT_UNIT };
+          const current = { ...blank, ...(view.filters[column.label] || {}) };
+          const put = (patch, wait) => {
+            view.filters[column.label] = { ...current, ...patch };
+            clearTimeout(view.timer);
+            if (wait) view.timer = setTimeout(rerender, 260);
+            else rerender();
+          };
+          const limit = (which, placeholder, title) => el('input', {
             class: 'th-filter th-range',
             type: 'number',
+            min: isDays ? '0' : null,
             placeholder,
+            title,
             value: current[which],
-            oninput: (e) => {
-              const next = { ...(view.filters[column.label] || { low: '', high: '' }) };
-              next[which] = e.target.value;
-              view.filters[column.label] = next;
-              clearTimeout(view.timer);
-              view.timer = setTimeout(rerender, 260);
-            },
+            oninput: (e) => put({ [which]: e.target.value }, true),
           });
-          const isDays = column.filter === 'days';
           control = el('div', { class: 'th-range-pair' },
-            limit('low', column.lowLabel || (isDays ? 'newest' : 'min')),
-            limit('high', column.highLabel || (isDays ? 'oldest' : 'max')));
+            limit('low', column.lowLabel || 'min',
+                  isDays ? 'At least this long ago' : 'No less than this'),
+            limit('high', column.highLabel || 'max',
+                  isDays ? 'At most this long ago' : 'No more than this'),
+            // Which unit those two numbers are in. Without it the boxes were a
+            // pair of numbers with nothing saying what they measured, and the
+            // answer was always days whether or not days was the useful window.
+            isDays
+              ? el('select', {
+                  class: 'th-filter th-unit',
+                  title: 'What the two numbers are measured in',
+                  onchange: (e) => put({ unit: e.target.value }, false),
+                },
+                ...TIME_UNITS.map(([name]) =>
+                  el('option', { value: name, selected: current.unit === name }, name)))
+              : null);
         } else if (column.filter) {
           control = el('input', {
             class: 'th-filter',
@@ -404,6 +443,15 @@
     const s = String(Math.floor(seconds % 60)).padStart(2, '0');
     return `${m}:${s}`;
   };
+
+  //: What a date filter's two numbers can be measured in, and how many days
+  //: one of each is. "Checked in the last six hours" and "added more than
+  //: three months ago" are both questions people ask about the same column.
+  const TIME_UNITS = [['hours', 1 / 24], ['days', 1], ['weeks', 7], ['months', 30], ['years', 365]];
+  const DEFAULT_UNIT = 'days';
+
+  /** How many days one of a unit is. Unknown units count as days. */
+  const unitSize = (unit) => (TIME_UNITS.find(([name]) => name === unit) || [null, 1])[1];
 
   /**
    * How many days ago a stored timestamp was.
@@ -764,6 +812,22 @@
   }
 
   /**
+   * The Uploading screen, on one of its two tabs.
+   *
+   * @param {string} tab - folders or history.
+   */
+  function showUploadTab(name) {
+    const wanted = name === 'history' ? 'history' : 'folders';
+    state.uploadTab = wanted;
+    $('#upload-tab-folders').hidden = wanted !== 'folders';
+    $('#upload-tab-history').hidden = wanted !== 'history';
+    $$('#upload-tabs button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.uptab === wanted);
+    });
+    if (wanted === 'history') loadUploadHistory();
+  }
+
+  /**
    * The Scan screen, on one of its two tabs.
    *
    * @param {string} tab - run or history.
@@ -800,12 +864,108 @@
     showRequestTab(wanted);
   }
 
-  /** The Queue. */
+  /** The Queue, on one of its two tabs. */
   function showQueue() {
     // Already here: re-draw rather than re-fetch, so nothing you have ticked
     // is thrown away by arriving at the address you are already at.
     if (state.view === 'found') { renderFound(); setTitle(); return; }
     setView('found');
+  }
+
+  /**
+   * Which half of the Queue screen is showing.
+   *
+   * @param {string} name - queue or blacklist.
+   */
+  function showQueueTab(name) {
+    const wanted = name === 'blacklist' ? 'blacklist' : 'queue';
+    state.queueTab = wanted;
+    $('#queue-tab-queue').hidden = wanted !== 'queue';
+    $('#queue-tab-blacklist').hidden = wanted !== 'blacklist';
+    $$('#queue-tabs button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.queuetab === wanted);
+    });
+    if (wanted === 'blacklist') loadBlacklist();
+  }
+
+  // --------------------------------------------------------- blacklist
+  //
+  // Saying "never show me this again" was a one-way door: the id went into a
+  // file nothing could read back, the album record it came from was deleted in
+  // the same breath, and the only way out was to clear the whole list. It is a
+  // list now, with names on it, and one can be let back in without letting all
+  // of them back in.
+
+  function blacklistPick() {
+    const shown = tableView('blacklist').shown || state.blacklist;
+    const n = countSelected(shown, state.blacklistSelected);
+    const button = $('#blacklist-restore');
+    if (button) {
+      button.disabled = n === 0;
+      button.textContent = n ? `Take ${n} off the blacklist` : 'Take off the blacklist';
+    }
+  }
+
+  async function loadBlacklist() {
+    const host = $('#blacklist-results');
+    host.replaceChildren(spinner('Loading'));
+    try {
+      const { blacklisted, total } = await api('/api/blacklist');
+      state.blacklist = blacklisted;
+      state.blacklistSelected = new Set();
+      $('#blacklist-count').textContent = total
+        ? `${total} release${total === 1 ? '' : 's'} refused`
+        : 'nothing refused';
+      renderBlacklist();
+    } catch (e) {
+      host.replaceChildren(empty(e.message));
+    }
+  }
+
+  function renderBlacklist() {
+    $('#blacklist-results').replaceChildren(dataTable({
+      name: 'blacklist',
+      rows: state.blacklist,
+      selection: { set: state.blacklistSelected, onChange: blacklistPick },
+      onShown: blacklistPick,
+      empty: 'Nothing has been blacklisted.',
+      columns: [
+        {
+          label: 'Release',
+          text: true,
+          value: (r) => `${r.artist || ''} ${r.title || ''} ${r.album_id}`.trim(),
+          filter: 'text',
+          cell: (r) => el('a', {
+            href: albumHref(r.album_id),
+            onclick: (e) => { e.preventDefault(); goAlbum(r.album_id); },
+          }, r.artist || r.title
+            ? `${r.artist || '?'} — ${r.title || r.album_id}`
+            : `Release ${r.album_id}`),
+        },
+        {
+          label: 'Refused',
+          value: (r) => daysAgo(r.at),
+          filter: 'days',
+          class: 'nowrap',
+          cell: (r) => whenCell(r.at),
+        },
+      ],
+    }));
+    blacklistPick();
+  }
+
+  /** Let the ticked releases be found again. */
+  async function restoreBlacklisted() {
+    const shown = tableView('blacklist').shown || state.blacklist;
+    const ids = shown.filter((r) => state.blacklistSelected.has(r.id)).map((r) => r.id);
+    if (!ids.length) return;
+    try {
+      const { restored } = await api('/api/found/restore', { method: 'POST', body: { ids } });
+      toast(`${restored} taken off the blacklist. A scan can find them again.`, 'ok');
+      await loadBlacklist();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
   }
 
   /**
@@ -1109,7 +1269,7 @@
       return node;
     };
 
-    host.replaceChildren(
+    fill(host,
       ...ordered.map(chip),
       // The drop target for "put it last": without one, dragging past the end
       // of the row has nowhere to land.
@@ -1376,7 +1536,7 @@
     const items = () => [...state.picked.entries()].map(([id, item]) => ({ id, item }));
     const onScreen = pickableCards().length;
     const allTaken = onScreen > 0 && pickableCards().every((c) => state.picked.has(c.dataset.album));
-    bar.replaceChildren(
+    fill(bar,
       el('strong', {}, `${count} selected`),
       el('button', { onclick: () => bulkDownload(items()) }, 'Download'),
       el('button', { onclick: () => bulkDownloadAndUpload(items()) }, 'Download & upload'),
@@ -1766,6 +1926,18 @@
     // an apology -- but it should say which of the two you are looking at.
     const fallback = channels.every((c) => c.kind === 'genre');
 
+    // Deezer gives most of its channels a colour and no picture. A grid of
+    // plain rectangles is a grid you have to read the captions of, so the ones
+    // with nothing get their initial drawn on their own colour: not artwork,
+    // but something to aim at and something to tell them apart by.
+    const initialOf = (title) => String(title || '?')
+      .split(/[\s&/-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((word) => word[0])
+      .join('')
+      .toUpperCase() || '?';
+
     const channelCard = (c) => el(
       'div',
       {
@@ -1773,10 +1945,12 @@
         title: c.title,
         onclick: () => go(addr(`/browse/channel/${encodeURIComponent(c.slug)}`)),
       },
-      el('div', {
-        class: 'card-art',
-        style: c.image ? `background-image:url('${c.image}')` : `background:${c.colour || 'var(--bg-input)'}`,
-      }),
+      c.image
+        ? el('div', { class: 'card-art', style: `background-image:url('${c.image}')` })
+        : el('div', {
+            class: 'card-art card-initial',
+            style: `background:${c.colour || 'var(--bg-input)'}`,
+          }, initialOf(c.title)),
       el('div', { class: 'card-title' }, c.title),
     );
 
@@ -2343,7 +2517,10 @@
 
     if (existing) {
       go(addr('/uploading'));
-      startUpload(existing.path, trackers);
+      // With the release id, so a successful upload can take this release off
+      // the queue. Without it the server had only the folder name to go on,
+      // and a release uploaded from its own page stayed in the queue.
+      startUpload(existing.path, trackers, album.id);
       return;
     }
 
@@ -3500,10 +3677,7 @@
 
     host.hidden = false;
     host.className = `requests-summary${partial ? ' partial' : ''}`;
-    // Filtered, because replaceChildren is not el(): handed a null it appends
-    // a text node reading "null", which is how a search in progress came to
-    // announce itself as "Still reading...null".
-    host.replaceChildren(
+    fill(host,
       ...[
         el('span', {}, parts.join(' ')),
         // The number is only useful next to the thing that acts on it.
@@ -4991,11 +5165,9 @@
     const body = $('#found-body');
     body.replaceChildren(spinner('Loading'));
     try {
-      const { found, blacklisted } = await api('/api/found');
+      const { found } = await api('/api/found');
       state.found = found;
       state.selectedFound = new Set(found.map((f) => f.id));
-      $('#found-restore').hidden = !blacklisted;
-      $('#found-restore').textContent = `Clear blacklist (${blacklisted})`;
 
       // What did not make the queue is not the queue's business.
       //
@@ -5268,17 +5440,7 @@ They will not be listed again, even if a later scan finds them.`)) {
       });
       toast(blacklist ? `Blacklisted ${what}` : `Removed ${what}`, 'ok');
       loadFound();
-    } catch (e) {
-      toast(e.message, 'bad');
-    }
-  }
-
-  async function restoreFound() {
-    if (!confirm('Clear the blacklist? Releases on it can be found by a scan again.')) return;
-    try {
-      const { restored } = await api('/api/found/restore', { method: 'POST', body: {} });
-      toast(`Cleared ${restored} from the blacklist`, 'ok');
-      loadFound();
+      if (blacklist) state.blacklist = [];
     } catch (e) {
       toast(e.message, 'bad');
     }
@@ -5348,8 +5510,46 @@ They will not be listed again, even if a later scan finds them.`)) {
       button.disabled = n === 0;
       button.textContent = n > 1 ? `Upload ${n} in turn` : 'Upload selected';
     }
+    const remove = $('#folders-delete');
+    if (remove) {
+      remove.disabled = n === 0;
+      remove.textContent = n > 1 ? `Delete ${n}` : 'Delete selected';
+    }
     const label = $('#folders-selected');
     if (label) label.textContent = n ? `${n} of ${shown.length} selected` : '';
+  }
+
+  /**
+   * Delete every folder that is ticked.
+   *
+   * Named rather than counted where there are few of them: "delete 3 folders"
+   * and "delete these three releases" are different amounts of information,
+   * and this one cannot be undone.
+   */
+  async function deleteSelectedFolders() {
+    const shown = tableView('folders').shown || state.folders || [];
+    const picked = shown.filter((f) => state.selectedFolders.has(f.path));
+    if (!picked.length) return;
+    const names = picked.slice(0, 6).map((f) => f.name).join('\n');
+    const rest = picked.length > 6 ? `\n…and ${picked.length - 6} more` : '';
+    if (!confirm(`Delete ${picked.length} release${picked.length === 1 ? '' : 's'}?\n\n${names}${rest}`
+                 + '\n\nThis removes the files from disk and cannot be undone.')) {
+      return;
+    }
+    let gone = 0;
+    for (const folder of picked) {
+      try {
+        // eslint-disable-next-line no-await-in-loop -- one at a time so a
+        // failure names the folder it failed on.
+        await api('/api/folders/delete', { method: 'POST', body: { folder: folder.path } });
+        gone += 1;
+        state.selectedFolders.delete(folder.path);
+      } catch (e) {
+        toast(`${folder.name}: ${e.message}`, 'bad');
+      }
+    }
+    if (gone) toast(`Deleted ${gone} release${gone === 1 ? '' : 's'}`, 'ok');
+    await loadFolders();
   }
 
   async function loadFolders() {
@@ -5435,6 +5635,115 @@ They will not be listed again, even if a later scan finds them.`)) {
     } catch (e) {
       list.replaceChildren(empty(e.message));
     }
+  }
+
+  // -------------------------------------------------------- upload history
+  //
+  // An upload is the one thing in here that cannot be repeated to find out
+  // what happened. The torrent is posted, the flow is dropped when the page is
+  // closed, and everything it printed goes with it -- so afterwards there was
+  // nowhere to see what a release had been posted as, which tracker took it,
+  // or why one of the two refused.
+
+  async function loadUploadHistory() {
+    const host = $('#uphistory-results');
+    host.replaceChildren(spinner('Loading'));
+    try {
+      const { uploads, total } = await api('/api/uploads/history');
+      state.uploads = uploads;
+      $('#uphistory-count').textContent = total
+        ? `${total} upload${total === 1 ? '' : 's'}`
+        : 'nothing uploaded yet';
+      renderUploadHistory();
+    } catch (e) {
+      host.replaceChildren(empty(e.message));
+    }
+  }
+
+  /** What one upload did, per tracker, as links where there are any. */
+  function uploadOutcomeTags(row) {
+    const tags = (row.outcomes || []).map((o) => {
+      if (o.ok && o.url) {
+        return trackerTag(o.tracker, 'ok', o.tracker, o.url, `Open the upload on ${o.tracker}`);
+      }
+      if (o.ok) return el('span', { class: 'tag ok' }, o.tracker);
+      return el('span', { class: 'tag bad', title: o.error || '' }, `${o.tracker} failed`);
+    });
+    if (row.dry_run) tags.push(el('span', { class: 'tag warn' }, 'dry run'));
+    return tags.length ? tags : [el('span', { class: 'tag dim' }, '—')];
+  }
+
+  /** Everything one upload printed, and what it was posted as. */
+  function uploadDetail(row) {
+    const fields = Object.entries(row.fields || {});
+    const descriptions = Object.entries(row.descriptions || {});
+    return el('div', { class: 'upload-detail' },
+      fields.length
+        ? el('details', { class: 'diff meta-block' },
+            el('summary', {}, 'What it was posted as',
+               el('span', { class: 'card-sub' }, ` — ${fields.length} fields`)),
+            el('table', { class: 'table meta-table' },
+              el('tbody', {},
+                ...fields.map(([key, value]) =>
+                  el('tr', {},
+                    el('td', { class: 'meta-field' }, key),
+                    el('td', {}, String(value)))))))
+        : null,
+      ...descriptions.map(([name, text]) =>
+        el('details', { class: 'diff meta-block' },
+          el('summary', {}, name),
+          el('pre', { class: 'upload-desc' }, text))),
+      el('details', { class: 'diff meta-block', open: !fields.length },
+        el('summary', {}, 'Log',
+           el('span', { class: 'card-sub' }, ` — ${(row.log || []).length} lines`)),
+        el('div', { class: 'joblog upload-log' },
+          ...(row.log || []).map((line) =>
+            el('div', { class: `joblog-line ${line.level === 'info' ? '' : line.level}` },
+               line.message)))));
+  }
+
+  function renderUploadHistory() {
+    $('#uphistory-results').replaceChildren(dataTable({
+      name: 'uploads',
+      rows: state.uploads,
+      idOf: (r) => r.id,
+      empty: 'Nothing has been uploaded yet.',
+      columns: [
+        {
+          label: 'Release',
+          text: true,
+          value: (r) => r.release || '',
+          filter: 'text',
+          cell: (r) => el('details', { class: 'upload-row' },
+            el('summary', {}, r.release || '(unnamed)'),
+            uploadDetail(r)),
+        },
+        {
+          label: 'Trackers',
+          class: 'found-trackers',
+          value: (r) => (r.outcomes || []).map((o) => `${o.tracker} ${o.ok ? 'ok' : 'failed'}`).join(', '),
+          filter: 'choice',
+          cell: (r) => el('span', {}, ...uploadOutcomeTags(r)),
+        },
+        {
+          label: 'Result',
+          value: (r) => (r.error ? 'failed' : r.succeeded?.length ? 'uploaded' : 'nothing posted'),
+          filter: 'choice',
+          cell: (r) => (r.error
+            ? el('span', { class: 'tag bad', title: r.error }, 'failed')
+            : r.succeeded?.length
+              ? el('span', { class: 'tag ok' }, `${r.succeeded.length} posted`)
+              : el('span', { class: 'tag dim' }, 'nothing posted')),
+        },
+        {
+          label: 'When',
+          value: (r) => daysAgo(r.finished),
+          filter: 'days',
+          class: 'nowrap',
+          cell: (r) => whenCell(r.finished),
+        },
+      ],
+    }));
   }
 
   // ------------------------------------------------------------ the queue
@@ -5581,6 +5890,7 @@ They will not be listed again, even if a later scan finds them.`)) {
         } else {
           refreshStatus();
           loadFolders();
+          if (state.uploadTab === 'history') loadUploadHistory();
           resolve(flow);
         }
       };
@@ -6947,7 +7257,7 @@ They will not be listed again, even if a later scan finds them.`)) {
     const newUser = field('acct-user', 'Username');
     const newPass = field('acct-pass', `Password (at least ${data.min_password})`, 'password');
 
-    panel.replaceChildren(
+    fill(panel,
       settingsHeading('h2', 'users', 'Accounts'),
       el('p', { class: 'hint' },
          data.you
@@ -7493,8 +7803,29 @@ They will not be listed again, even if a later scan finds them.`)) {
     $('#found-recheck').addEventListener('click', recheckFound);
     $('#found-dismiss').addEventListener('click', () => dismissFound(false));
     $('#found-blacklist').addEventListener('click', () => dismissFound(true));
-    $('#found-restore').addEventListener('click', restoreFound);
+    $$('#queue-tabs button').forEach((b) => {
+      b.addEventListener('click', () => showQueueTab(b.dataset.queuetab));
+    });
+    $('#blacklist-restore').addEventListener('click', restoreBlacklisted);
+    $('#blacklist-clear').addEventListener('click', async () => {
+      if (!confirm('Clear the whole blacklist?\n\nEvery release on it can be found by a scan again.')) {
+        return;
+      }
+      const { restored } = await api('/api/found/restore', { method: 'POST', body: {} });
+      toast(`Cleared ${restored} from the blacklist`, 'ok');
+      loadBlacklist();
+    });
 
+    $$('#upload-tabs button').forEach((b) => {
+      b.addEventListener('click', () => showUploadTab(b.dataset.uptab));
+    });
+    $('#uphistory-refresh').addEventListener('click', loadUploadHistory);
+    $('#uphistory-clear').addEventListener('click', async () => {
+      if (!confirm('Forget every upload in this list?\n\nNothing already posted is affected.')) return;
+      await api('/api/uploads/history/clear', { method: 'POST' });
+      loadUploadHistory();
+    });
+    $('#folders-delete').addEventListener('click', deleteSelectedFolders);
     $('#folders-refresh').addEventListener('click', loadFolders);
     // Several at once, uploaded one after another. Pressing Upload on each of
     // eight folders and waiting between them was the whole evening.

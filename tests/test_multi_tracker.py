@@ -30,6 +30,7 @@ Also pinned here, because both were reported from a real upload:
 import asyncio
 import inspect
 import os
+import pathlib
 import re
 import sys
 
@@ -107,6 +108,44 @@ def pipeline_checks() -> None:
           "upload_path = await link_for(tracker, path)" in inside
           and "upload_and_report(\n                gazelle_site,\n                upload_path," in inside, "")
 
+    # A transcode is a fact about the release, not about the tracker: the same
+    # thirteen tracks at V0 whoever is being uploaded to. Encoding it again per
+    # tracker wrote a second copy of identical audio and took as long again.
+    check("a transcode is produced from the prepared release, not per tracker",
+          "# Produced from the prepared release, not from this" in inside, "")
+    check("made once and handed to each tracker to place",
+          "produced=derived," in inside and "place=(lambda p, tracker=tracker:" in inside, "")
+
+    from lox.uploader import execute_downconversion_tasks
+
+    tasks = source_of(execute_downconversion_tasks)
+    check("the downconversion is built once per task name",
+          "if name not in produced:" in tasks, "")
+    check("both the transcode and the downconvert go through it",
+          tasks.count("await make(") == 2, str(tasks.count("await make(")))
+    check("and each tracker is given somewhere of its own to seed it from",
+          tasks.count("await place(") == 2, str(tasks.count("await place(")))
+
+    # The lossy report is per torrent, so it has to be filed per tracker. It
+    # was, and it stays that way now the pipeline runs once: the report sits
+    # inside upload_and_report, which the loop calls for each of them.
+    from lox.uploader import upload_and_report
+
+    check("the lossy-master report is filed by the per-tracker post",
+          "if lossy_master:" in source_of(upload_and_report)
+          and "await report_lossy_master(" in source_of(upload_and_report), "")
+    check("so every tracker that takes a lossy release gets one",
+          "upload_and_report(" in inside, "")
+
+    # A release with no genre is refused by the tracker, and being refused
+    # after the spectrals, the tagging and the torrent build is an expensive
+    # way to find out.
+    from lox.uploader.upload import prepare_and_upload
+
+    check("a release with no genre is stopped before the post",
+          'if not metadata.get("genres"):' in source_of(prepare_and_upload), "")
+    check("and told why", "needs at least one genre" in source_of(prepare_and_upload), "")
+
 
 def flow_checks() -> None:
     """The web flow drives one pass, not one pass per tracker."""
@@ -139,6 +178,55 @@ def flow_checks() -> None:
     check("never when nothing took it", 'result.get("succeeded")' in cleanup, "")
     check("and never with linking off, where that folder is what is seeding",
           "cfg.linking.enabled" in cleanup, "")
+
+
+def upload_priority_checks() -> None:
+    """An upload does not queue behind whatever the checker is doing."""
+    import inspect as _inspect
+
+    from lox.trackers import base
+
+    src = _inspect.getsource(base.BaseGazelleApi.request)
+    check("an upload's calls take their own allowance",
+          "self._upload_limiter if uploading.get() else self._rate_limiter" in src, "")
+    check("which exists", hasattr(base.BaseGazelleApi, "_upload_limiter"), "")
+    check("and the flag is per task, not per client",
+          isinstance(base.uploading, __import__("contextvars").ContextVar), "")
+    check("the flow sets it for the length of the upload",
+          "uploading.set(True)" in pathlib.Path("lox/upload_flow.py").read_text(encoding="utf-8"), "")
+    check("and puts it back afterwards",
+          "uploading.reset(token)" in pathlib.Path("lox/upload_flow.py").read_text(encoding="utf-8"), "")
+    # Five seconds total was not enough for a tracker that regularly takes
+    # longer than that, and a timeout here is retried five times over.
+    check("and a tracker is given long enough to answer",
+          "ClientTimeout(total=60)" in src, "")
+
+
+def blacklist_checks() -> None:
+    """Refused means refused everywhere, and it can be undone one at a time."""
+    import inspect as _inspect
+
+    from lox.checker.deezer_requests import DeezerRequestChecker
+    from lox.checker.missing import MissingScanner
+
+    collect = _inspect.getsource(MissingScanner.collect)
+    check("a scan does not collect a release that was refused",
+          'self.store.get("dismissed", album_id)' in collect, "")
+
+    checker = _inspect.getsource(DeezerRequestChecker)
+    check("nor does a request check offer one as a fill",
+          'self.store.get("dismissed", str(match.deezer_id or ""))' in checker, "")
+
+    api = pathlib.Path("lox/web/api.py").read_text(encoding="utf-8")
+    check("the blacklist is a list you can read back",
+          '@routes.get("/api/blacklist")' in api, "")
+    check("with names on it, kept when the entry is made",
+          '**named.get(key, {})' in api, "")
+
+    js = pathlib.Path("lox/web/static/scripts/app.js").read_text(encoding="utf-8")
+    check("and a page to read it on", "function renderBlacklist" in js, "")
+    check("where one can be taken off without clearing the lot",
+          "function restoreBlacklisted" in js, "")
 
 
 def request_verdict_checks() -> None:
@@ -187,8 +275,17 @@ def request_verdict_checks() -> None:
     check("the checker's own record carries both lists",
           "found_on" in fields and "missing_from" in fields, "")
     src = inspect.getsource(DeezerRequestChecker)
-    check("filled in from the search it already ran",
-          "match.missing_from = [tracker]" in src and "match.found_on = [tracker]" in src, "")
+    check("filled in from the searches it runs",
+          "match.found_on.append(code)" in src and "match.missing_from.append(code)" in src, "")
+    # Every configured tracker, not only the one the request is on. The release
+    # is the same release whoever is asked, and asking only the requesting
+    # tracker left the queue row knowing about OPS and nothing about RED -- so
+    # the upload that followed either skipped a tracker that wanted it or
+    # offered one that already had it.
+    check("and asked of every configured tracker, not just the requesting one",
+          "for code in self.gateway.configured_trackers():" in src, "")
+    check("skipping any that has nothing left to spend",
+          "if not self.gateway.can_check(code):" in src, "")
     check("and stored with the rest of the answer",
           '"missing_from": match.missing_from' in src, "")
 
@@ -276,6 +373,41 @@ def ui_checks() -> None:
     check("a rehearsal's leftovers are the only ones offered for deletion",
           "if (!result.dry_run) return null;" in js, "")
 
+    # An upload cannot be run again to find out what it did.
+    shell = pathlib.Path(os.path.join(os.path.dirname(ROOT), "lox", "web", "templates", "app.html")
+                         ).read_text(encoding="utf-8")
+    check("finished uploads are kept and can be read back",
+          'id="upload-tab-history"' in shell and "function loadUploadHistory" in js, "")
+    check("with what it was posted as and everything it printed",
+          "function uploadDetail" in js and "upload-log" in js, "")
+    check("and folders can be removed in a batch, not one at a time",
+          'id="folders-delete"' in shell and "function deleteSelectedFolders" in js, "")
+
+    # Deezer gives most of its channels a colour and no picture, which left two
+    # thirds of the Browse grid as plain rectangles.
+    check("a channel with no artwork is drawn as its initial",
+          "card-initial" in js and "card-initial" in css, "")
+
+    # Two bare numbers over a column of dates is not a question anybody can
+    # answer. "In the last six hours" and "older than three months" are both
+    # asked of the same column.
+    check("a date filter says what its two numbers are measured in",
+          "const TIME_UNITS = [['hours'" in js and "th-unit" in js, "")
+    check("and the predicate scales by it", "unitSize(wanted && wanted.unit)" in js, "")
+
+    # `display: flex` on a <td> takes it out of the row's height calculation,
+    # so the cell stopped short of the row and drew its bottom border there --
+    # a bright short line under the tags with the real row line below it.
+    check("the trackers cell is a cell, not a flex container",
+          ".found-trackers { display: flex" not in css, "")
+    check("and the tags inside it centre themselves",
+          ".found-trackers > span," in css and "justify-content: center;" in css, "")
+
+    # replaceChildren is not el(): handed a null it appends the word "null".
+    check("nothing hands a bare conditional to replaceChildren",
+          "function fill(node, ...children)" in js
+          and "fill(bar," in js and "fill(host," in js and "fill(panel," in js, "")
+
     # One frame, not three. Each track was its own dark rectangle inside the
     # panel's rectangle, with a hairline down the middle of every pair.
     spectral = css[css.index("/* ---------- spectrals ---------- */"):]
@@ -289,6 +421,8 @@ def ui_checks() -> None:
 def main() -> int:
     pipeline_checks()
     flow_checks()
+    upload_priority_checks()
+    blacklist_checks()
     request_verdict_checks()
     detail_cache_checks()
     naming_checks()

@@ -971,6 +971,28 @@ def main() -> int:
     check("and every filter control is the same height, whatever kind it is",
           "height: 28px" in rule(css, ".th-filter"), rule(css, ".th-filter"))
 
+    # Two bare numbers over a column of dates is not a question anybody can
+    # answer. "In the last six hours" and "older than three months" are both
+    # asked of the same column.
+    check("a date filter says what its two numbers are measured in",
+          "const TIME_UNITS = [['hours'" in js and "th-unit" in js, "")
+    check("and the predicate scales by it", "unitSize(wanted && wanted.unit)" in js, "")
+
+    # `display: flex` on a <td> takes it out of the row's height calculation,
+    # so the cell stopped short of the row and drew its bottom border there --
+    # a bright short line under the tags with the real row line below it. It
+    # also pinned the whole group to the left of a centred column.
+    check("the trackers cell is a cell, not a flex container",
+          "display: flex" not in rule(css, ".found-trackers"), rule(css, ".found-trackers"))
+    check("and the tags inside it centre themselves",
+          "justify-content: center" in rule(css, ".found-trackers > span, .found-sources > span")
+          or "justify-content: center" in rule(css, ".found-trackers > span"), "")
+
+    # replaceChildren is not el(): handed a null it appends the word "null".
+    check("nothing hands a bare conditional to replaceChildren",
+          "function fill(node, ...children)" in js
+          and "fill(bar," in js and "fill(host," in js and "fill(panel," in js, "")
+
     # --- the settings page lines up across a row -----------------------
     #
     # Every setting is a label, a control and a note. As independent flex

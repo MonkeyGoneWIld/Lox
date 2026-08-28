@@ -243,7 +243,7 @@ class Explorer:
             channels = self._parse_channel_page(results)
             if channels:
                 debug.log("explore: %d channels from %s", len(channels), page, level=20)
-                return channels
+                return await self._with_artwork(channels)
             debug.log("explore: gateway page %s returned no channels", page, level=30)
 
         genres = await self.genres()
@@ -263,6 +263,39 @@ class Explorer:
             }
             for g in genres
         ]
+
+    async def _with_artwork(self, channels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Give the channels Deezer left blank a picture where one exists.
+
+        Most channels come back with a colour and no artwork, which leaves two
+        thirds of the grid as plain rectangles you have to read the caption
+        under to tell apart. A good number of them are genres by another name --
+        "Rock", "Jazz", "Classical" -- and the editorial genre list has a
+        picture for each of those, so they are matched up by name. What is
+        still blank is drawn as its initial on its own colour, which the page
+        does.
+
+        One free public call, and a failure changes nothing.
+
+        Args:
+            channels: Channel cards, some without an image.
+
+        Returns:
+            The same cards, with images filled in where one was found.
+        """
+        if all(c.get("image") for c in channels):
+            return channels
+        try:
+            by_name = {g["title"].strip().lower(): g["image"] for g in await self.genres() if g.get("image")}
+        except DeezerGWError:
+            return channels
+        for channel in channels:
+            if channel.get("image"):
+                continue
+            picture = by_name.get(str(channel.get("title", "")).strip().lower())
+            if picture:
+                channel["image"] = picture
+        return channels
 
     @staticmethod
     def _parse_channel_page(results: dict) -> list[dict[str, Any]]:
