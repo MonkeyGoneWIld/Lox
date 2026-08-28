@@ -639,6 +639,10 @@ class MissingScanner:
                     "status": result.status,
                     "title": candidate.title,
                     "artist": candidate.artist,
+                    # Which pressing this is. Two editions of one record are
+                    # two different uploads, and the queue could not say which
+                    # of them it was looking at.
+                    "year": candidate.year,
                     "source": candidate.source,
                     "found_on": result.found_on,
                     "missing_from": result.missing_from,

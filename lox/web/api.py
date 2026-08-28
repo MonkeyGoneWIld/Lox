@@ -966,6 +966,8 @@ async def api_found(request: web.Request) -> web.Response:
                 existing[key] = row[key]
         existing["title"] = existing.get("title") or row.get("title") or ""
         existing["artist"] = existing.get("artist") or row.get("artist") or ""
+        existing["year"] = existing.get("year") or row.get("year") or ""
+        existing["year"] = existing.get("year") or row.get("year") or ""
         # The newest check is the one the "last checked" column should quote,
         # and the oldest sighting is the one "added" should: a release a scan
         # found in June and a request check matched today has been waiting
@@ -1005,6 +1007,7 @@ async def api_found(request: web.Request) -> web.Response:
                 "sources": ["scan"],
                 "title": entry.get("title") or "",
                 "artist": entry.get("artist") or "",
+                "year": str(entry.get("year") or "")[:4] or str(entry.get("release_date") or "")[:4],
                 "missing_from": entry.get("missing_from") or [],
                 "found_on": entry.get("found_on") or [],
                 "tracker_links": _tracker_links(entry, entry.get("artist") or "", entry.get("title") or ""),
@@ -1048,6 +1051,7 @@ async def api_found(request: web.Request) -> web.Response:
                 "sources": ["request"],
                 "title": entry.get("album") or entry.get("deezer_title") or "",
                 "artist": entry.get("artist") or entry.get("deezer_artist") or "",
+                "year": str(entry.get("year") or "")[:4] or str(entry.get("release_date") or "")[:4],
                 "tracker": entry.get("tracker") or "",
                 "bounty": entry.get("bounty") or "",
                 # Which trackers have it and which do not, so the row says what

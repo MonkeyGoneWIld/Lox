@@ -2093,3 +2093,12 @@ a.tag-link:hover { filter: brightness(1.15); text-decoration: underline; }
   color: rgb(255 255 255 / 0.82);
   text-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
 }
+
+
+/* ---------- an answer on its way ---------- */
+/* Answering is not instant: the pipeline picks the answer up on its own
+   schedule and may take a while before it publishes the next question. Nothing
+   said so, so Save looked like it had done nothing and a second press was met
+   with "that question has already been answered". */
+.flow-card.answering .step { opacity: 0.6; }
+.answering-note { color: var(--accent); }

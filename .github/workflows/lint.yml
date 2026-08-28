@@ -244,6 +244,13 @@ jobs:
         # itself -- which puts it between someone else's BBCode and the page.
         run: uv run python tests/test_request_detail.py
 
+      - name: Whether a tracker already has a release, answered correctly
+        # A release the tracker had was reported missing, because a title with
+        # a subtitle was searched for by its subtitle; and one it did not have
+        # was reported present, because a character-set similarity cannot see
+        # the difference between Vol. 4 and Vol. 2.
+        run: uv run python tests/test_matching_quality.py
+
       - name: One release, prepared once, posted to every tracker picked
         # Uploading to two trackers ran the whole pipeline twice: the second
         # pass regenerated the spectrals, looked the metadata up again,

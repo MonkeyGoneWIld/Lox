@@ -47,6 +47,62 @@ _GENRE_RE = re.compile(r"^genre:(\d{1,12})$", re.IGNORECASE)
 #: runs to roughly a season, and anything older reads as a chart.
 RECENT_DAYS = 120
 
+#: Words that say nothing about which genre a name is. "Japanese music" and
+#: "Asian Music" share only this, and they are not the same thing.
+_VAGUE_WORDS = frozenset({"music", "musique", "and", "the", "of", "hop", "s"})
+
+
+def _words(value: str) -> list[str]:
+    """The meaningful words of a name, lower-cased."""
+    from re import split as _split
+
+    return [w for w in _split(r"[^a-z0-9]+", value.lower()) if w and w not in _VAGUE_WORDS]
+
+
+def _genre_picture(title: str, genres: list[dict[str, Any]]) -> str | None:
+    """The editorial genre picture that belongs to a channel, if one does.
+
+    Deezer's channel list and its genre list overlap without agreeing on
+    names: "Folk & singer-songwriter" is the "Folk" genre, "Dance & EDM" is
+    "Dance", "Rap" is "Rap/Hip Hop", "Electronic" is "Electro". An exact match
+    found fourteen of sixty-three, which left most of the grid as plain
+    rectangles.
+
+    Deliberately conservative: a wrong photograph on a genre card is worse than
+    no photograph, so it takes a shared distinctive word or one name being a
+    prefix of the other. A mood or a decade -- Chill, 1990s, Workout -- has no
+    genre and gets none.
+
+    Args:
+        title: The channel's name.
+        genres: Editorial genres, each with a picture.
+
+    Returns:
+        A picture URL, or None.
+    """
+    wanted = _words(title)
+    if not wanted:
+        return None
+    for genre in genres:
+        theirs = _words(str(genre.get("title", "")))
+        if not theirs:
+            continue
+        if set(theirs) <= set(wanted) or set(wanted) <= set(theirs):
+            return genre["image"]
+        # "Electro" for "Electronic": one name begins the other, and both are
+        # long enough for that to mean something.
+        for mine in wanted:
+            if len(mine) >= 5 and any(len(t) >= 5 and (mine.startswith(t) or t.startswith(mine))
+                                      for t in theirs):
+                return genre["image"]
+    return None
+
+
+#: Channels there is no reason to browse here. lox uploads music; a third of
+#: what Deezer serves under "channels" is podcast categories, which cannot be
+#: downloaded, cannot be uploaded, and pushed the genres off the first screen.
+_PODCAST_RE = re.compile(r"podcast|audiobook", re.IGNORECASE)
+
 #: How many chart albums to look up release dates for when the editorial feed
 #: has nothing. Public-API calls are free but not instant, so this is bounded.
 _DATE_LOOKUP_LIMIT = 60
@@ -286,13 +342,13 @@ class Explorer:
         if all(c.get("image") for c in channels):
             return channels
         try:
-            by_name = {g["title"].strip().lower(): g["image"] for g in await self.genres() if g.get("image")}
+            genres = [g for g in await self.genres() if g.get("image")]
         except DeezerGWError:
             return channels
         for channel in channels:
             if channel.get("image"):
                 continue
-            picture = by_name.get(str(channel.get("title", "")).strip().lower())
+            picture = _genre_picture(str(channel.get("title", "")), genres)
             if picture:
                 channel["image"] = picture
         return channels
@@ -318,6 +374,13 @@ class Explorer:
                     continue
                 kind = str(item.get("type") or data.get("__TYPE__") or "").lower()
                 if kind and kind != "channel":
+                    continue
+                # lox uploads music. A podcast cannot be downloaded from
+                # Deezer, cannot be uploaded to a music tracker, and Deezer
+                # serves thirty-five categories of them -- a third of the grid,
+                # and the first thing on it.
+                if _PODCAST_RE.search(f"{group} {data.get('slug', '')} "
+                                      f"{data.get('title') or data.get('name') or ''}"):
                     continue
                 slug = data.get("SLUG") or data.get("slug")
                 title = data.get("TITLE") or data.get("title") or item.get("title")

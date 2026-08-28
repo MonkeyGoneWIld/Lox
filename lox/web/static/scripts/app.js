@@ -61,6 +61,12 @@
     // Downloads whose quality has already been queried, so a poll every second
     // does not ask the same question every second.
     qualityAsked: new Set(),
+    // Flow steps whose answer is on its way, so a second press cannot send a
+    // second one and be told the first had already arrived.
+    answering: new Set(),
+    // When each upload switch was last written from this page, so a status
+    // poll carrying the value from before the click cannot undo it.
+    flagWrittenAt: {},
     // The one being renamed, so a re-render does not close the box you are
     // typing in.
     watchEditing: null,
@@ -962,6 +968,7 @@
     try {
       const { restored } = await api('/api/found/restore', { method: 'POST', body: { ids } });
       toast(`${restored} taken off the blacklist. A scan can find them again.`, 'ok');
+      state.found = [];
       await loadBlacklist();
     } catch (e) {
       toast(e.message, 'bad');
@@ -1055,13 +1062,24 @@
     syncUploadToggles(status.upload);
   }
 
-  // Reflect the stored setting, unless you are mid-click on the box itself --
-  // a poll landing at the wrong moment should not undo what you just did.
+  // Reflect the stored setting, unless it has just been changed here.
+  //
+  // A status poll every fifteen seconds can be in flight while the box is
+  // clicked, and it carries the value from before the click. Landing after the
+  // save, it put the box back -- so the toast said "Auto-answer prompts on"
+  // and the box was off, which is the app calling itself a liar. A box that
+  // was written to locally is left alone until the answer to that write has
+  // been round the loop.
+  const SETTLE_MS = 4000;
+
   function syncUploadToggles(upload) {
     if (!upload) return;
+    const now = Date.now();
     for (const [id, value] of [['upload-dry-run', upload.dry_run], ['upload-yes-all', upload.yes_all]]) {
       const box = $(`#${id}`);
-      if (box && box !== document.activeElement) box.checked = !!value;
+      if (!box || box === document.activeElement) continue;
+      if (now - (state.flagWrittenAt[id] || 0) < SETTLE_MS) continue;
+      box.checked = !!value;
     }
   }
 
@@ -1069,9 +1087,20 @@
   async function setUploadFlag(key, box, label) {
     const value = box.checked;
     box.disabled = true;
+    state.flagWrittenAt[box.id] = Date.now();
     try {
       await api('/api/settings', { method: 'PUT', body: { changes: { [key]: value } } });
-      toast(`${label} ${value ? 'on' : 'off'}`, 'ok');
+      // Read back rather than assumed. The toast used to fire on the strength
+      // of the request not throwing, which says nothing about what was stored.
+      const status = await api('/api/status');
+      const stored = key === 'upload.dry_run' ? status.upload?.dry_run : status.upload?.yes_all;
+      box.checked = !!stored;
+      state.flagWrittenAt[box.id] = Date.now();
+      if (!!stored === value) {
+        toast(`${label} ${value ? 'on' : 'off'}`, 'ok');
+      } else {
+        toast(`${label} did not change — it is still ${stored ? 'on' : 'off'}`, 'bad');
+      }
     } catch (e) {
       box.checked = !value;
       toast(e.message, 'bad');
@@ -1203,12 +1232,27 @@
       renderUploadTargets();
     };
 
-    /** Put `code` where `before` is, or at the end when there is no `before`. */
-    const moveTo = (code, before) => {
-      const order = state.uploadTrackers.filter((c) => c !== code);
-      const at = before ? order.indexOf(before) : -1;
-      if (at < 0) order.push(code);
-      else order.splice(at, 0, code);
+    /**
+     * Move one tracker to another's position.
+     *
+     * By index rather than by "insert before that one": inserting before the
+     * chip to your right puts you back exactly where you started, so dragging
+     * RED onto OPS did nothing at all while dragging OPS onto RED worked.
+     * Taking the target's index means everything between shuffles up, which is
+     * what dragging a thing onto another thing means everywhere else.
+     *
+     * @param {string} code - The tracker being moved.
+     * @param {string|null} target - The one it was dropped on, or null for the
+     *   end of the row.
+     */
+    const moveTo = (code, target) => {
+      const from = state.uploadTrackers.indexOf(code);
+      if (from < 0) return;
+      const to = target ? state.uploadTrackers.indexOf(target) : state.uploadTrackers.length - 1;
+      if (to < 0 || to === from) return;
+      const order = [...state.uploadTrackers];
+      order.splice(from, 1);
+      order.splice(to, 0, code);
       state.uploadTrackers = order;
       renderUploadTargets();
     };
@@ -3329,6 +3373,7 @@
                 + `${stopped.remaining ?? '?'} still to check — run it again shortly.`
               : `Done. ${job.result_count} album(s) checked.`);
             if (job.error) toast(job.error, 'bad');
+            releasesChanged();
             resolve();
           },
         });
@@ -4237,6 +4282,7 @@
       }
       done();
       refreshStatus();
+      releasesChanged();
       jobFinished(log, stoppedEarly
         ? `Stopped after ${stoppedEarly.checked} request(s): the tracker will not answer any more just yet. `
           + 'Run it again shortly.'
@@ -5261,6 +5307,17 @@
           }, `${f.artist || ''} — ${f.title || ''}`),
         },
         {
+          // Which pressing this is. Two editions of the same record are two
+          // different uploads, and the year is how anybody tells them apart.
+          label: 'Year',
+          value: (f) => Number(String(f.year || '').slice(0, 4)) || 0,
+          filter: 'range',
+          lowLabel: 'from',
+          highLabel: 'to',
+          class: 'nowrap',
+          cell: (f) => el('span', {}, String(f.year || '—')),
+        },
+        {
           label: 'Trackers',
           class: 'found-trackers',
           value: trackerSummary,
@@ -5439,11 +5496,34 @@ They will not be listed again, even if a later scan finds them.`)) {
         body: { ids: picked.map((f) => f.id), blacklist },
       });
       toast(blacklist ? `Blacklisted ${what}` : `Removed ${what}`, 'ok');
-      loadFound();
-      if (blacklist) state.blacklist = [];
+      releasesChanged();
     } catch (e) {
       toast(e.message, 'bad');
     }
+  }
+
+  /**
+   * Something was checked, so every list that reads a check is out of date.
+   *
+   * The store is already one store -- a scan, a request check and a re-check
+   * from the queue all write the same album records -- but each screen keeps
+   * its own copy of what it last read. Re-checking from the queue therefore
+   * dropped the row from the queue and left the scan's Lookup History showing
+   * the answer from before, which reads as two databases disagreeing.
+   *
+   * The cached copies are dropped here, and whichever screen is on screen
+   * re-reads at once.
+   */
+  function releasesChanged() {
+    state.scanHistory = [];
+    state.history = [];
+    state.blacklist = [];
+    if (state.view === 'found') {
+      if (state.queueTab === 'blacklist') loadBlacklist();
+      else loadFound();
+    }
+    if (state.view === 'missing' && state.scanTab === 'history') loadScanHistory();
+    if (state.view === 'requests' && state.requestTab === 'history') loadHistory();
   }
 
   // Ask the trackers again about the selection. Costs budget, so it is a button
@@ -5479,7 +5559,7 @@ They will not be listed again, even if a later scan finds them.`)) {
           refreshStatus();
           jobFinished(log, job.error || `Re-checked ${job.result_count} release(s).`);
           toast(job.error || `Re-checked ${job.result_count} release(s)`, job.error ? 'bad' : 'ok');
-          loadFound();
+          releasesChanged();
         },
       });
     } catch (e) {
@@ -5663,11 +5743,13 @@ They will not be listed again, even if a later scan finds them.`)) {
   /** What one upload did, per tracker, as links where there are any. */
   function uploadOutcomeTags(row) {
     const tags = (row.outcomes || []).map((o) => {
-      if (o.ok && o.url) {
-        return trackerTag(o.tracker, 'ok', o.tracker, o.url, `Open the upload on ${o.tracker}`);
-      }
-      if (o.ok) return el('span', { class: 'tag ok' }, o.tracker);
-      return el('span', { class: 'tag bad', title: o.error || '' }, `${o.tracker} failed`);
+      if (!o.ok) return el('span', { class: 'tag bad', title: o.error || '' }, `${o.tracker} failed`);
+      // The torrent it posted where there is one, the group it went into
+      // otherwise. A tracker name on this page is a thing that now exists on
+      // that tracker, so it should open it.
+      const href = o.url || trackerLinks({ found_on: [o.tracker], group_ids: row.group_ids || {},
+                                           artist: row.artist || '', title: row.release || '' })[o.tracker];
+      return trackerTag(o.tracker, 'ok', o.tracker, href, `Open what was uploaded to ${o.tracker}`);
     });
     if (row.dry_run) tags.push(el('span', { class: 'tag warn' }, 'dry run'));
     return tags.length ? tags : [el('span', { class: 'tag dim' }, '—')];
@@ -6535,14 +6617,40 @@ They will not be listed again, even if a later scan finds them.`)) {
 
   function flowStep(flow) {
     const step = flow.step;
+    // Answering is not instant: the pipeline picks the answer up on its own
+    // schedule and may spend a while before it publishes the next question.
+    // Nothing said so, so Save appeared to do nothing, and pressing it again
+    // was answered with "that question has already been answered" -- an error
+    // about having been too patient the first time.
     const send = async (value) => {
+      const card = $(`#flow-${CSS.escape(flow.id)}`);
+      if (state.answering.has(step.id)) return;
+      state.answering.add(step.id);
+      if (card) {
+        card.classList.add('answering');
+        $$('button, input, select, textarea', card).forEach((c) => { c.disabled = true; });
+        const controls = $('.step-controls', card);
+        if (controls) controls.append(el('span', { class: 'hint answering-note' },
+                                          'Sent. Waiting for the upload to carry on…'));
+      }
       try {
         await api(`/api/flows/${flow.id}/answer`, {
           method: 'POST',
           body: { step_id: step.id, value },
         });
       } catch (e) {
-        toast(e.message, 'bad');
+        // A 409 means the question had already moved on -- the answer is in,
+        // and the next poll will draw whatever came next. That is not a
+        // failure worth putting in front of anybody.
+        if (!/already been answered/i.test(e.message)) {
+          state.answering.delete(step.id);
+          if (card) {
+            card.classList.remove('answering');
+            $$('button, input, select, textarea', card).forEach((c) => { c.disabled = false; });
+            $('.answering-note', card)?.remove();
+          }
+          toast(e.message, 'bad');
+        }
       }
     };
 
@@ -6720,6 +6828,10 @@ They will not be listed again, even if a later scan finds them.`)) {
   function renderFlow(flow) {
     const container = $('#upload-flows');
     if (!container) return;
+
+    // A question this page has not answered yet means the last one arrived and
+    // was acted on, so the guard that stopped it being sent twice is spent.
+    if (flow.step && !state.answering.has(flow.step.id)) state.answering.clear();
 
     let card = $(`#flow-${flow.id}`);
     if (!card) {

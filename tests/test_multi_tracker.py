@@ -217,6 +217,17 @@ def blacklist_checks() -> None:
     check("nor does a request check offer one as a fill",
           'self.store.get("dismissed", str(match.deezer_id or ""))' in checker, "")
 
+    # The trackers are asked only once Deezer has produced a confident match:
+    # every earlier failure returns before reaching them, so a request that
+    # goes nowhere costs no tracker call beyond the one that read it.
+    where = checker.index("async def _locate")
+    decide = checker.index('match.status = "fillable"')
+    check("and the trackers are only asked after Deezer has answered",
+          decide < checker.index("await self._locate(match)"), "")
+    check("with every earlier failure returning first",
+          checker[:decide].count("return match") >= 6, str(checker[:decide].count("return match")))
+    check("and _locate itself asking each tracker once", where > 0, "")
+
     api = pathlib.Path("lox/web/api.py").read_text(encoding="utf-8")
     check("the blacklist is a list you can read back",
           '@routes.get("/api/blacklist")' in api, "")
@@ -407,6 +418,53 @@ def ui_checks() -> None:
     check("nothing hands a bare conditional to replaceChildren",
           "function fill(node, ...children)" in js
           and "fill(bar," in js and "fill(host," in js and "fill(panel," in js, "")
+
+    # Dropping a chip onto the one to its right used to insert it before that
+    # one -- which is exactly where it already was -- so dragging right did
+    # nothing while dragging left worked.
+    check("a tracker dropped on another takes that one's position",
+          "const to = target ? state.uploadTrackers.indexOf(target)" in js
+          and "order.splice(to, 0, code);" in js, "")
+
+    # The queue's default action is the one that finishes the job. Downloading
+    # alone leaves the release in the download folder waiting for a second
+    # decision nobody meant to make.
+    check("the queue's default is download and upload",
+          '<button class="primary" id="found-upload">' in shell, "")
+    check("and the queue says which pressing a row is",
+          "label: 'Year'," in js and '"year": str(entry.get("year")' in
+          pathlib.Path("lox/web/api.py").read_text(encoding="utf-8"), "")
+
+    # One store, one answer. A re-check from the queue wrote the same album
+    # record the scan's history reads, but each screen kept its own copy of
+    # what it last read -- so the queue dropped the row and the history went on
+    # showing the answer from before.
+    check("a check drops every screen's cached copy",
+          "function releasesChanged" in js, "")
+    check("and is called wherever a check finishes",
+          js.count("releasesChanged();") >= 4, str(js.count("releasesChanged();")))
+
+    # Answering is not instant. Nothing said so, so Save looked like it had
+    # done nothing and a second press was met with "that question has already
+    # been answered" -- an error about having been patient.
+    check("an answer on its way says so", "answering-note" in js and "state.answering" in js, "")
+    check("and cannot be sent twice", "if (state.answering.has(step.id)) return;" in js, "")
+    check("nor reports the second one as a failure",
+          "already been answered/i.test(e.message)" in js, "")
+
+    # A status poll can be in flight while a switch is clicked, carrying the
+    # value from before it. Landing after the save it put the box back, so the
+    # toast said "on" and the box was off.
+    check("an upload switch is read back rather than assumed",
+          "const stored = key === 'upload.dry_run'" in js, "")
+    check("and a poll cannot undo a click it raced",
+          "state.flagWrittenAt" in js and "SETTLE_MS" in js, "")
+
+    # lox uploads music.
+    check("podcast channels are not offered for browsing",
+          "_PODCAST_RE" in pathlib.Path("lox/deezer/explore.py").read_text(encoding="utf-8"), "")
+    check("and a channel borrows a genre picture where the names agree",
+          "def _genre_picture" in pathlib.Path("lox/deezer/explore.py").read_text(encoding="utf-8"), "")
 
     # One frame, not three. Each track was its own dark rectangle inside the
     # panel's rectangle, with a hairline down the middle of every pair.

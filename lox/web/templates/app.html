@@ -312,8 +312,11 @@
             your trackers. Each row says where it is missing from, where it came from, and how
             long it has been waiting.</p>
           <div class="row">
-            <button class="primary" id="found-download">Download selected</button>
-            <button id="found-upload">Download &amp; upload selected</button>
+            <!-- The default is the one that finishes the job. Downloading on
+                 its own leaves the release in the download folder waiting for
+                 a second decision nobody meant to make. -->
+            <button class="primary" id="found-upload">Download &amp; upload selected</button>
+            <button id="found-download">Download selected</button>
             <button id="found-recheck">Re-check on trackers</button>
             <!-- Two ways off the list, because they answer different
                  questions: one forgets the row so a later scan can find it
