@@ -2200,6 +2200,10 @@ async def api_folder_delete(request: web.Request) -> web.Response:
     except OSError as e:
         return error(f"could not delete {path}: {e}", status=500)
 
+    # The download that fetched it is now a row about a folder that is not
+    # there, with a Delete button for a path that has gone. Dropping it is the
+    # same tidy-up an upload already does.
+    _forget_download(request.app["downloader"], path)
     debug.log("deleted release folder %s", path, level=20)
     return json_response({"deleted": path})
 

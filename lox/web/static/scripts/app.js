@@ -3054,8 +3054,14 @@
             job.status === 'queued' || job.status === 'running'
               ? el('button', { class: 'ghost', onclick: () => cancelDownload(job.id) }, 'Cancel')
               : el('span', { class: `tag ${cls === 'done' ? 'ok' : cls === 'failed' ? 'bad' : 'dim'}` }, `${job.percent}%`),
-            // Only once there is something on disk to remove.
-            job.status === 'done' && job.folder
+            // Whenever there is something on disk to remove, however the
+            // download ended. This was done-only, so a download that failed
+            // partway -- nine of ten tracks, the folder sitting there named
+            // [WEB FLAC] with a hole in it -- had no way off the page at all:
+            // Cancel was gone, Delete never appeared, and Clear finished drops
+            // the row while leaving the folder behind. A failure is the case
+            // you most need this for.
+            job.folder && job.status !== 'queued' && job.status !== 'running'
               ? el(
                   'button',
                   {

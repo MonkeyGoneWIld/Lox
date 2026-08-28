@@ -585,6 +585,17 @@ def ui_checks() -> None:
           "const receipt = table.kind === 'tags' || table.kind === 'album_tags';" in js
           and "open: !receipt && table.rows.length <= 40" in js, "")
 
+    # A download that fails partway leaves a real folder behind -- the folder
+    # is made before the first track is fetched. Delete was shown only for
+    # status "done", so that folder had no way off the page: Cancel had gone,
+    # Delete never appeared, and Clear finished drops the row and leaves the
+    # files.
+    check("a failed download can have its folder deleted",
+          "job.folder && job.status !== 'queued' && job.status !== 'running'" in js
+          and "job.status === 'done' && job.folder" not in js, "")
+    check("and the row goes with the folder",
+          '_forget_download(request.app["downloader"], path)' in web_api, "")
+
     # An alias album id must not sink every private lookup after it.
     gw_py = pathlib.Path("lox/deezer/gw.py").read_text(encoding="utf-8")
     check("an album the gateway will not answer for is resolved once",
