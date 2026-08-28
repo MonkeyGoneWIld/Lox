@@ -519,6 +519,7 @@ def ui_checks() -> None:
     check("a finished run can be dismissed", "def dismiss(self, flow_id: str)" in
           pathlib.Path("lox/flow.py").read_text(encoding="utf-8"), "")
     web_api = pathlib.Path("lox/web/api.py").read_text(encoding="utf-8")
+    css = pathlib.Path("lox/web/static/css/app.css").read_text(encoding="utf-8")
     check("with an endpoint that refuses to drop a running one",
           '@routes.post("/api/flows/{flow_id}/dismiss")' in web_api
           and '"that run is not finished"' in web_api, "")
@@ -624,9 +625,47 @@ def ui_checks() -> None:
           and js.count("keepAddress(") >= 3, str(js.count("keepAddress(")))
 
     # A run that finds three fillable requests out of two hundred said
-    # "200 checked" and left the three to be found by scrolling.
-    check("what a check found is put at the top",
-          "function liftQualifying()" in js and "can be filled — they are at the top" in js, "")
+    # "200 checked" and left the three to be found by scrolling. Re-ordering
+    # the results was not enough: they are still in among the two hundred, and
+    # the point is to look at them before anything is downloaded.
+    check("what a check queued gets its own table",
+          "function renderQueued()" in js and 'id="requests-queued-panel"' in shell, "")
+    check("with the release, the request it fills and how confident the match was",
+          "label: 'Fills'," in js and "label: 'Confidence'," in js, "")
+    check("and a way to disagree on every row",
+          "dismissRows([queueRowFor(r)], false)" in js
+          and "dismissRows([queueRowFor(r)], true)" in js, "")
+    check("cleared when the next run starts, so it is about that run",
+          "$('#requests-queued')?.replaceChildren()" in js, "")
+
+    # The filter menu was written against two variables this stylesheet does
+    # not have, so it had no ground and no edge and the table showed through.
+    check("no rule reaches for a variable that does not exist",
+          not any(f"var(--{name})" in css
+                  for name in ("panel", "line", "hover", "input-bg")), "")
+    check("the menu has a ground of its own",
+          ".th-choices {" in css and "background: var(--bg-raised);" in css, "")
+    check("and says it opens", ".th-choicebox > summary::after" in css, "")
+    check("and says when it is narrowing something",
+          "th-choicebox-on" in css and "th-choicebox-on" in js, "")
+    check("without the header's uppercase reaching the values inside it",
+          css.count("text-transform: none;") >= 3, str(css.count("text-transform: none;")))
+
+    # A saved-search list grows without limit and sits between the scan box and
+    # its own results.
+    check("the saved searches can be folded away",
+          'class="panel panel-fold"' in shell and ".panel-fold > summary" in css, "")
+    check("and the fold is remembered",
+          "function rememberFold(id)" in js and "rememberFold('watchlist-panel')" in js, "")
+
+    # "not checked" was said of an album the sweep passed over and of one still
+    # waiting behind the tracker, which are different facts.
+    check("a skipped album says why it was skipped",
+          "skipped_reason" in js and "'not looked up'" in js, "")
+    check("and one still to be checked says that instead",
+          "'waiting')" in js, "")
+    check("without the sweep then spending a call on it",
+          "state.candidates.filter((c) => !c.skipped_reason)" in js, "")
 
     # Refusing a match, from the list and from the side-by-side view where the
     # two are actually being compared.

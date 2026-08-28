@@ -174,8 +174,15 @@
           <div class="joblog" id="missing-check-log" hidden></div>
         </div>
 
-        <div class="panel">
-          <h2>Saved searches</h2>
+        <!-- Collapsible, because a long list of saved searches is taller than
+             the screen and sits between the scan box and its own results.
+             A details element rather than a script: it remembers nothing by
+             itself, so the state is kept alongside. -->
+        <details class="panel panel-fold" id="watchlist-panel" open>
+          <summary>
+            <h2>Saved searches</h2>
+            <span class="hint" id="watchlist-summary"></span>
+          </summary>
           <p class="hint">Links you kept. Deezer names them; rename any of them if its name is unhelpful.
             Scanning several at once is one scan over all of them.</p>
           <div class="row">
@@ -185,7 +192,7 @@
             <span class="hint" id="watchlist-count"></span>
           </div>
           <div id="watchlists"></div>
-        </div>
+        </details>
 
         <div class="panel" id="missing-candidates-panel" hidden>
           <h2>Results</h2>
@@ -284,6 +291,16 @@
              was a toast, which vanished -- for the one number that decides
              whether to read more pages, the wrong place to put it. -->
         <div class="requests-summary" id="requests-summary" hidden></div>
+        <!-- What the run actually produced, above the hundreds of rows that
+             produced nothing. A check of two hundred requests that finds three
+             worth filling is a run about those three, and they are also the
+             ones worth a second pair of eyes before anything is uploaded. -->
+        <div class="panel" id="requests-queued-panel" hidden>
+          <h2>Added to the queue</h2>
+          <p class="hint">What this check matched and sent to the queue. Worth a look before
+            any of it is downloaded &mdash; a wrong match is refused here.</p>
+          <div id="requests-queued"></div>
+        </div>
         <div id="requests-results"></div>
         </div>
 

@@ -1337,64 +1337,123 @@ select.th-filter { padding-right: 22px; }
    entire verdict happened to read that, and a fact only ever drawn as a tag
    ("already on tracker") was not in the list at all.
 
-   details/summary rather than a popover: it opens in place and closes on the
-   next click without a line of script. */
-.th-choicebox { position: relative; max-width: 220px; }
-.th-choicebox > summary {
+   details/summary rather than a popover library: it opens in place and closes
+   on the next click without a line of script.
+
+   Written first against --panel and --line, neither of which this stylesheet
+   has: both resolved to nothing, so the menu had no ground and no edge and the
+   table showed straight through it. */
+/* A panel that can be folded away. The saved searches grow without limit and
+   sit between the scan box and its own results, so a long list pushed the
+   thing you came to read off the screen. */
+.panel-fold > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   cursor: pointer;
   list-style: none;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--input-bg, var(--panel));
+}
+.panel-fold > summary::-webkit-details-marker { display: none; }
+.panel-fold > summary::marker { content: ""; }
+.panel-fold > summary h2 { margin: 0; }
+.panel-fold > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid var(--text-dim);
+  transition: transform 0.12s ease;
+}
+.panel-fold[open] > summary::before { transform: rotate(90deg); }
+.panel-fold > summary:hover::before { border-left-color: var(--accent); }
+/* Folded, the heading is the whole panel, so it should not keep the gap the
+   open one leaves under it. */
+.panel-fold:not([open]) { padding-bottom: 14px; }
+
+.th-choicebox { position: relative; max-width: 220px; }
+.th-choicebox > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
   color: var(--text);
+  /* The header uppercases and letter-spaces its own text, which is right for
+     a column label and wrong for the value of a control sitting under it. */
+  text-transform: none;
+  letter-spacing: normal;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .th-choicebox > summary::-webkit-details-marker { display: none; }
+/* The value takes the room and truncates; the arrow keeps its own. */
+.th-choice-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.th-choicebox > summary::marker { content: ""; }
+/* Something to say it opens. Without it the control read as a label. */
 .th-choicebox > summary::after {
-  content: '▾';
-  position: absolute;
-  right: 7px;
-  top: 4px;
-  color: var(--text-dim);
-  pointer-events: none;
+  content: "";
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid var(--text-dim);
+  transition: transform 0.12s ease;
 }
 .th-choicebox[open] > summary { border-color: var(--accent); }
+.th-choicebox[open] > summary::after { transform: rotate(180deg); }
+.th-choicebox > summary:hover { border-color: var(--accent-edge); }
+/* Narrowed to something, so the column says so without being opened. */
+.th-choicebox.th-choicebox-on > summary { border-color: var(--accent); color: var(--accent); }
+
 .th-choices {
   position: absolute;
-  z-index: 30;
+  z-index: 40;
   top: calc(100% + 4px);
   left: 0;
   min-width: 100%;
+  width: max-content;
   max-width: 320px;
   max-height: 320px;
   overflow-y: auto;
   padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* Opaque, and lifted off the rows underneath. */
+  background: var(--bg-raised);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 55%);
   text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
 }
 .th-choices-head {
   display: flex;
   gap: 10px;
   padding: 2px 4px 6px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--border-soft);
   margin-bottom: 4px;
 }
 .th-choice {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 3px 4px;
+  padding: 4px 5px;
+  border-radius: var(--radius);
   font-size: 12px;
   font-weight: 400;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
   white-space: nowrap;
   cursor: pointer;
 }
-.th-choice:hover { background: var(--hover, rgb(255 255 255 / 4%)); border-radius: 4px; }
+.th-choice:hover { background: var(--bg-input); }
 .th-choice input { flex: 0 0 auto; margin: 0; }
 
 /* A lower and an upper limit, side by side and equally wide -- and, for a

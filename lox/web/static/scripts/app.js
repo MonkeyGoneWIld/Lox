@@ -391,9 +391,15 @@
               el('span', {}, option))));
           // A details/summary rather than a popover library: it opens in place,
           // closes on the next click anywhere, and needs no script to do it.
-          control = el('details', { class: 'th-choicebox' },
-            el('summary', { class: 'th-filter', title: `Filter by ${column.label.toLowerCase()}` },
-               summary),
+          // Says it is narrowing something without being opened, so a column
+          // quietly filtering half the table cannot be missed.
+          control = el('details', { class: `th-choicebox${chosen.length ? ' th-choicebox-on' : ''}` },
+            el('summary', {
+              class: 'th-filter',
+              title: chosen.length
+                ? `${column.label}: ${chosen.join(', ')}`
+                : `Filter by ${column.label.toLowerCase()}`,
+            }, el('span', { class: 'th-choice-value' }, summary)),
             panel);
         } else if (column.filter === 'range' || column.filter === 'days') {
           const isDays = column.filter === 'days';
@@ -565,6 +571,28 @@
     return el('span', {},
       el('div', {}, ago(stamp)),
       el('span', { class: 'hint' }, [checkedOn(stamp), note].filter(Boolean).join(' \u00b7 ')));
+  }
+
+  /**
+   * Remember whether a collapsible panel is open.
+   *
+   * A details element forgets on every reload, and a panel you collapse
+   * because it is too tall to scroll past is one you want to stay collapsed.
+   * Wrapped, because storage throws in a private window rather than returning
+   * nothing, and a filter panel is not worth an exception.
+   *
+   * @param {string} id - The element id, which is also the storage key.
+   */
+  function rememberFold(id) {
+    const node = document.getElementById(id);
+    if (!node) return;
+    try {
+      const kept = localStorage.getItem(`fold:${id}`);
+      if (kept !== null) node.open = kept === 'open';
+    } catch { /* no storage; the markup's own default stands */ }
+    node.addEventListener('toggle', () => {
+      try { localStorage.setItem(`fold:${id}`, node.open ? 'open' : 'shut'); } catch { /* ignore */ }
+    });
   }
 
   const empty = (message) => el('p', { class: 'empty' }, message);
@@ -2710,6 +2738,12 @@
     $('#watchlist-delete').disabled = n === 0;
     $('#watchlist-scan-all').disabled = state.watchlists.length === 0;
     $('#watchlist-count').textContent = shown.length ? `${n} of ${shown.length} selected` : '';
+    // On the fold itself, so a collapsed panel still says how much is inside.
+    const folded = $('#watchlist-summary');
+    if (folded) {
+      const total = (state.watchlists || []).length;
+      folded.textContent = total ? `${total} kept` : '';
+    }
   }
 
   function renderWatchlists() {
@@ -3342,11 +3376,26 @@
             $('#missing-scan').disabled = false;
             return toast(job.error, 'bad');
           }
-          jobFinished(log, `${state.candidates.length} album(s) after the Deezer-side filters.`);
+          // Every album the sweep passed over, and why. These used to go
+          // into a collapsed note with a count on it, so a scan that looked
+          // at nine albums and checked four gave no way to see what happened
+          // to the other five, or on what grounds.
+          const passed = job.events.filter((e) => e.event === 'skipped').flatMap((e) => e.albums || []);
+          state.candidates.push(...passed.map((a) => ({
+            album_id: String(a.album_id),
+            title: a.title || '',
+            artist: a.artist || '',
+            source: a.source || '',
+            skipped_reason: a.reason || 'skipped',
+          })));
+          jobFinished(log, `${state.candidates.filter((c) => !c.skipped_reason).length} album(s) `
+            + `after the Deezer-side filters`
+            + (passed.length ? `, and ${passed.length} passed over.` : '.'));
           // Seeded once, here. Deriving it inside the render meant unticking
           // "select all" emptied the set and the next render immediately
           // refilled it, so the control appeared to do nothing.
-          state.selectedCandidates = new Set(state.candidates.map((c) => c.album_id));
+          state.selectedCandidates = new Set(
+            state.candidates.filter((c) => !c.skipped_reason).map((c) => c.album_id));
           renderCandidates();
           if (!state.candidates.length) {
             $('#missing-scan').disabled = false;
@@ -3383,7 +3432,7 @@
   /** The result column as one phrase, so it can be filtered and sorted on. */
   function scanOutcome(c) {
     const result = scanResultOf(c);
-    if (!result) return 'not checked';
+    if (!result) return c.skipped_reason || 'waiting to be checked';
     const parts = [
       ...(result.missing_from || []).map((t) => `${t} missing`),
       ...(result.found_on || []).map((t) => `${t} has it`),
@@ -3395,7 +3444,15 @@
   /** The result cell, with every verdict as somewhere to go and check. */
   function scanResultCell(c) {
     const result = scanResultOf(c);
-    if (!result) return el('span', { class: 'tag dim' }, 'not checked');
+    // "not checked" was said both of an album the sweep deliberately passed
+    // over and of one still in the queue behind the tracker, which are
+    // different facts and only one of them is an answer.
+    if (!result && c.skipped_reason) {
+      return el('span', {},
+        el('span', { class: 'tag dim' }, 'not looked up'),
+        el('div', { class: 'hint' }, c.skipped_reason));
+    }
+    if (!result) return el('span', { class: 'tag dim' }, 'waiting');
     const links = trackerLinks({ ...result, artist: c.artist, title: c.title });
     const parts = [
       ...(result.missing_from || []).map((t) =>
@@ -3477,8 +3534,12 @@
     const trackers = [...state.missingTrackers];
     if (!trackers.length) return toast('Pick at least one tracker', 'bad');
     const shown = tableView('candidates').shown || state.candidates;
+    // "all" means everything the sweep collected, which is not the same as
+    // everything on screen: the rows it deliberately passed over are listed so
+    // the reason can be read, and checking them again is what ticking one and
+    // pressing Check is for.
     const candidates = all
-      ? state.candidates
+      ? state.candidates.filter((c) => !c.skipped_reason)
       : shown.filter((c) => state.selectedCandidates.has(c.album_id));
     if (!candidates.length) return toast('Nothing to check', 'bad');
 
@@ -4477,12 +4538,14 @@ It leaves the queue and will not be matched to this request again. The request s
       // three worth filling used to say "Done. 200 request(s) checked" and
       // leave the three to be found by scrolling -- and they are the whole
       // reason the check was run.
-      const qualified = liftQualifying();
+      const qualified = renderQueued();
       jobFinished(log, stoppedEarly
         ? `Stopped after ${stoppedEarly.checked} request(s): the tracker will not answer any more just yet. `
           + 'Run it again shortly.'
         : `Done. ${checked} request(s) checked.`
-          + (qualified ? ` ${qualified} can be filled — they are at the top.` : ' None can be filled.'));
+          + (qualified
+            ? ` ${qualified} added to the queue — they are listed above.`
+            : ' None can be filled.'));
     } catch (e) {
       done();
       toast(e.message, 'bad');
@@ -4490,25 +4553,113 @@ It leaves the queue and will not be matched to this request again. The request s
   }
 
   /**
-   * Put the requests worth acting on at the top of the list.
+   * List what the run sent to the queue, in its own table above the results.
    *
-   * A check of two hundred requests that finds three worth filling left the
-   * three wherever the tracker's own ordering had put them. They are what the
-   * run was for, and they are also the ones that want looking at by hand --
-   * a wrong match is refused from this list.
+   * A check of two hundred requests that finds three worth filling reported
+   * "200 checked" and left the three to be found by scrolling. They are what
+   * the run was for, and they are the ones that want a second pair of eyes:
+   * a match is the matcher's opinion, and it is cheaper to disagree with it
+   * here than after the release has been downloaded and posted.
    *
-   * A stable partition rather than a sort, so within each half the order the
-   * tracker gave is kept.
-   *
-   * @returns {number} How many qualified.
+   * @returns {number} How many were added.
    */
-  function liftQualifying() {
-    const canFill = (row) => Boolean(requestResult(row)?.fillable);
-    const yes = state.requestRows.filter(canFill);
-    if (!yes.length || yes.length === state.requestRows.length) return yes.length;
-    state.requestRows = [...yes, ...state.requestRows.filter((r) => !canFill(r))];
-    renderRequestRows();
-    return yes.length;
+  /**
+   * A match as the queue's own dismiss understands it.
+   *
+   * The queue is keyed by Deezer release and names one in its confirmation;
+   * a match calls those fields something else.
+   *
+   * @param {object} match - A fillable request match.
+   * @returns {object} A row for dismissRows.
+   */
+  const queueRowFor = (match) => ({
+    id: match.deezer_id,
+    album_id: match.deezer_id,
+    artist: match.deezer_artist || match.artist || '',
+    title: match.deezer_title || match.album || '',
+  });
+
+  function renderQueued() {
+    const panel = $('#requests-queued-panel');
+    const host = $('#requests-queued');
+    if (!panel || !host) return 0;
+
+    const rows = state.requestRows
+      .map((row) => ({ row, match: requestResult(row) }))
+      .filter(({ match }) => match && match.fillable)
+      .map(({ row, match }) => ({ ...match, id: String(match.request_id ?? row.id), row }));
+
+    panel.hidden = rows.length === 0;
+    if (!rows.length) { host.replaceChildren(); return 0; }
+
+    host.replaceChildren(dataTable({
+      name: 'queued',
+      rows,
+      idOf: (r) => `${r.tracker || ''}:${r.id}`,
+      empty: 'Nothing was added.',
+      columns: [
+        {
+          label: 'Release',
+          text: true,
+          value: (r) => `${r.deezer_artist || ''} ${r.deezer_title || ''}`.trim(),
+          filter: 'text',
+          cell: (r) => (r.deezer_id
+            ? el('a', {
+                href: albumHref(r.deezer_id),
+                onclick: (e) => { e.preventDefault(); goAlbum(r.deezer_id); },
+              }, `${r.deezer_artist || '?'} — ${r.deezer_title || ''}`)
+            : el('span', {}, `${r.deezer_artist || '?'} — ${r.deezer_title || ''}`)),
+        },
+        {
+          label: 'Fills',
+          value: (r) => `${r.tracker || ''} ${r.id}`,
+          filter: 'text',
+          cell: (r) => (r.request_url
+            ? el('a', { href: r.request_url, target: '_blank', rel: 'noopener', class: 'tag warn' },
+                 `${r.tracker || ''} #${r.id}`)
+            : el('span', { class: 'tag warn' }, `${r.tracker || ''} #${r.id}`)),
+        },
+        {
+          label: 'Trackers',
+          class: 'found-trackers',
+          value: trackerSummary,
+          parts: trackerParts,
+          filter: 'choice',
+          cell: (r) => el('span', {}, ...trackerTags(r)),
+        },
+        {
+          label: 'Confidence',
+          value: (r) => Number(r.confidence) || 0,
+          filter: 'range',
+          class: 'nowrap',
+          cell: (r) => el('span', {}, r.confidence ? `${Math.round(r.confidence * 100)}%` : '—'),
+        },
+        {
+          // Disagreeing with the matcher, where the matcher has just spoken.
+          label: '',
+          filter: false,
+          class: 'row-actions',
+          cell: (r) => el('span', {},
+            el('button', {
+              class: 'ghost',
+              title: 'This release does not fill this request. It leaves the queue and will not '
+                     + 'be matched to it again; the request stays open.',
+              onclick: (e) => { e.stopPropagation(); rejectMatch(r); },
+            }, 'Not this'),
+            el('button', {
+              class: 'ghost',
+              title: 'Take the release off the queue. A later check can find it again.',
+              onclick: (e) => { e.stopPropagation(); dismissRows([queueRowFor(r)], false); },
+            }, 'Remove'),
+            el('button', {
+              class: 'danger',
+              title: 'Never list this release again.',
+              onclick: (e) => { e.stopPropagation(); dismissRows([queueRowFor(r)], true); },
+            }, 'Blocklist')),
+        },
+      ],
+    }));
+    return rows.length;
   }
 
   /**
@@ -4523,6 +4674,10 @@ It leaves the queue and will not be matched to this request again. The request s
   function clearSkipped() {
     const host = $('#requests-skipped');
     if (host) { host.replaceChildren(); host.hidden = true; }
+    // Last run's additions belong to last run. Left up, the panel reads as
+    // this run having queued them.
+    const queued = $('#requests-queued-panel');
+    if (queued) { queued.hidden = true; $('#requests-queued')?.replaceChildren(); }
   }
 
   // What a run did not do, and why.
@@ -8384,6 +8539,7 @@ They will not be listed again, even if a later scan finds them.`)) {
       setUploadFlag('upload.dry_run', e.target, 'Dry run'));
     $('#upload-yes-all').addEventListener('change', (e) =>
       setUploadFlag('upload.yes_all', e.target, 'Auto-answer prompts'));
+    rememberFold('watchlist-panel');
     refreshStatus();
     setInterval(refreshStatus, 15000);
 
