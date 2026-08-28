@@ -271,6 +271,81 @@ async def main() -> int:
     flow5.answer(step5.id, "*")
     check("and it is the answer the pipeline receives", await asyncio.wait_for(task5, timeout=2) == "*", "")
 
+    # --- the form can answer the error it shows ---------------------
+    # "Ronan - Instrumental Remixes Vol. 4" reached the metadata form with
+    # tracks that had no main artist, which the trackers refuse. The form
+    # printed "You must have at least one main artist per track" and offered
+    # track TITLES and nothing else, so Save could only re-ask the same
+    # question -- from the outside, a button that did nothing, forever.
+    from lox.tagger import metadata_validator_base
+
+    flow6 = Flow("upload", "meta-track-artists")
+    metadata6 = fresh_metadata()
+    metadata6["source"] = "WEB"
+    metadata6["tracks"]["1"]["1"]["artists"] = [("Nikki Ocean", "guest")]
+    try:
+        metadata_validator_base(dict(metadata6))
+        reached = False
+    except InvalidMetadataError as e:
+        reached = "main artist per track" in str(e)
+    check("a track with no main artist is refused by the validator", reached, "")
+
+    with FlowPrompts(flow6, ""):
+        task6 = asyncio.create_task(review.review_metadata(metadata6, metadata_validator_base))
+        step6 = await wait_for_step(flow6)
+        rows = next(s for s in step6.options if s["group"] == "Tracks")["fields"][0]["rows"]
+        check("the form offers the track's artists as a field",
+              rows[0]["artists"] == "Nikki Ocean", str(rows[0]))
+        check("with the role each name already has",
+              rows[1]["roles"] == [{"name": "Mohamed Hamaki", "role": "main"},
+                                   {"name": "Sherine", "role": "main"}], str(rows[1].get("roles")))
+
+        flow6.answer(step6.id, {
+            "tracks": {
+                "1/1": {"title": "Beyoulolek Eih", "artists": "Mohamed Hamaki, Nikki Ocean"},
+                "1/2": {"title": "Mesheety", "artists": "Mohamed Hamaki, Sherine"},
+            },
+        })
+        await asyncio.wait_for(task6, timeout=2)
+
+    first = metadata6["tracks"]["1"]["1"]["artists"]
+    check("editing a track's artists gets past the form",
+          first == [("Mohamed Hamaki", "main"), ("Nikki Ocean", "guest")], str(first))
+    check("and the role a name already had is kept",
+          metadata6["tracks"]["1"]["2"]["artists"] == [("Mohamed Hamaki", "main"), ("Sherine", "main")],
+          str(metadata6["tracks"]["1"]["2"]["artists"]))
+
+    # Nobody should have to know that "main" is the word. A track whose names
+    # are all guests still needs one, so the first name written becomes it.
+    flow7 = Flow("upload", "meta-track-promote")
+    metadata7 = fresh_metadata()
+    metadata7["source"] = "WEB"
+    metadata7["artists"] = [("Mohamed Hamaki", "main"), ("Sherine", "guest")]
+    with FlowPrompts(flow7, ""):
+        task7 = asyncio.create_task(review.review_metadata(metadata7, metadata_validator_base))
+        step7 = await wait_for_step(flow7)
+        flow7.answer(step7.id, {"tracks": {"1/1": {"title": "Beyoulolek Eih", "artists": "Sherine, Nikki Ocean"}}})
+        await asyncio.wait_for(task7, timeout=2)
+    promoted = metadata7["tracks"]["1"]["1"]["artists"]
+    check("a track of guests takes the first name written as its main artist",
+          promoted == [("Sherine", "main"), ("Nikki Ocean", "guest")], str(promoted))
+    check("and a track left out of the answer is untouched",
+          metadata7["tracks"]["1"]["2"]["artists"] == [("Mohamed Hamaki", "main"), ("Sherine", "main")],
+          str(metadata7["tracks"]["1"]["2"]["artists"]))
+
+    # An emptied box is a mistake, not an instruction to credit nobody.
+    flow8 = Flow("upload", "meta-track-blank")
+    metadata8 = fresh_metadata()
+    metadata8["source"] = "WEB"
+    with FlowPrompts(flow8, ""):
+        task8 = asyncio.create_task(review.review_metadata(metadata8, metadata_validator_base))
+        step8 = await wait_for_step(flow8)
+        flow8.answer(step8.id, {"tracks": {"1/1": {"title": "Beyoulolek Eih", "artists": "  ,  "}}})
+        await asyncio.wait_for(task8, timeout=2)
+    check("clearing the box leaves the credits alone rather than emptying them",
+          metadata8["tracks"]["1"]["1"]["artists"] == [("Mohamed Hamaki", "main")],
+          str(metadata8["tracks"]["1"]["1"]["artists"]))
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     if failed:

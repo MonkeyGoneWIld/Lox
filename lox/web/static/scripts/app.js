@@ -6202,15 +6202,23 @@ They will not be listed again, even if a later scan finds them.`)) {
         }
 
         if (section.kind === 'tracks') {
+          // The artists were printed here, greyed. The trackers refuse a track
+          // with no main artist, so the form could show that error and offer
+          // no field that answered it -- Save could only ask the same question
+          // again, which is exactly what it looked like from the outside.
           field.append(el('div', { class: 'meta-tracks' },
             ...section.rows.map((row) => {
               const input = el('input', { type: 'text' });
               input.value = row.value || '';
               input.addEventListener('input', () => (row.value = input.value));
+              const who = el('input', { type: 'text', class: 'meta-track-artists',
+                                        placeholder: 'Artists, separated by commas' });
+              who.value = row.artists || '';
+              who.addEventListener('input', () => (row.artists = who.value));
               return el('div', { class: 'meta-track' },
                 el('span', { class: 'meta-track-no' }, row.label || ''),
                 input,
-                row.artists ? el('span', { class: 'meta-track-artists' }, row.artists) : null);
+                who);
             })));
           return field;
         }
@@ -6255,7 +6263,8 @@ They will not be listed again, even if a later scan finds them.`)) {
         } else if (section.kind === 'list') {
           out[section.key] = section.rows.map((r) => r.value);
         } else if (section.kind === 'tracks') {
-          out.tracks = Object.fromEntries(section.rows.map((r) => [r.key, r.value ?? '']));
+          out.tracks = Object.fromEntries(
+            section.rows.map((r) => [r.key, { title: r.value ?? '', artists: r.artists ?? '' }]));
         } else {
           out[section.key] = section.value ?? '';
         }
@@ -6615,6 +6624,17 @@ They will not be listed again, even if a later scan finds them.`)) {
 
   const basename = (path) => String(path || '').split(/[\\/]/).filter(Boolean).pop() || '';
 
+  // Take a card out of the "sent, waiting" state. The class was only ever
+  // removed when sending FAILED, so a card that answered successfully stayed
+  // greyed for the rest of the run: every later question -- the spectrals
+  // among them -- was asked through a faded form that read as disabled.
+  function unbusy(card) {
+    if (!card) return;
+    card.classList.remove('answering');
+    $$('button, input, select, textarea', card).forEach((c) => { c.disabled = false; });
+    $$('.answering-note', card).forEach((note) => note.remove());
+  }
+
   function flowStep(flow) {
     const step = flow.step;
     // Answering is not instant: the pipeline picks the answer up on its own
@@ -6628,7 +6648,11 @@ They will not be listed again, even if a later scan finds them.`)) {
       state.answering.add(step.id);
       if (card) {
         card.classList.add('answering');
-        $$('button, input, select, textarea', card).forEach((c) => { c.disabled = true; });
+        // Only the question's own controls. Disabling the whole card took
+        // Cancel with it, and the header is not redrawn unless the run changes
+        // state -- so Cancel stayed dead for the rest of the upload.
+        $$('button, input, select, textarea', $('.flow-step', card) || card)
+          .forEach((c) => { c.disabled = true; });
         const controls = $('.step-controls', card);
         if (controls) controls.append(el('span', { class: 'hint answering-note' },
                                           'Sent. Waiting for the upload to carry on…'));
@@ -6644,11 +6668,7 @@ They will not be listed again, even if a later scan finds them.`)) {
         // failure worth putting in front of anybody.
         if (!/already been answered/i.test(e.message)) {
           state.answering.delete(step.id);
-          if (card) {
-            card.classList.remove('answering');
-            $$('button, input, select, textarea', card).forEach((c) => { c.disabled = false; });
-            $('.answering-note', card)?.remove();
-          }
+          unbusy(card);
           toast(e.message, 'bad');
         }
       }
@@ -6888,6 +6908,10 @@ They will not be listed again, even if a later scan finds them.`)) {
     const stepId = flow.step?.id || '';
     if (stepBox.dataset.step !== stepId) {
       stepBox.dataset.step = stepId;
+      // A new question means the last answer landed and the run moved on, so
+      // whatever it left disabled comes back. Done before the rebuild, so the
+      // controls outside the step box are reached too.
+      unbusy(card);
       stepBox.replaceChildren(...(flow.step ? [flowStep(flow)] : []));
     }
 

@@ -112,6 +112,46 @@ async def main() -> int:
     untouched, _ = scraper.refine_artists({}, album, tracks)
     check("with nothing to go on, nothing is changed", untouched == album, str(untouched))
 
+    # --- demotion is not allowed to empty a track --------------------
+    # "Ronan - Instrumental Remixes Vol. 4": the album is credited to Ronan
+    # and each track is credited to the singer it features, so every name on
+    # every track was a stranger to the album credits and each track came out
+    # of here with no main artist at all. The trackers require one, so the
+    # upload stopped on the metadata form with an error the form had no field
+    # to fix, and the release could not be posted to anywhere.
+    remixes = {
+        "1": {
+            "1": {"title": "Nikki", "artists": [("Nikki Ocean", "main"), ("Celso Mendes", "main"),
+                                                ("Ronan Instrumental", "remixer")]},
+            "2": {"title": "Ronan's Own", "artists": [("Ronan", "main"), ("Nikki Ocean", "main")]},
+        }
+    }
+    ronan_soup = {"artist": {"name": "Ronan"}, "contributors": [{"name": "Ronan", "role": "Main"}]}
+    ronan_album = [("Ronan", "main"), ("Nikki Ocean", "main"), ("Celso Mendes", "main")]
+    _fixed_album, ronan_tracks = scraper.refine_artists(ronan_soup, ronan_album, remixes)
+    first = ronan_tracks["1"]["1"]["artists"]
+    check("a track of strangers still has a main artist",
+          any(role == "main" for _n, role in first), str(first))
+    check("and it is the artist whose album it is",
+          first[0] == ("Ronan", "main"), str(first))
+    check("with the performers kept, as guests",
+          [n for n, _r in first] == ["Ronan", "Nikki Ocean", "Celso Mendes", "Ronan Instrumental"], str(first))
+    check("a specific role survives the promotion",
+          dict(first).get("Ronan Instrumental") == "remixer", str(first))
+    second = ronan_tracks["1"]["2"]["artists"]
+    check("and a track that already had one is not rewritten",
+          second == [("Ronan", "main"), ("Nikki Ocean", "guest")], str(second))
+
+    # An album with no main artist of its own has nothing to promote, so the
+    # track keeps the credits it arrived with rather than losing them to a
+    # rule that has no better answer.
+    only_remixer = {"contributors": [{"name": "DJ Someone", "role": "Remixer"}]}
+    _a, kept = scraper.refine_artists(
+        only_remixer, [("Nikki Ocean", "main")], {"1": {"1": {"artists": [("Nikki Ocean", "main")]}}}
+    )
+    check("a release with no main artist of its own keeps the track's",
+          kept["1"]["1"]["artists"] == [("Nikki Ocean", "main")], str(kept["1"]["1"]["artists"]))
+
     # --- the fields only the private page has ------------------------
     check("the original year comes from the private page, not this pressing",
           scraper.parse_release_group_year(SOUP) == 1994, str(scraper.parse_release_group_year(SOUP)))

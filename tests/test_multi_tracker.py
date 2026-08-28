@@ -452,6 +452,43 @@ def ui_checks() -> None:
     check("nor reports the second one as a failure",
           "already been answered/i.test(e.message)" in js, "")
 
+    # ...but the state it puts the card into was only ever taken off again
+    # when sending FAILED. A card that answered successfully stayed greyed for
+    # the rest of the run, so every later question -- the spectrals among them
+    # -- was asked through a form that looked disabled and read as broken.
+    check("the busy state is lifted in one place", "function unbusy(card)" in js, "")
+    redraw = js[js.index("stepBox.dataset.step = stepId;"):js.index("stepBox.replaceChildren")]
+    check("and lifted whenever the next question is drawn", "unbusy(card);" in redraw, redraw.strip()[:60])
+    check("with the note and the disabled controls going with it",
+          "card.classList.remove('answering');" in js
+          and "$$('.answering-note', card).forEach" in js, "")
+    check("and only the question's own controls are disabled, not Cancel",
+          "$('.flow-step', card) || card" in js, "")
+
+    # The trackers refuse a track with no main artist. The form showed that
+    # error and offered track titles and nothing else, so Save could only ask
+    # the same question again -- a button that did nothing, forever.
+    check("a track's artists are a field, not a caption",
+          "placeholder: 'Artists, separated by commas'" in js, "")
+    check("and are sent back with the title",
+          "{ title: r.value ?? '', artists: r.artists ?? '' }" in js, "")
+    flow_py = pathlib.Path("lox/upload_flow.py").read_text(encoding="utf-8")
+    check("the form offers the role each name already has",
+          '"roles": [{"name": name, "role": role}' in flow_py, "")
+    check("and a track left with no main artist is given one",
+          "def _track_artists" in flow_py
+          and 'people[0] = (people[0][0], "main")' in flow_py, "")
+    check("while an emptied box keeps the credits it had",
+          "if not people:" in flow_py and "return list(current)" in flow_py, "")
+    check("and the old title-only answer is still understood",
+          'edit = {"title": edit}' in flow_py, "")
+
+    # The demotion that caused it: an album credited to one artist whose tracks
+    # are credited to the singers they feature left every track with nobody.
+    deezer_py = pathlib.Path("lox/tagger/sources/deezer.py").read_text(encoding="utf-8")
+    check("demotion cannot empty a track",
+          "def fix_track" in deezer_py and "album_mains" in deezer_py, "")
+
     # A status poll can be in flight while a switch is clicked, carrying the
     # value from before it. Landing after the save it put the box back, so the
     # toast said "on" and the box was off.

@@ -174,10 +174,20 @@ class Scraper(DeezerBase, MetadataMixin):
         The album's own credits are the answer to who the release is by. Anyone
         else keeps whatever role their tracks gave them, and a bare "main"
         becomes a guest.
+
+        Demotion is never allowed to empty a track, though. On a release like
+        "Ronan - Instrumental Remixes Vol. 4" the album is credited to Ronan
+        and each track is credited to the singer it features, so every name on
+        every track was a stranger to the album credits and every track came
+        out of here with no main artist at all. The trackers require one, so
+        the upload stopped at the metadata form with an error the form had no
+        field to fix, and the release could not be posted at all. A track with
+        nobody left is a track by the artist whose album it is.
         """
         album = self._album_artists(soup)
         if not album:
             return artists, tracks
+        album_mains = [name for name, role in album.items() if role == "main"]
 
         def fix(pairs):
             out = []
@@ -188,9 +198,24 @@ class Scraper(DeezerBase, MetadataMixin):
                     out.append((name, _DEMOTED if role == "main" else role))
             return out
 
+        def fix_track(pairs):
+            out = fix(pairs)
+            if any(role == "main" for _name, role in out):
+                return out
+            # Prefer the release's own main artists, restoring their real
+            # capitalisation from the credits where the track carries it.
+            spelling = {name.lower(): name for name, _role in pairs}
+            restored = [(spelling.get(name, name.title()), "main") for name in album_mains]
+            if restored:
+                return restored + [(n, r) for n, r in out if n.lower() not in album_mains]
+            # An album with no main artist of its own -- nothing to promote, so
+            # the track keeps the credits it arrived with rather than losing
+            # them to a rule that has no better answer.
+            return list(pairs)
+
         for disc in tracks.values():
             for track in disc.values():
-                track["artists"] = fix(track["artists"])
+                track["artists"] = fix_track(track["artists"])
         return fix(artists), tracks
 
     @staticmethod

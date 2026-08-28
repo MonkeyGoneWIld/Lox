@@ -1643,18 +1643,19 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
   font-variant-numeric: tabular-nums;
 }
 .meta-track input { flex: 1 1 auto; min-width: 0; }
-.meta-track-artists {
-  flex: 0 0 190px;
+/* The artists of a track are editable now, so this is a field rather than a
+   caption. It keeps the quieter type, because the title is the thing being
+   read down the column and the credits are the exception you correct. */
+.meta-track input.meta-track-artists {
+  flex: 0 1 260px;
   color: var(--text-dim);
   font-size: 11.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
+.meta-track input.meta-track-artists:focus { color: var(--text); }
 
 @media (max-width: 720px) {
   .meta-track { flex-wrap: wrap; }
-  .meta-track-no, .meta-track-artists { flex-basis: auto; }
+  .meta-track-no, .meta-track input.meta-track-artists { flex-basis: auto; }
 }
 
 /* Editing metadata as a form rather than in vim. */

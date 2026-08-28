@@ -1025,7 +1025,11 @@ class FlowPrompts:
                 "key": f"{disc}/{num}",
                 "label": f"Disc {disc} · track {num}" if len(metadata.get("tracks") or {}) > 1 else f"Track {num}",
                 "value": track.get("title") or "",
+                # Editable, because the trackers refuse a track with no main
+                # artist and this is the only place that can be said. Roles
+                # ride along so a name keeps the one it already has.
                 "artists": ", ".join(name for name, _role in (track.get("artists") or [])),
+                "roles": [{"name": name, "role": role} for name, role in (track.get("artists") or [])],
             }
             for disc, disc_tracks in (metadata.get("tracks") or {}).items()
             for num, track in disc_tracks.items()
@@ -1071,12 +1075,13 @@ class FlowPrompts:
                  "value": metadata.get("comment") or ""},
             ]},
             {"group": "Tracks", "fields": [
-                {"kind": "tracks", "key": "tracks", "label": "Track titles", "rows": tracks},
+                {"kind": "tracks", "key": "tracks", "label": "Tracks", "rows": tracks,
+                 "hint": "Each track needs at least one main artist. The first name listed is the main "
+                         "one unless the credits above give it another role."},
             ]},
         ]
 
-    @staticmethod
-    def _apply_metadata(metadata: dict, answer: Any) -> None:
+    def _apply_metadata(self, metadata: dict, answer: Any) -> None:
         """Write a metadata form's answer back over the release.
 
         Only the keys the form sent are touched, so a field the form does not
@@ -1121,13 +1126,62 @@ class FlowPrompts:
                 if values or key == "urls":
                     metadata[key] = values
 
-        titles = answer.get("tracks")
-        if isinstance(titles, dict):
-            for key, title in titles.items():
+        edits = answer.get("tracks")
+        if isinstance(edits, dict):
+            album_roles = {name.lower(): role for name, role in (metadata.get("artists") or [])}
+            for key, edit in edits.items():
                 disc, _, num = str(key).partition("/")
-                text_title = str(title).strip()
-                if text_title and disc in metadata.get("tracks", {}) and num in metadata["tracks"][disc]:
-                    metadata["tracks"][disc][num]["title"] = text_title
+                if disc not in metadata.get("tracks", {}) or num not in metadata["tracks"][disc]:
+                    continue
+                track = metadata["tracks"][disc][num]
+                # The form used to send a bare title. Both shapes are read so
+                # an answer in flight across a restart still lands.
+                if not isinstance(edit, dict):
+                    edit = {"title": edit}
+
+                text_title = str(edit.get("title", "")).strip()
+                if text_title:
+                    track["title"] = text_title
+
+                if "artists" in edit:
+                    track["artists"] = self._track_artists(
+                        str(edit.get("artists") or ""), track.get("artists") or [], album_roles
+                    )
+
+    @staticmethod
+    def _track_artists(
+        written: str, current: list[tuple[str, str]], album_roles: dict[str, str]
+    ) -> list[tuple[str, str]]:
+        """The artists of one track, as edited, each with a role.
+
+        The form asks for names, because that is what a track credit reads
+        like. The role comes from what the name already had here, then from
+        what the release credits it as, and a track with nobody left as a main
+        artist takes its first name as one -- the trackers require one, and a
+        release that cannot satisfy that cannot be posted at all.
+
+        Args:
+            written: The names as typed, separated by commas.
+            current: What the track was credited with before the edit.
+            album_roles: Lowercased name to role, from the release credits.
+
+        Returns:
+            Name and role pairs, in the order they were written.
+        """
+        was = {name.lower(): role for name, role in current}
+        people: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for name in (n.strip() for n in written.split(",")):
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            people.append((name, was.get(name.lower()) or album_roles.get(name.lower()) or "guest"))
+
+        if not people:
+            return list(current)
+        if not any(role == "main" for _name, role in people):
+            people[0] = (people[0][0], "main")
+        return people
 
     def _review_metadata(self) -> Any:
         """A replacement for the pipeline's metadata menu: one form, one Save."""
