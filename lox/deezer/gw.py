@@ -158,6 +158,10 @@ class DeezerGW:
         self.license_token: str | None = None
         self.user_id: int | None = None
         self.country: str | None = None
+        # Alias id to canonical id, for the ids the private gateway will not
+        # answer for. 0 means "asked, and there is no better id" -- so a dead
+        # id costs one public call rather than one per lookup.
+        self._album_aliases: dict[str, int] = {}
 
     @staticmethod
     def _configured_arl() -> str | None:
@@ -309,8 +313,56 @@ class DeezerGW:
     # ------------------------------------------------------------------
 
     async def album_page(self, album_id: str | int) -> dict:
-        """Fetch the private album page for an album ID."""
-        return await self.call("deezer.pageAlbum", {"alb_id": int(album_id), "lang": "en"})
+        """Fetch the private album page for an album ID.
+
+        Retried once against the canonical id when the gateway says it has no
+        such album. Deezer hands out alias ids: the public API answers
+        ``/album/1025281552`` with the record for 927219761, following the
+        redirect silently, while the private gateway only knows canonical ids
+        and replies ``{'DATA_ERROR': 'album::getData'}``. A release found
+        through the public API could therefore be checked against both trackers
+        and then fail every private lookup that followed -- its availability,
+        and its featured artists during the upload -- for a release that is
+        perfectly available under its real id.
+        """
+        try:
+            return await self.call("deezer.pageAlbum", {"alb_id": int(album_id), "lang": "en"})
+        except DeezerGWError as e:
+            if "album::getData" not in str(e):
+                raise
+            canonical = await self._canonical_album_id(album_id)
+            if canonical is None:
+                raise
+            debug.log("album %s is an alias for %s", album_id, canonical, level=20)
+            return await self.call("deezer.pageAlbum", {"alb_id": int(canonical), "lang": "en"})
+
+    async def _canonical_album_id(self, album_id: str | int) -> int | None:
+        """The id Deezer files an album under, when the one asked for is an alias.
+
+        Args:
+            album_id: The id that the private gateway would not answer for.
+
+        Returns:
+            The canonical id, or None when the public API agrees there is no
+            such album or cannot be reached -- in which case the original error
+            is the honest one to report.
+        """
+        cached = self._album_aliases.get(str(album_id))
+        if cached is not None:
+            return cached or None
+        try:
+            data = await self.public(f"/album/{album_id}")
+        except DeezerGWError:
+            return None
+        found = data.get("id")
+        # Deezer answers a dead id with an error object rather than a 404, and
+        # an id that is already canonical resolves to itself -- neither is a
+        # second lookup worth making.
+        if data.get("error") or not found or str(found) == str(album_id):
+            self._album_aliases[str(album_id)] = 0
+            return None
+        self._album_aliases[str(album_id)] = int(found)
+        return int(found)
 
     async def playlist_page(self, playlist_id: str | int, nb: int = 2000) -> dict:
         """Fetch the private playlist page for a playlist ID."""

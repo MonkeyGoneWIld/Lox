@@ -327,6 +327,10 @@ async def api_status(request: web.Request) -> web.Response:
                 "format": downloader.preferred_format,
             },
             "notifications": {"enabled": request.app["notifier"].enabled},
+            # What the queue holds. Counted here so the number beside Queue on
+            # the rail is right whatever page you are on -- it used to be set
+            # by the queue drawing itself, so it only moved when you opened it.
+            "queue": {"size": queue_size(request.app["store"])},
             # Whether stale queue rows are being confirmed in the background,
             # and what the last pass did.
             "queue_recheck": request.app["queue_recheck"].status(),
@@ -915,15 +919,21 @@ def _tracker_links(entry: dict[str, Any], artist: str, title: str) -> dict[str, 
 
 
 
-@routes.get("/api/found")
-async def api_found(request: web.Request) -> web.Response:
-    """Everything a check has matched to a Deezer release. No tracker calls.
+def _queue_rows(store: CheckerStore) -> list[dict[str, Any]]:
+    """Every release a check has matched, merged and newest-checked first.
 
-    Scans and request checks both end up knowing "this release exists on Deezer
-    and is not on that tracker", and both threw it away as soon as you left the
-    tab. Kept here so the work already paid for is somewhere you can act on.
+    Lifted out of the route so the status poll can count the queue without
+    rendering it. The rail's number came from the queue page drawing itself, so
+    it only moved when that tab was open -- a scan running in another tab found
+    eleven releases and the "1 Queue" beside it went on saying whatever it said
+    when you last looked.
+
+    Args:
+        store: The checker store.
+
+    Returns:
+        Queue rows, before any queue rule is applied.
     """
-    store: CheckerStore = request.app["store"]
     # Keyed by Deezer album id, because a release found by a scan and matched
     # to a request is ONE release. It used to be two rows -- identical title,
     # identical tracker tags, one saying "scan" and one saying "request" --
@@ -1080,7 +1090,32 @@ async def api_found(request: web.Request) -> web.Response:
             },
         )
 
-    rows = sorted(by_album.values(), key=lambda r: r.get("checked_at") or 0, reverse=True)
+    return sorted(by_album.values(), key=lambda r: r.get("checked_at") or 0, reverse=True)
+
+
+def queue_size(store: CheckerStore) -> int:
+    """How many releases the queue would show right now.
+
+    Args:
+        store: The checker store.
+
+    Returns:
+        The number of rows the queue rules admit.
+    """
+    return len(queue_rules.partition(_queue_rows(store), queue_rules.rules_from(cfg.checker))[0])
+
+
+@routes.get("/api/found")
+async def api_found(request: web.Request) -> web.Response:
+    """Everything a check has matched to a Deezer release. No tracker calls.
+
+    Scans and request checks both end up knowing "this release exists on Deezer
+    and is not on that tracker", and both threw it away as soon as you left the
+    tab. Kept here so the work already paid for is somewhere you can act on.
+    """
+    store: CheckerStore = request.app["store"]
+    dismissed = store.load("dismissed") or {}
+    rows = _queue_rows(store)
 
     # The rules are applied here rather than when the check ran, so widening
     # them brings rows straight back instead of needing the tracker calls

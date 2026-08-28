@@ -1056,6 +1056,10 @@
     renderTrackerPickers();
 
     railCount('#dl-badge', status.downloads.active);
+    // From the poll, not from the queue drawing itself. The number beside
+    // Queue only moved when that tab was open, so a scan running elsewhere
+    // filled the queue and the rail went on showing whatever it last said.
+    if (status.queue) railCount('#found-count-rail', status.queue.size);
     $('#downloads-dir').textContent = `Saving to ${status.downloads.directory} as ${status.downloads.format}`;
     $('#uploads-dir').textContent = status.downloads.directory;
     renderProblems(status.problems);
@@ -1211,13 +1215,29 @@
    * direction worked and the other did nothing, for no visible reason. There
    * has to be a tracker selected, so the last one off hands over to the next.
    */
+  //: The order trackers run in when nothing has been dragged. Anything not
+  //: named here keeps its configured position, after the ones that are.
+  const UPLOAD_ORDER = ['OPS', 'RED'];
+  const uploadRank = (code) => {
+    const at = UPLOAD_ORDER.indexOf(code);
+    return at < 0 ? UPLOAD_ORDER.length : at;
+  };
+
   function renderUploadTargets() {
     const host = $('#upload-tracker');
     if (!host) return;
     const codes = state.trackers.map((t) => t.code);
     // A tracker whose credentials were removed is not somewhere to upload to.
     state.uploadTrackers = state.uploadTrackers.filter((c) => codes.includes(c));
-    if (!state.uploadTrackers.length && codes.length) state.uploadTrackers = [codes[0]];
+    // Everything configured, OPS first. Posting to one tracker and then
+    // remembering the other is a second pass over the same release, so the
+    // default is the thing you almost always want; deselecting is one click
+    // and is remembered from then on.
+    if (!state.uploadTrackers.length && codes.length) {
+      state.uploadTrackers = [...codes].sort(
+        (a, b) => uploadRank(a) - uploadRank(b) || codes.indexOf(a) - codes.indexOf(b),
+      );
+    }
 
     const toggle = (code) => {
       const at = state.uploadTrackers.indexOf(code);
@@ -6084,9 +6104,15 @@ They will not be listed again, even if a later scan finds them.`)) {
       );
     });
 
+    // A tag diff is a receipt, not a question: it is what the tagger already
+    // decided, one row per field per file, and open by default it pushed the
+    // question you are actually being asked off the bottom of the screen. The
+    // summary still says how many fields changed, which is the part worth
+    // reading at a glance; opening it is one click when a number looks wrong.
+    const receipt = table.kind === 'tags' || table.kind === 'album_tags';
     return el(
       'details',
-      { class: 'diff', open: table.rows.length <= 40 },
+      { class: 'diff', open: !receipt && table.rows.length <= 40 },
       el(
         'summary',
         {},

@@ -559,6 +559,38 @@ def ui_checks() -> None:
     check("the queue does not narrate its own columns",
           "where it came from, and how" not in shell, "")
 
+    # The number beside Queue was set by the queue page drawing itself, so it
+    # only moved when that tab was open: a scan running elsewhere filled the
+    # queue and the rail went on showing whatever it last said.
+    check("the queue count is counted where every page can see it",
+          "def _queue_rows(store: CheckerStore)" in web_api
+          and "def queue_size(store: CheckerStore)" in web_api, "")
+    check("and carried by the status poll",
+          '"queue": {"size": queue_size(request.app["store"])},' in web_api, "")
+    check("which is what sets the rail",
+          "if (status.queue) railCount('#found-count-rail', status.queue.size);" in js, "")
+    check("so it does not depend on the queue being on screen",
+          "setInterval(refreshStatus, 15000)" in js, "")
+
+    # Posting to one tracker and then remembering the other is a second pass
+    # over the same release.
+    check("every configured tracker is an upload target by default",
+          "state.uploadTrackers = [...codes].sort(" in js
+          and "state.uploadTrackers = [codes[0]];" not in js, "")
+    check("with OPS running first", "const UPLOAD_ORDER = ['OPS', 'RED'];" in js, "")
+
+    # A tag diff is a receipt, not a question. Open by default it pushed the
+    # question actually being asked off the bottom of the screen.
+    check("the tag diff starts collapsed",
+          "const receipt = table.kind === 'tags' || table.kind === 'album_tags';" in js
+          and "open: !receipt && table.rows.length <= 40" in js, "")
+
+    # An alias album id must not sink every private lookup after it.
+    gw_py = pathlib.Path("lox/deezer/gw.py").read_text(encoding="utf-8")
+    check("an album the gateway will not answer for is resolved once",
+          "def _canonical_album_id" in gw_py and '"album::getData" not in str(e)' in gw_py, "")
+    check("and the answer is remembered", "self._album_aliases" in gw_py, "")
+
     # A status poll can be in flight while a switch is clicked, carrying the
     # value from before it. Landing after the save it put the box back, so the
     # toast said "on" and the box was off.

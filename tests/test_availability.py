@@ -51,6 +51,105 @@ def make(**kw):
     return TrackAvailability(**base)
 
 
+class AliasGW:
+    """A DeezerGW whose two lookups are decided rather than made."""
+
+    def __init__(self, known: set[str], public_answer: dict) -> None:
+        from lox.deezer.gw import DeezerGW
+
+        self.real = DeezerGW(arl="x")
+        self.known = known
+        self.public_answer = public_answer
+        self.asked: list[str] = []
+        self.public_calls: list[str] = []
+
+        async def call(_method, payload=None, **_kw):
+            from lox.deezer.gw import DeezerGWError
+
+            alb = str((payload or {}).get("alb_id"))
+            self.asked.append(alb)
+            if alb not in self.known:
+                raise DeezerGWError(
+                    "gw-light error for deezer.pageAlbum: {'DATA_ERROR': 'album::getData'}"
+                )
+            return {"SONGS": {"data": [{"SNG_ID": "1"}]}}
+
+        async def public(path, _params=None):
+            self.public_calls.append(path)
+            return self.public_answer
+
+        self.real.call = call  # pyright: ignore[reportAttributeAccessIssue]
+        self.real.public = public  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def alias_checks() -> None:
+    """An alias album id must not sink every private lookup that follows.
+
+    Deezer hands out alias ids. The public API answers /album/1025281552 with
+    the record for 927219761, following the redirect without saying so, while
+    the private gateway only knows canonical ids and replies
+    {'DATA_ERROR': 'album::getData'}. A release found through the public API
+    was therefore checked against both trackers and then failed every private
+    lookup after it -- its availability, and its featured artists mid-upload --
+    for a release that is perfectly available under its real id.
+    """
+    import asyncio
+    import contextlib
+
+    from lox.deezer.gw import DeezerGWError
+
+    # The reported case, both ids as Deezer actually returned them.
+    gw = AliasGW(known={"927219761"}, public_answer={"id": 927219761, "title": "Mount Zero"})
+    page = asyncio.run(gw.real.album_page("1025281552"))
+    check("an alias id still returns the album", bool(page.get("SONGS")), str(page)[:60])
+    check("by asking the private gateway for the canonical id",
+          gw.asked == ["1025281552", "927219761"], str(gw.asked))
+    check("which it learned from the public API", gw.public_calls == ["/album/1025281552"],
+          str(gw.public_calls))
+
+    # And it is learned once, not once per lookup.
+    asyncio.run(gw.real.album_page("1025281552"))
+    check("the alias is remembered rather than looked up again",
+          len(gw.public_calls) == 1, str(gw.public_calls))
+
+    # A canonical id costs nothing extra.
+    plain = AliasGW(known={"927219761"}, public_answer={"id": 927219761})
+    asyncio.run(plain.real.album_page("927219761"))
+    check("an id that works is not resolved at all",
+          plain.asked == ["927219761"] and plain.public_calls == [], str(plain.public_calls))
+
+    # An id nobody has heard of reports the gateway's own error, not a
+    # confusing second one from the public API.
+    dead = AliasGW(known=set(), public_answer={"error": {"type": "DataException"}})
+    try:
+        asyncio.run(dead.real.album_page("1"))
+        raised = ""
+    except DeezerGWError as e:
+        raised = str(e)
+    check("a dead id still raises, with the reason Deezer gave",
+          "album::getData" in raised, raised[:70])
+    check("and it is not asked about twice", dead.asked == ["1"], str(dead.asked))
+
+    # An id the public API resolves to itself is not worth a second call.
+    same = AliasGW(known=set(), public_answer={"id": 55})
+    with contextlib.suppress(DeezerGWError):
+        asyncio.run(same.real.album_page("55"))
+    check("nor is one that resolves to itself", same.asked == ["55"], str(same.asked))
+
+    # Anything that is not this error is passed straight through: a token
+    # failure is not an alias problem and must not cost a public call.
+    other = AliasGW(known={"1"}, public_answer={})
+
+    async def boom(_method, payload=None, **_kw):
+        raise DeezerGWError("gw-light error for deezer.pageAlbum: {'VALID_TOKEN_REQUIRED': 1}")
+
+    other.real.call = boom  # pyright: ignore[reportAttributeAccessIssue]
+    with contextlib.suppress(DeezerGWError):
+        asyncio.run(other.real.album_page("1"))
+    check("an unrelated failure is not treated as an alias",
+          other.public_calls == [], str(other.public_calls))
+
+
 def main() -> int:
     from lox.deezer.gw import _is_future
 
@@ -142,6 +241,8 @@ def main() -> int:
           in inspect.getsource(deezer_requests), "")
     check("the queue refuses whatever Deezer cannot supply",
           'row.get("blocked")' in inspect.getsource(queue_rules), "")
+
+    alias_checks()
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
