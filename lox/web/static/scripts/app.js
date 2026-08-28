@@ -1069,6 +1069,41 @@
             : `Release ${r.album_id}`),
         },
         {
+          // The same columns the queue carries, because this is the same kind
+          // of row and the question -- was refusing it right? -- is answered
+          // with the same facts. It said a name and a date, which is most of
+          // the way to being a list of ids again.
+          label: 'Year',
+          value: (r) => Number(String(r.year || '').slice(0, 4)) || 0,
+          filter: 'range',
+          lowLabel: 'from',
+          highLabel: 'to',
+          class: 'nowrap',
+          cell: (r) => el('span', {}, String(r.year || '—')),
+        },
+        {
+          label: 'Tracks',
+          value: (r) => Number(r.deezer_tracks) || 0,
+          filter: 'range',
+          class: 'nowrap',
+          cell: (r) => el('span', {}, r.deezer_tracks ? String(r.deezer_tracks) : '—'),
+        },
+        {
+          label: 'Trackers',
+          class: 'found-trackers',
+          value: trackerSummary,
+          parts: trackerParts,
+          filter: 'choice',
+          cell: (r) => el('span', {}, ...trackerTags(r)),
+        },
+        {
+          label: 'Source',
+          value: (r) => (r.sources || []).join(', '),
+          parts: (r) => r.sources || [],
+          filter: 'choice',
+          cell: (r) => el('span', {}, ...sourceTags(r)),
+        },
+        {
           label: 'Refused',
           value: (r) => daysAgo(r.at),
           filter: 'days',

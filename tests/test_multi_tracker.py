@@ -638,6 +638,19 @@ def ui_checks() -> None:
     check("cleared when the next run starts, so it is about that run",
           "$('#requests-queued')?.replaceChildren()" in js, "")
 
+    # The blacklist said a name and a date, which is most of the way to being
+    # the column of Deezer ids it used to be. Deciding whether refusing a
+    # release was right takes the same facts the queue shows about it.
+    check("the blacklist carries what is known about a release",
+          "def _release_facts(store: CheckerStore)" in web_api, "")
+    check("read live where the record survives, and from the entry where it does not",
+          'live = _release_facts(store)' in web_api
+          and '**live.get(str(key), {})' in web_api, "")
+    blacklist = js[js.index("name: 'blacklist',"):]
+    blacklist = blacklist[:blacklist.index("}));")]
+    for column in ("Year", "Tracks", "Trackers", "Source", "Refused"):
+        check(f"and shows {column.lower()}", f"label: '{column}'," in blacklist, "")
+
     # The filter menu was written against two variables this stylesheet does
     # not have, so it had no ground and no edge and the table showed through.
     check("no rule reaches for a variable that does not exist",

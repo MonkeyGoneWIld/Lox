@@ -1333,6 +1333,70 @@ def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: li
     store.flush()
 
 
+def _release_facts(store: CheckerStore) -> dict[str, dict[str, Any]]:
+    """What is known about every release, by Deezer id.
+
+    The blacklist recorded a name and a date, so the list of releases you had
+    refused could not say where any of them came from or which tracker wanted
+    one -- which is most of what you need to decide whether refusing it was
+    right. Both collections are read, because a release can be filed in either
+    or both: a scan found it, a request check matched it, one release.
+
+    Args:
+        store: The checker store.
+
+    Returns:
+        Deezer id to the facts worth keeping about it.
+    """
+    facts: dict[str, dict[str, Any]] = {}
+
+    def merge(album_id: str, row: dict[str, Any]) -> None:
+        into = facts.setdefault(album_id, {})
+        for key, value in row.items():
+            if value in (None, "", [], {}):
+                continue
+            if key in ("found_on", "missing_from", "sources"):
+                into[key] = sorted({*into.get(key, ()), *value})
+            else:
+                into.setdefault(key, value)
+
+    for album_id, entry in (store.load("albums") or {}).items():
+        merge(str(album_id), {
+            "title": entry.get("title") or "",
+            "artist": entry.get("artist") or "",
+            "year": str(entry.get("year") or "")[:4] or str(entry.get("release_date") or "")[:4],
+            "sources": ["scan"],
+            "source": entry.get("source") or "",
+            "found_on": entry.get("found_on") or [],
+            "missing_from": entry.get("missing_from") or [],
+            "deezer_tracks": entry.get("deezer_tracks"),
+            "group_ids": entry.get("group_ids") or {},
+        })
+
+    for key, entry in (store.load("requests") or {}).items():
+        deezer_id = str(entry.get("deezer_id") or "")
+        if not deezer_id:
+            continue
+        tracker, _sep, request_id = str(key).partition(":")
+        merge(deezer_id, {
+            "title": entry.get("album") or entry.get("deezer_title") or "",
+            "artist": entry.get("artist") or entry.get("deezer_artist") or "",
+            "year": str(entry.get("year") or "")[:4],
+            "sources": ["request"],
+            "found_on": entry.get("found_on") or [],
+            "missing_from": entry.get("missing_from") or [],
+            "deezer_tracks": entry.get("deezer_tracks"),
+            "request_url": entry.get("request_url") or "",
+            # Named "tracker" because that is what the source tag reads to say
+            # "fills an OPS request" rather than "fills a request".
+            "tracker": tracker,
+            "request_id": request_id,
+            "bounty": entry.get("bounty") or "",
+        })
+
+    return facts
+
+
 @routes.post("/api/found/dismiss")
 async def api_found_dismiss(request: web.Request) -> web.Response:
     """Take a row off the Found list. No tracker calls.
@@ -1367,16 +1431,11 @@ async def api_found_dismiss(request: web.Request) -> web.Response:
     # It used to record the id and nothing else, and the album record it came
     # from is deleted in the same breath -- so the list of things you had
     # refused was a column of Deezer ids.
-    named: dict[str, dict[str, Any]] = {}
-    for album_id, entry in (store.load("albums") or {}).items():
-        named[str(album_id)] = {"title": entry.get("title") or "", "artist": entry.get("artist") or ""}
-    for entry in (store.load("requests") or {}).values():
-        deezer_id = str(entry.get("deezer_id") or "")
-        if deezer_id and deezer_id not in named:
-            named[deezer_id] = {
-                "title": entry.get("album") or entry.get("deezer_title") or "",
-                "artist": entry.get("artist") or entry.get("deezer_artist") or "",
-            }
+    # Everything worth reading back, not just the name. Blacklisting leaves
+    # the album record alone, so this is a snapshot rather than the only copy
+    # -- but "Remove" on a release that is already blacklisted would take the
+    # record with it, and the entry should still be able to say what it was.
+    named = _release_facts(store)
 
     for key in keys:
         if blacklist:
@@ -1409,18 +1468,35 @@ async def api_blacklist(request: web.Request) -> web.Response:
     back in without letting all of them back in.
     """
     store: CheckerStore = request.app["store"]
-    rows = [
-        {
+    # The live record wins where there is one: a release refused a month ago
+    # and checked since should show what the check found, not what was true
+    # when it was refused. The entry's own copy is the fallback.
+    live = _release_facts(store)
+    rows = []
+    for key, entry in (store.load("dismissed") or {}).items():
+        if not entry.get("blacklist"):
+            continue
+        known = {**{k: v for k, v in entry.items() if k not in ("blacklist", "at")},
+                 **live.get(str(key), {})}
+        rows.append({
             "id": str(key),
             "album_id": str(key),
-            "title": entry.get("title") or "",
-            "artist": entry.get("artist") or "",
+            "title": known.get("title") or "",
+            "artist": known.get("artist") or "",
+            "year": known.get("year") or "",
+            "sources": known.get("sources") or [],
+            "source": known.get("source") or "",
+            "tracker": known.get("tracker") or "",
+            "found_on": known.get("found_on") or [],
+            "missing_from": known.get("missing_from") or [],
+            "deezer_tracks": known.get("deezer_tracks"),
+            "tracker_links": _tracker_links(known, known.get("artist") or "", known.get("title") or ""),
+            "request_url": known.get("request_url") or "",
+            "request_id": known.get("request_id") or "",
+            "bounty": known.get("bounty") or "",
             "at": entry.get("at") or entry.get("checked_at"),
             "url": f"https://www.deezer.com/album/{key}" if str(key).isdigit() else "",
-        }
-        for key, entry in (store.load("dismissed") or {}).items()
-        if entry.get("blacklist")
-    ]
+        })
     rows.sort(key=lambda r: r.get("at") or 0, reverse=True)
     return json_response({"blacklisted": rows, "total": len(rows)})
 

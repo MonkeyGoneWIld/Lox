@@ -263,10 +263,75 @@ def page_checks() -> None:
           "function recheckReleases" in js and "function recheckFound" in js, "")
 
 
+def blacklist_checks() -> None:
+    """A refused release says where it came from and who wanted it.
+
+    The blacklist recorded a name and a date. Deciding whether refusing
+    something was right needs more than that -- which tracker was missing it,
+    whether a request wanted it, how big it is -- and none of it was on the
+    page even though all of it was in the store.
+    """
+    import lox.web.api as api
+    from lox.checker.store import CheckerStore
+
+    store = CheckerStore(os.path.join(BASE, "state-blacklist"))
+    store.put("albums", "111", {
+        "title": "SCRT", "artist": "Regina Demina", "year": "2025", "source": "Radar Weekly",
+        "found_on": ["OPS"], "missing_from": ["RED"], "deezer_tracks": 10,
+        "group_ids": {"OPS": 4242},
+    }, flush=True)
+    store.put("requests", "OPS:80162", {
+        "deezer_id": "222", "album": "Just Hanging On", "artist": "Songs From The Road Band",
+        "year": "2026", "bounty": "100.00 MB", "deezer_tracks": 12,
+        "request_url": "https://orpheus.network/requests.php?action=view&id=80162",
+        "found_on": [], "missing_from": ["RED", "OPS"],
+    }, flush=True)
+
+    facts = api._release_facts(store)  # noqa: SLF001 - the thing under test
+
+    scanned = facts["111"]
+    check("a scanned release knows which trackers answered",
+          scanned["found_on"] == ["OPS"] and scanned["missing_from"] == ["RED"], str(scanned))
+    check("and how big it is", scanned["deezer_tracks"] == 10, str(scanned.get("deezer_tracks")))
+    # "sources" is the KIND of thing that found it, which is what the source
+    # tags read; the free-text origin a scan records is a different fact and
+    # keeps its own field. Writing the origin into sources made the tag fall
+    # through to "checked" for every row.
+    check("its source is the kind, not the name of the playlist",
+          scanned["sources"] == ["scan"], str(scanned["sources"]))
+    check("with the playlist kept separately",
+          scanned["source"] == "Radar Weekly", str(scanned.get("source")))
+
+    wanted = facts["222"]
+    check("a release a request wanted says so", wanted["sources"] == ["request"], str(wanted["sources"]))
+    check("and which tracker asked, so the tag can name it",
+          wanted["tracker"] == "OPS", str(wanted.get("tracker")))
+    check("and what it was worth", wanted["bounty"] == "100.00 MB", str(wanted.get("bounty")))
+    check("and links to the request itself",
+          "id=80162" in (wanted.get("request_url") or ""), str(wanted.get("request_url")))
+
+    # One release, filed in both collections, is one row that knows both.
+    store.put("requests", "RED:900", {
+        "deezer_id": "111", "album": "SCRT", "artist": "Regina Demina",
+        "found_on": ["OPS"], "missing_from": ["RED"],
+    }, flush=True)
+    both = api._release_facts(store)["111"]  # noqa: SLF001 - the thing under test
+    check("a release a scan found and a request wanted carries both",
+          both["sources"] == ["request", "scan"], str(both["sources"]))
+    check("without doubling the trackers", both["missing_from"] == ["RED"], str(both["missing_from"]))
+
+    # And a release nothing is filed under any more still reads back, from the
+    # copy taken when it was refused.
+    empty = CheckerStore(os.path.join(BASE, "state-blacklist-empty"))
+    check("a release with no record left has no facts to give",
+          api._release_facts(empty) == {}, "")  # noqa: SLF001 - the thing under test
+
+
 def main() -> int:
     asyncio.run(run())
     store_checks()
     page_checks()
+    blacklist_checks()
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
