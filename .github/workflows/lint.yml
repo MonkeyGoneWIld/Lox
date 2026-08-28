@@ -226,6 +226,9 @@ jobs:
       - name: Re-checking a queue row must not delete it
         run: uv run python tests/test_queue_recheck.py
 
+      - name: Refusing a request match has to stick
+        run: uv run python tests/test_reject_match.py
+
       - name: A saved setting reaches the running process
         # The page could report a value nothing was using: the gateway copies
         # budgets and tracker credentials once, at startup.

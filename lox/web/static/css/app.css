@@ -1331,6 +1331,72 @@ select {
 
 select.th-filter { padding-right: 22px; }
 
+/* A choice column is a set of facts, so its filter is a set of tick boxes --
+   the way a spreadsheet asks the same question. It was a single-select of the
+   whole joined value, so asking for "OPS missing" meant finding a row whose
+   entire verdict happened to read that, and a fact only ever drawn as a tag
+   ("already on tracker") was not in the list at all.
+
+   details/summary rather than a popover: it opens in place and closes on the
+   next click without a line of script. */
+.th-choicebox { position: relative; max-width: 220px; }
+.th-choicebox > summary {
+  cursor: pointer;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--input-bg, var(--panel));
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.th-choicebox > summary::-webkit-details-marker { display: none; }
+.th-choicebox > summary::after {
+  content: '▾';
+  position: absolute;
+  right: 7px;
+  top: 4px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.th-choicebox[open] > summary { border-color: var(--accent); }
+.th-choices {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  max-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  text-align: left;
+}
+.th-choices-head {
+  display: flex;
+  gap: 10px;
+  padding: 2px 4px 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+.th-choice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 4px;
+  font-size: 12px;
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.th-choice:hover { background: var(--hover, rgb(255 255 255 / 4%)); border-radius: 4px; }
+.th-choice input { flex: 0 0 auto; margin: 0; }
+
 /* A lower and an upper limit, side by side and equally wide -- and, for a
    date column, what the two of them are measured in. Two bare numbers over a
    column of dates is not a question anybody can answer. */
@@ -1633,6 +1699,14 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .meta-form-field input,
 .meta-form-field select,
 .meta-form-field textarea { width: 100%; }
+
+/* The field a validator refused, so the message has something to point at. */
+.meta-form-field.meta-form-bad {
+  outline: 1px solid var(--bad);
+  outline-offset: 6px;
+  border-radius: 4px;
+}
+.meta-form-error { color: var(--bad); }
 
 .meta-tracks { display: flex; flex-direction: column; gap: 6px; }
 .meta-track { display: flex; align-items: center; gap: 10px; }
@@ -2019,6 +2093,12 @@ a.tag-link { text-decoration: none; }
 a.tag-link:hover { filter: brightness(1.15); text-decoration: underline; }
 
 /* ---------- row actions inside a table ---------- */
+/* The Result column carries a sentence, and it was the last column in a table
+   that gave every other one whatever it asked for -- so the request name took
+   the width and the result wrapped onto a second line under it. */
+.table td.req-result, .table th.req-result { min-width: 220px; }
+.table td.req-name { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+
 .table td.row-actions { white-space: nowrap; text-align: right; }
 /* Every control in the cell, not just the buttons. The gap was written as
    `button + button`, and "Open" is an anchor styled as a button -- so it sat

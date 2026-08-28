@@ -413,6 +413,22 @@ class DeezerGW:
         Raises:
             DeezerGWError: If the album returns no tracks at all.
         """
+        # The public record first, for the id Deezer files this album under.
+        # An alias id -- /album/1058572362 answers with 1058975782 -- is served
+        # a tracklist by the private gateway whose tracks cannot be streamed,
+        # while the public API reports the canonical album as perfectly
+        # readable. Checking the alias therefore passed every test here and
+        # then failed every track at download time. This call was already being
+        # made a few lines down; making it first costs nothing.
+        readable_by_id: dict[str, bool] = {}
+        release_date = ""
+        try:
+            public = await self.album(album_id)
+        except DeezerGWError:
+            public = {}
+        if isinstance(public, dict) and public.get("id"):
+            album_id = public["id"]
+
         tracks = await self.album_tracks(album_id)
         if not tracks:
             raise DeezerGWError(f"No tracks returned for album {album_id}")
@@ -427,12 +443,6 @@ class DeezerGW:
         # tracklist with FLAC sizes while only the released singles play, so
         # an album with four of eleven tracks available was reported as
         # "11/11 FLAC, all streamable" and queued.
-        readable_by_id: dict[str, bool] = {}
-        release_date = ""
-        try:
-            public = await self.album(album_id)
-        except DeezerGWError:
-            public = {}
         if isinstance(public, dict):
             release_date = str(public.get("release_date") or "")
             for entry in (public.get("tracks") or {}).get("data") or []:

@@ -95,6 +95,7 @@ def alias_checks() -> None:
     """
     import asyncio
     import contextlib
+    import pathlib
 
     from lox.deezer.gw import DeezerGWError
 
@@ -135,6 +136,29 @@ def alias_checks() -> None:
     with contextlib.suppress(DeezerGWError):
         asyncio.run(same.real.album_page("55"))
     check("nor is one that resolves to itself", same.asked == ["55"], str(same.asked))
+
+    # --- and the alias that answered, with dead tracks ---------------
+    # The reported failures were not the DATA_ERROR kind. /album/1048152982
+    # answers with 1048214502 and the private gateway serves the alias a
+    # tracklist quite happily -- the tracks just cannot be streamed, so all
+    # nine failed, while the same release downloaded perfectly from its own
+    # page. Both paths that read a tracklist take the public record first now
+    # and use the id it reports, which is a call they were already making.
+    gw_src = pathlib.Path("lox/deezer/gw.py").read_text(encoding="utf-8")
+    dl_src = pathlib.Path("lox/deezer/download.py").read_text(encoding="utf-8")
+    avail = gw_src[gw_src.index("async def availability"):]
+    avail = avail[:avail.index("async def ", 20)] if "async def " in avail[20:] else avail
+    check("availability reads the public record before the tracklist",
+          avail.index("await self.album(album_id)") < avail.index("await self.album_tracks(album_id)"),
+          "")
+    check("and checks the id it reports", 'album_id = public["id"]' in avail, "")
+    run = dl_src[dl_src.index("job.status = \"running\""):]
+    check("a download does the same",
+          run.index("await self.gw.album(job.album_id)") < run.index("await self.gw.album_tracks("), "")
+    check("and fetches the tracks for the canonical id",
+          "await self.gw.album_tracks(album_id)" in dl_src, "")
+    check("saying so, because two ids for one release is worth knowing",
+          "is an alias for" in dl_src, "")
 
     # Anything that is not this error is passed straight through: a token
     # failure is not an alias problem and must not cost a public call.

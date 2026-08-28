@@ -32,19 +32,47 @@ async def check_requests(gazelle_site: "BaseGazelleApi", searchstrs: list[str]) 
     results = await get_request_results(gazelle_site, searchstrs)
     print_request_results(gazelle_site, results, " / ".join(searchstrs))
 
-    # Auto-answering means not being asked. This prompt's own default is "fill
-    # nothing", and that is the only safe thing to do unattended: filling a
-    # request is a claim against someone else's specific request, not a
-    # yes-or-no about your own upload, so it is not something to decide on a
-    # default while nobody is watching. Said out loud rather than skipped
-    # silently, because an unattended run that quietly declined to fill a
-    # request you were expecting it to fill is its own kind of wrong.
+    # Auto-answering used to mean not filling anything, ever. That made the
+    # setting a way to turn request filling off, which is not what it says on
+    # it: a release queued because it fills an open request, uploaded with
+    # prompts auto-answered, went up without filling the request it was
+    # fetched for.
+    #
+    # So it fills the unambiguous case and only that. One match is not a
+    # choice, and the release was searched for on the strength of it. Several
+    # is a choice, and picking one on a default is the thing worth refusing:
+    # filling a request is a claim against somebody else's specific request,
+    # and there is no undo. Both outcomes are said out loud, because a run
+    # that quietly did neither is the state this started in.
     if cfg.upload.yes_all:
+        if len(results) != 1:
+            # Always says why, including when nothing matched. An unattended run
+            # that quietly filled no request is indistinguishable from one that
+            # never looked, and the log is the only place that can tell them
+            # apart afterwards.
+            click.secho(
+                f"Not filling a request: {len(results)} matched and prompts are being "
+                "auto-answered, so there is no unambiguous one to fill."
+                if results else
+                "Not filling a request: nothing matched, and prompts are being auto-answered.",
+                fg="yellow",
+            )
+            return None
+        only = results[0]
+        try:
+            chosen = int(only["requestId"])
+        except (KeyError, TypeError, ValueError):
+            click.secho("Not filling a request: the one match has no usable id.", fg="yellow")
+            return None
         click.secho(
-            f"Not filling a request: prompts are being auto-answered ({len(results)} found).",
-            fg="yellow",
+            f"Filling the one matching request ({chosen}) -- prompts are being auto-answered.",
+            fg="cyan",
         )
-        return None
+        # Still confirmed against the tracker, which is what re-reads the
+        # request and prints what it asks for. A stale search result naming a
+        # request that has since been filled or deleted must not be posted
+        # against.
+        return chosen if await _confirm_request_id(gazelle_site, chosen) is True else None
 
     # A dry run asks even when the search found nothing.
     #

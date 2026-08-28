@@ -59,6 +59,60 @@ def _unset(value: object) -> bool:
     return not any(char.isdigit() and char != "0" for char in text)
 
 
+#: Where a request's refused matches are kept.
+#:
+#: Its own collection rather than a field on the request record, because that
+#: record is rewritten in full by every check -- a rejection stored on it would
+#: last exactly until the next one, which is the problem it exists to solve.
+REJECTIONS = "rejections"
+
+
+def rejected_ids(store: Any, tracker: str, request_id: str) -> set[str]:
+    """The Deezer releases refused for one request.
+
+    Args:
+        store: The checker store.
+        tracker: Tracker code.
+        request_id: The request.
+
+    Returns:
+        Deezer album ids, as strings.
+    """
+    entry = store.get(REJECTIONS, f"{tracker}:{request_id}") or {}
+    return {str(i) for i in entry.get("deezer_ids") or ()}
+
+
+def rejected_match(store: Any, tracker: str, request_id: str, deezer_id: str) -> bool:
+    """Whether this release has already been refused for this request."""
+    return str(deezer_id) in rejected_ids(store, tracker, request_id)
+
+
+def reject_match(store: Any, tracker: str, request_id: str, deezer_id: str, note: str = "") -> dict[str, Any]:
+    """Record that a release does not fill a request.
+
+    Args:
+        store: The checker store.
+        tracker: Tracker code.
+        request_id: The request.
+        deezer_id: The release that does not fill it.
+        note: What the release was called, for reading back later.
+
+    Returns:
+        The stored rejection record.
+    """
+    key = f"{tracker}:{request_id}"
+    entry = dict(store.get(REJECTIONS, key) or {})
+    ids = [str(i) for i in entry.get("deezer_ids") or ()]
+    if str(deezer_id) not in ids:
+        ids.append(str(deezer_id))
+    names = dict(entry.get("titles") or {})
+    if note:
+        names[str(deezer_id)] = note
+    entry = {"tracker": tracker, "request_id": request_id, "deezer_ids": ids, "titles": names}
+    store.put(REJECTIONS, key, entry, flush=True)
+    return entry
+
+
 class RequestMatch(msgspec.Struct):
     """The outcome of checking one request."""
 
@@ -90,6 +144,9 @@ class RequestMatch(msgspec.Struct):
     # open after somebody uploaded it is not worth filling twice.
     already_on_tracker: bool | None = None
     tracker_group_url: str | None = None
+    #: Whether this pairing was refused by hand. The matcher is confident about
+    #: a wrong match and stays confident, so being told once has to stick.
+    rejected: bool = False
     #: The same answer in the vocabulary the queue reads.
     #:
     #: "already_on_tracker: false" and "missing_from: [OPS]" are the same
@@ -512,6 +569,9 @@ class DeezerRequestChecker:
                         "confidence": match.confidence,
                         "already_on_tracker": match.already_on_tracker,
                         "tracker_group_url": match.tracker_group_url,
+                        # Refused by hand, so the history can say so and the
+                        # matching can be judged on it later.
+                        "rejected": match.rejected,
                         "found_on": match.found_on,
                         "missing_from": match.missing_from,
                         "group_ids": match.group_ids,
@@ -534,6 +594,11 @@ class DeezerRequestChecker:
             self.store.flush("requests")
 
         return results
+
+    @staticmethod
+    def _rejection_key(tracker: str, request_id: str) -> str:
+        """Where one request's refused matches are filed."""
+        return f"{tracker}:{request_id}"
 
     async def _check_one(self, tracker: str, request_id: str, verifier: TrackCountVerifier) -> RequestMatch:
         """Run the full pipeline for a single request."""
@@ -676,6 +741,16 @@ class DeezerRequestChecker:
         if self.store.get("dismissed", str(match.deezer_id or "")):
             match.status = "skipped"
             match.reason = "the release it matches is blacklisted"
+            return match
+
+        # A match the operator has already looked at and refused. The matcher
+        # is confident about it and will go on being confident about it, so
+        # without this the same wrong release is proposed for the same request
+        # on every check, and taking it off the queue lasts until the next one.
+        if match.deezer_id and rejected_match(self.store, tracker, request_id, match.deezer_id):
+            match.status = "skipped"
+            match.reason = "you said this release does not fill this request"
+            match.rejected = True
             return match
 
         match.status = "fillable"

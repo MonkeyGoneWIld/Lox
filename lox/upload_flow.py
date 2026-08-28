@@ -117,6 +117,46 @@ _FOLDER_NAME = re.compile(r"^(Old|New pending)\s+folder name\s*:\s*(.+?)\s*$", r
 # "[DRY RUN] album description that would have been posted:"
 _DESCRIPTION_HEAD = re.compile(r"^\[DRY RUN\]\s+(.+?)\s+that would have been posted", re.IGNORECASE)
 _RENAME_LINE = re.compile(r"^(?P<old>.+?)\s+>>>\s+(?P<new>.+?)\s*$")
+
+#: The question that asks which torrent group to post into.
+_GROUP_QUESTION = re.compile(r"existing group|upload to an existing", re.IGNORECASE)
+#: The question that asks which open request to fill.
+_REQUEST_QUESTION = re.compile(r"fill a request|paste a url to fill", re.IGNORECASE)
+
+
+def _for_this_question(prompt: str, found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Only the offered answers that belong to the question being asked.
+
+    Everything the pipeline lists before a prompt becomes a button on it, which
+    is right until a list is printed for a question that never gets asked. The
+    request search prints its results and then declines to ask when prompts are
+    being auto-answered, so the requests were still sitting there when the next
+    question came round -- and "Would you like to upload to an existing group
+    on RED?" was offered an open request, with its bounty and its accepted
+    formats, as a group to post into. Picking it would have posted the release
+    into whatever that URL resolved to.
+
+    Matched on what the question is rather than on where the list came from,
+    so a list left behind by any skipped prompt cannot reach the wrong one.
+
+    Args:
+        prompt: The question as the pipeline wrote it.
+        found: The candidates collected since the last question.
+
+    Returns:
+        The subset that answers this question.
+    """
+    if not found:
+        return found
+
+    def is_request(option: dict[str, Any]) -> bool:
+        return str(option.get("link_label", "")).startswith("Open request")
+
+    if _GROUP_QUESTION.search(prompt):
+        return [o for o in found if not is_request(o)]
+    if _REQUEST_QUESTION.search(prompt):
+        return [o for o in found if is_request(o)]
+    return found
 # "> 2025 / Deluxe / 602488195980 / WEB / AAC / 256" -- year, then any number of
 # edition and catalogue-number parts, then media, format and encoding. The three
 # that matter for deciding whether your upload duplicates one of these are the
@@ -431,6 +471,8 @@ class FlowPrompts:
         # Group candidates printed since the last question, so the next prompt
         # can offer them instead of asking for a pasted URL.
         self._candidates: list[dict[str, Any]] = []
+        #: What the pipeline renamed the release folder to, if it did.
+        self.renamed_to: str = ""
         # The last question's candidates, kept so a rejected answer does not
         # take the buttons with it when the pipeline asks again.
         self._offered: tuple[str, list[dict[str, Any]]] | None = None
@@ -556,6 +598,7 @@ class FlowPrompts:
         tables = self._tables if self._table_stage == self.flow.stage else []
         self._tables, self._block, self._table_stage = [], None, None
         options = options or parse_extra_options(prompt)
+        found = _for_this_question(prompt, found)
 
         # "Press enter once you are finished viewing" wants acknowledgement,
         # not typing -- and it is the moment the spectrals are meant to be
@@ -849,6 +892,13 @@ class FlowPrompts:
             if not rows:
                 rows.append({"group": "", "label": "", "before": "", "after": "", "changed": True})
             rows[0]["before" if name[1].lower() == "old" else "after"] = name[2]
+            # Kept as a value, not only as a row to draw. The pipeline renames
+            # the folder mid-run, so the path the run started with is not the
+            # path on disk when it ends -- and the tidy-up afterwards looked
+            # for the old one, found nothing, and silently left the release
+            # sitting in the download folder.
+            if name[1].lower() != "old":
+                self.renamed_to = name[2]
             return True
 
         if self._block["kind"] == "dryrun":
@@ -1014,7 +1064,40 @@ class FlowPrompts:
             return None
         return _editor_text(shape, answer, original)
 
-    def _metadata_sections(self, metadata: dict) -> list[dict[str, Any]]:
+    #: Which field a validator complaint is about, by a phrase from its text.
+    #:
+    #: The message went into the prose above a form of thirteen fields and left
+    #: the reader to work out which one it meant. "You must specify at least
+    #: one genre" with the genre list four screens down reads as a form that
+    #: will not save and will not say why.
+    _PROBLEM_FIELDS = (
+        ("genre", "genres"),
+        ("main artist per track", "tracks"),
+        ("main artist", "artists"),
+        ("artist importance", "artists"),
+        ("year", "year"),
+        ("release type", "rls_type"),
+        ("label", "label"),
+        ("catno", "catno"),
+    )
+
+    @classmethod
+    def _problem_field(cls, problem: str) -> str:
+        """The field key a validator message is about, or "".
+
+        Args:
+            problem: The InvalidMetadataError text.
+
+        Returns:
+            A field key from the metadata form, or "" when nothing matches.
+        """
+        text = (problem or "").lower()
+        for needle, key in cls._PROBLEM_FIELDS:
+            if needle in text:
+                return key
+        return ""
+
+    def _metadata_sections(self, metadata: dict, problem_field: str = "") -> list[dict[str, Any]]:
         """Every editable field of a release, as one form.
 
         The pipeline's metadata screen is a menu: it prints the record, asks
@@ -1046,10 +1129,20 @@ class FlowPrompts:
         def text(key: str, label: str, hint: str = "") -> dict[str, Any]:
             return {"kind": "text", "key": key, "label": label, "value": metadata.get(key) or "", "hint": hint}
 
+        def mark(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """Flag the field the validator is complaining about."""
+            if not problem_field:
+                return groups
+            for group in groups:
+                for field in group["fields"]:
+                    if field.get("key") == problem_field:
+                        field["error"] = True
+            return groups
+
         # Grouped, because thirteen fields in one run is a wall. Each group is
         # a question you can answer on its own: what is this release, who is on
         # it, which pressing is it, how is it filed.
-        return [
+        return mark([
             # The two years sit together. They are the same question asked
             # twice -- when the album came out, and when this pressing did --
             # and putting them in different groups meant comparing them was a
@@ -1087,7 +1180,7 @@ class FlowPrompts:
                  "hint": "Each track needs at least one main artist. The first name listed is the main "
                          "one unless the credits above give it another role."},
             ]},
-        ]
+        ])
 
     def _apply_metadata(self, metadata: dict, answer: Any) -> None:
         """Write a metadata form's answer back over the release.
@@ -1204,7 +1297,7 @@ class FlowPrompts:
                         "edit",
                         "Release metadata",
                         detail=problem or "Everything the upload will be posted with. Change what you need, then save.",
-                        options=self._metadata_sections(metadata),
+                        options=self._metadata_sections(metadata, self._problem_field(problem)),
                         edit_shape="metadata",
                     )
                 )
@@ -1626,6 +1719,10 @@ async def run_upload(
     debug.log("upload finished trackers=%s folder=%s", ",".join(trackers), folder, level=20)
     posts = prompts.finish_posts()
     return {
+        # Where the release actually is now. The pipeline renames the folder
+        # partway through, so this is not always what was passed in.
+        "folder": (os.path.join(os.path.dirname(folder.rstrip("/\\")), prompts.renamed_to)
+                   if prompts.renamed_to else folder),
         "posts": posts,
         # The first is the release itself; any others are its downconversions.
         "fields": posts[0]["fields"] if posts else {},
@@ -1729,6 +1826,10 @@ async def run_uploads(
         return await link(tracker, path, os.path.basename(path))
 
     result: dict[str, Any] = {}
+    # Where the release is on disk when the run ends. The pipeline renames the
+    # folder partway through, so this is not always what was passed in, and the
+    # tidy-up afterwards has to remove the one that is really there.
+    source_folder = folder
     with _record_transcodes() as transcoded:
         try:
             posted = await run_upload(
@@ -1745,6 +1846,8 @@ async def run_uploads(
             posted = {}
         else:
             reached = set(posted_to)
+            source_folder = posted.get("folder") or folder
+
             outcomes = [
                 {
                     "tracker": tracker,
@@ -1769,6 +1872,8 @@ async def run_uploads(
         succeeded = [o["tracker"] for o in outcomes if o["ok"]]
         result = {
             "folder": folder,
+            # Where it ended up, which is what has to be removed afterwards.
+            "source_folder": source_folder,
             "outcomes": outcomes,
             "succeeded": succeeded,
             "dry_run": _dry_run(),
@@ -1788,7 +1893,7 @@ async def run_uploads(
             result["transcodes"] = []
 
     _discard_spectrals(flow, folder)
-    _clean_up_source(flow, folder, result, derived_links)
+    _clean_up_source(flow, result.get("source_folder") or folder, result, derived_links)
     return result
 
 

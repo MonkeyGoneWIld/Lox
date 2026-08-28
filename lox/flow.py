@@ -130,6 +130,11 @@ class Flow:
         self.events: list[dict[str, Any]] = []
         self.result: dict[str, Any] | None = None
         self.task: asyncio.Task | None = None
+        #: What this run is about, beyond its label. An upload that fills a
+        #: request carries the request here, so the card can link to the thing
+        #: being filled rather than leaving the operator to find it -- the one
+        #: page where getting the wrong release is not undoable.
+        self.context: dict[str, Any] = {}
 
     # -- driver side ---------------------------------------------------
 
@@ -304,6 +309,7 @@ class Flow:
             "error": self.error,
             "created": self.created,
             "finished": self.finished,
+            "context": self.context,
         }
 
 

@@ -596,6 +596,100 @@ def ui_checks() -> None:
     check("and the row goes with the folder",
           '_forget_download(request.app["downloader"], path)' in web_api, "")
 
+    # A choice column says several things about a row -- "RED missing", "OPS
+    # has it", "already on tracker" -- and the filter offered whole joined
+    # values, so asking for one fact meant finding a row whose entire verdict
+    # read exactly that. "already on tracker" was drawn as a tag and never put
+    # in the value, so it could not be asked for at all.
+    check("a choice filter is a set of tick boxes",
+          "function choiceParts(column, row)" in js and "th-choicebox" in js, "")
+    check("over the individual facts, not the joined value",
+          "function trackerParts(row)" in js and js.count("parts:") >= 5, str(js.count("parts:")))
+    check("including the one that was only ever a tag",
+          "parts.push('already on tracker')" in js, "")
+    check("and ticking every box reads as all, not as seven of seven",
+          "next.size === options.length ? [] : [...next]" in js, "")
+
+    # The queue was the one list that would not say how big a release is, and
+    # deciding about one row meant travelling to the toolbar to do it.
+    check("the queue says how many tracks a release has",
+          "label: 'Tracks'," in js and "Number(f.deezer_tracks) || 0" in js, "")
+    check("and a row can be removed or blocklisted where it sits",
+          "dismissRows([f], false)" in js and "dismissRows([f], true)" in js, "")
+
+    # Switching tab in place left the address behind, so the tab buttons
+    # pointed at where you already were and pressing one did nothing.
+    check("the address keeps up with the tab on screen",
+          "function keepAddress(path)" in js
+          and js.count("keepAddress(") >= 3, str(js.count("keepAddress(")))
+
+    # A run that finds three fillable requests out of two hundred said
+    # "200 checked" and left the three to be found by scrolling.
+    check("what a check found is put at the top",
+          "function liftQualifying()" in js and "can be filled — they are at the top" in js, "")
+
+    # Refusing a match, from the list and from the side-by-side view where the
+    # two are actually being compared.
+    check("a match can be refused", "async function rejectMatch(row)" in js, "")
+    check("from the list", "'Not this'" in js, "")
+    check("and from the view that puts the two side by side",
+          "'Not this release'" in js, "")
+    check("with an endpoint that keeps the request open",
+          '@routes.post("/api/requests/reject")' in web_api
+          and '"deezer_id": None,' in web_api, "")
+
+    # A download that fails for a reason that does not last.
+    check("a failed download can be tried again",
+          '@routes.post("/api/downloads/{job_id}/retry")' in web_api
+          and "'Retry')" in js, "")
+    check("starting from scratch rather than into the hole it left",
+          "resolve_release_path(request.app, job.folder)" in web_api, "")
+
+    # The upload card knows what it is for and what is behind it.
+    check("an upload that fills a request links to it",
+          "def _upload_context" in web_api and "context.request_url" in js, "")
+    check("and says how many uploads are still waiting",
+          "more waiting" in js, "")
+    check("without breaking the rail's count of what needs you",
+          "head.dataset.state = flow.state;" in js, "")
+
+    # The metadata form pointed at nothing when the validator refused.
+    flow_src = pathlib.Path("lox/upload_flow.py").read_text(encoding="utf-8")
+    check("a refused field is named rather than left to be found",
+          "_PROBLEM_FIELDS" in flow_src and "meta-form-bad" in js, "")
+    check("and scrolled to, because the form is taller than the screen",
+          "scrollIntoView({ block: 'center'" in js, "")
+
+    # The placeholder Deezer credits a compilation to is not a person.
+    deezer_src = pathlib.Path("lox/tagger/sources/deezer.py").read_text(encoding="utf-8")
+    check("Various Artists is never written in as a credit",
+          "_VARIOUS" in deezer_src and "def _is_various" in deezer_src, "")
+
+    # A list printed for a question that never gets asked must not become the
+    # buttons on the next one.
+    check("an offered answer belongs to the question it was printed for",
+          "def _for_this_question" in flow_src, "")
+    check("so a request cannot be offered as a group to post into",
+          "_GROUP_QUESTION" in flow_src and "_REQUEST_QUESTION" in flow_src, "")
+    fill_src = pathlib.Path("lox/uploader/request_fill.py").read_text(encoding="utf-8")
+    check("and auto-answering fills the one unambiguous match",
+          "if len(results) != 1:" in fill_src, "")
+
+    # The folder is renamed mid-run, so the path the run started with is not
+    # the one on disk when it ends.
+    check("the tidy-up removes the folder that is really there",
+          '"source_folder": source_folder,' in flow_src
+          and 'result.get("source_folder") or folder' in flow_src, "")
+    check("and so does everything else that runs after an upload",
+          'final = result.get("source_folder") or folder' in web_api, "")
+
+    # A sweep that re-checked every queued release paid a tracker call apiece
+    # for the newest answers it had.
+    recheck_src = pathlib.Path("lox/checker/recheck.py").read_text(encoding="utf-8")
+    check("a sweep trusts the answer it already has",
+          "confirming: bool = False" in recheck_src
+          and "if missing and confirming:" in recheck_src, "")
+
     # An alias album id must not sink every private lookup after it.
     gw_py = pathlib.Path("lox/deezer/gw.py").read_text(encoding="utf-8")
     check("an album the gateway will not answer for is resolved once",

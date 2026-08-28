@@ -386,7 +386,21 @@ class Downloader:
         self._notify(job)
 
         try:
-            songs = await self.gw.album_tracks(job.album_id)
+            # The public record first, for the id Deezer files this album
+            # under. It hands out alias ids -- /album/1048152982 answers with
+            # 1048214502 -- and the private gateway serves an alias a tracklist
+            # whose tracks cannot be streamed. Every track then failed, while
+            # the same release downloaded perfectly from its own page, which is
+            # where the canonical id came from. This call was already being
+            # made, four lines further down; making it first costs nothing and
+            # is the difference between nine tracks and none.
+            meta = await self.gw.album(job.album_id)
+            album_id = str(meta.get("id") or job.album_id)
+            if album_id != str(job.album_id):
+                debug.log("download: album %s is an alias for %s", job.album_id, album_id,
+                          level=logging.INFO)
+
+            songs = await self.gw.album_tracks(album_id)
             if not songs:
                 raise DownloadError("Album returned no tracks")
 
@@ -396,7 +410,6 @@ class Downloader:
             by_id = {str(t.get("SNG_ID")): t for t in detailed}
             songs = [by_id.get(str(s.get("SNG_ID") or s.get("id")), s) for s in songs]
 
-            meta = await self.gw.album(job.album_id)
             job.folder = self._prepare_folder(meta)
             job.tracks = [self._make_track(song, i) for i, song in enumerate(songs, 1)]
             self._notify(job)

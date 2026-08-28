@@ -21,7 +21,7 @@ from aiohttp import web
 
 import lox.trackers
 from lox import cfg, debug, settings
-from lox.checker import queue_rules, recheck
+from lox.checker import deezer_requests, queue_rules, recheck
 from lox.checker.autorecheck import QueueRecheck
 from lox.checker.deezer_requests import DeezerRequestChecker, age_of
 from lox.checker.gateway import TrackerGateway
@@ -38,7 +38,7 @@ from lox.checker.store import CheckerStore
 from lox.checker.watchlists import WatchlistManager
 from lox.config.validations import ensure_dir
 from lox.config.validations import problems as config_problems
-from lox.deezer.download import Downloader
+from lox.deezer.download import Downloader, DownloadError
 from lox.deezer.explore import Explorer
 from lox.deezer.gw import DeezerGW, DeezerGWError
 from lox.flow import FlowRegistry
@@ -1266,6 +1266,33 @@ def _forget_download(downloader: Downloader, folder: str) -> None:
             del downloader.jobs[job_id]
 
 
+def _upload_context(store: CheckerStore, album_id: str) -> dict[str, Any]:
+    """What an upload is for, beyond the folder it is reading.
+
+    Args:
+        store: The checker store.
+        album_id: The Deezer release, when the upload came from one.
+
+    Returns:
+        ``request_url``, ``request_tracker`` and ``request_id`` when this
+        release fills an open request, or an empty dict.
+    """
+    if not album_id:
+        return {}
+    for key, entry in (store.load("requests") or {}).items():
+        if str(entry.get("deezer_id") or "") != str(album_id):
+            continue
+        if entry.get("uploaded_at") or entry.get("filled"):
+            continue
+        tracker, _sep, request_id = str(key).partition(":")
+        return {
+            "request_url": entry.get("request_url") or entry.get("url") or "",
+            "request_tracker": tracker,
+            "request_id": request_id,
+        }
+    return {}
+
+
 def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: list[str]) -> None:
     """Record that a release has been uploaded, so Found stops offering it.
 
@@ -1721,6 +1748,40 @@ def _remove_tree(folder: str) -> bool:
     return True
 
 
+@routes.post("/api/downloads/{job_id}/retry")
+async def api_download_retry(request: web.Request) -> web.Response:
+    """Fetch a failed download again, from scratch.
+
+    A download that fails partway leaves a folder with a hole in it and a row
+    that can only be deleted. Plenty of them fail for reasons that do not last
+    -- one track timing out, the gateway briefly refusing -- and the only way
+    to try again was to find the release and start it by hand.
+
+    The half-finished folder goes first: resuming into it would leave whatever
+    the failed run wrote alongside whatever this one does, which is how a
+    release ends up with nine good tracks and one truncated one.
+    """
+    downloader: Downloader = request.app["downloader"]
+    job = downloader.jobs.get(request.match_info["job_id"])
+    if job is None:
+        return error("no such download", status=404)
+    if job.status in ("queued", "running"):
+        return error("that download has not finished", status=409)
+
+    if job.folder:
+        try:
+            await asyncio.to_thread(_remove_tree, resolve_release_path(request.app, job.folder))
+        except (ValueError, OSError) as e:
+            debug.log("retry: could not remove %s (%s)", job.folder, e, level=30)
+
+    downloader.jobs.pop(job.id, None)
+    try:
+        fresh = await downloader.enqueue(job.album_id, allow_lossy=job.decision == "kept")
+    except DownloadError as e:
+        return error(str(e))
+    return json_response({"job_id": fresh.id, "album_id": job.album_id})
+
+
 @routes.post("/api/downloads/{job_id}/cancel")
 async def api_download_cancel(request: web.Request) -> web.Response:
     """Withdraw a download that has not started yet."""
@@ -1929,6 +1990,13 @@ async def api_scan_history(request: web.Request) -> web.Response:
             "added_at": entry.get("first_seen") or entry.get("checked_at"),
             "checked_at": entry.get("checked_at"),
             "checked_days_ago": recheck.age_days(entry, now),
+            # A release that has been uploaded is the most settled answer there
+            # is, and the history was the one page that would not say so: the
+            # stamp was written and only ever read to keep the row out of the
+            # queue, so the lookup history went on showing "missing from RED"
+            # for something posted to RED an hour earlier.
+            "uploaded_at": entry.get("uploaded_at"),
+            "uploaded_to": entry.get("uploaded_to") or [],
             "url": f"https://www.deezer.com/album/{album_id}",
         })
 
@@ -2038,6 +2106,8 @@ async def api_requests_history(request: web.Request) -> web.Response:
             "tracker": tracker,
             "status": entry.get("status") or "",
             "reason": entry.get("reason") or "",
+            "uploaded_at": entry.get("uploaded_at"),
+            "uploaded_to": entry.get("uploaded_to") or [],
             "artist": entry.get("artist") or entry.get("deezer_artist") or "",
             "album": entry.get("album") or entry.get("deezer_title") or "",
             "year": entry.get("year") or "",
@@ -2177,6 +2247,55 @@ async def api_spectral_image(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(path)
 
 
+@routes.post("/api/requests/reject")
+async def api_request_reject(request: web.Request) -> web.Response:
+    """Say that a release does not fill a request.
+
+    The matcher is confident about a wrong match and stays confident, so
+    removing the row from the queue lasted until the next check put it back.
+    This records the pairing as refused: the release leaves the queue, the
+    request goes back to having no match, and the next check will not offer it
+    again -- while the request itself stays open for something that does fill
+    it.
+
+    Kept rather than forgotten, because a refused match is the only evidence
+    there is of the matcher being wrong, and the lookup history shows it.
+    """
+    body = await request.json()
+    tracker = str(body.get("tracker") or "").strip().upper()
+    request_id = str(body.get("request_id") or "").strip()
+    if not tracker or not request_id:
+        return error("tracker and request_id are required")
+
+    store: CheckerStore = request.app["store"]
+    key = f"{tracker}:{request_id}"
+    entry = store.get("requests", key)
+    if entry is None:
+        return error("no such request", status=404)
+
+    deezer_id = str(body.get("deezer_id") or entry.get("deezer_id") or "")
+    if not deezer_id:
+        return error("that request has no match to reject")
+
+    named = " — ".join(part for part in (entry.get("deezer_artist"), entry.get("deezer_title")) if part)
+    deezer_requests.reject_match(store, tracker, request_id, deezer_id, named)
+
+    # The request keeps its place in the history; it just has no match any
+    # more, which is what "skipped" means everywhere else on that page.
+    store.put("requests", key, {
+        **entry,
+        "status": "skipped",
+        "reason": "you said this release does not fill this request",
+        "rejected": True,
+        "rejected_deezer_id": deezer_id,
+        "rejected_title": named,
+        "deezer_id": None,
+        "found_on": [],
+        "missing_from": [],
+    }, flush=True)
+    return json_response({"rejected": deezer_id, "request": key})
+
+
 @routes.post("/api/folders/delete")
 async def api_folder_delete(request: web.Request) -> web.Response:
     """Delete a release folder.
@@ -2284,13 +2403,18 @@ async def api_upload(request: web.Request) -> web.Response:
 
     async def run(f):
         result = await run_uploads(f, folder, trackers, source=source, auto_rename=auto_rename)
+        # Where the release actually ended up. The pipeline renames the folder
+        # partway through, so the path this started with is not the one on disk
+        # when it finishes -- and both of these went looking for the old name,
+        # found nothing, and quietly did nothing.
+        final = result.get("source_folder") or folder
         # A release that has been uploaded is not one that is missing any more.
         # Leaving it on the Found list meant every successful upload made that
         # list slightly less true than it was before.
         if result.get("succeeded") and not cfg.upload.dry_run:
-            _mark_uploaded(store, album_id, folder, result["succeeded"])
-            _forget_download(downloader, folder)
-        _record_upload(store, f, folder, trackers, album_id, result)
+            _mark_uploaded(store, album_id, final, result["succeeded"])
+            _forget_download(downloader, final)
+        _record_upload(store, f, final, trackers, album_id, result)
         return result
 
     label = f"{os.path.basename(folder)} to {', '.join(trackers)}"
@@ -2299,6 +2423,11 @@ async def api_upload(request: web.Request) -> web.Response:
         f"{'Dry run of ' if cfg.upload.dry_run else 'Uploading '}{label}",
         run,
     )
+    # What this upload is for. An upload that fills a request is the one case
+    # where posting the wrong release cannot be undone, and the card had the
+    # folder name and nothing else -- the request it was answering was three
+    # tabs away.
+    flow.context = _upload_context(store, album_id)
     return json_response(
         {"flow_id": flow.id, "trackers": trackers, "linking": cfg.linking.enabled, "dry_run": cfg.upload.dry_run}
     )

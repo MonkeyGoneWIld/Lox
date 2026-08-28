@@ -197,6 +197,39 @@
    *   `selection` is `{ set, onChange }` to add checkboxes.
    * @returns {HTMLElement} The table, filters and all.
    */
+  /**
+   * What a stored choice filter selected.
+   *
+   * Older views stored a single string; a filter is a set now, so both shapes
+   * are read rather than one of them silently meaning "nothing selected".
+   *
+   * @param {*} stored - Whatever the view had.
+   * @returns {string[]} The selected options.
+   */
+  function pickedChoices(stored) {
+    if (Array.isArray(stored)) return stored.filter(Boolean);
+    return stored ? [String(stored)] : [];
+  }
+
+  /**
+   * The individual facts a choice column says about one row.
+   *
+   * A column may set `parts` when its value is several things joined together
+   * -- the tracker verdicts, the sources a release came from. Without it the
+   * whole value is the one fact, which is right for a column like Tracker
+   * whose value is a single code.
+   *
+   * @param {object} column - The column definition.
+   * @param {object} row - The row.
+   * @returns {string[]} Non-empty facts.
+   */
+  function choiceParts(column, row) {
+    const parts = column.parts
+      ? column.parts(row)
+      : [column.value ? column.value(row) : ''];
+    return (parts || []).map((p) => String(p ?? '').trim()).filter(Boolean);
+  }
+
   function dataTable({ name, rows, columns, selection = null, onShown = null, rowAttrs = null,
                       idOf = (row) => row.id, empty: emptyText = 'Nothing here.' }) {
     const view = tableView(name);
@@ -231,13 +264,23 @@
         });
         continue;
       }
+      // A choice column is a set of facts about a row, not one string. The
+      // Trackers cell says "RED missing", "OPS has it" AND "already on
+      // tracker"; the filter offered whole joined values, so the only way to
+      // ask for one fact was to find a row that happened to have exactly that
+      // combination -- and "already on tracker" was not in the list at all,
+      // because it was drawn in the cell and never went into the value.
+      if (column.filter === 'choice') {
+        const chosen = pickedChoices(view.filters[column.label]);
+        if (!chosen.length) continue;
+        const set = new Set(chosen.map((c) => c.toLowerCase()));
+        shown = shown.filter((row) =>
+          choiceParts(column, row).some((part) => set.has(part.toLowerCase())));
+        continue;
+      }
       if (!wanted) continue;
-      shown = shown.filter((row) => {
-        const value = String(valueOf(column, row) ?? '').toLowerCase();
-        return column.filter === 'choice'
-          ? value === String(wanted).toLowerCase()
-          : value.includes(String(wanted).toLowerCase());
-      });
+      shown = shown.filter((row) =>
+        String(valueOf(column, row) ?? '').toLowerCase().includes(String(wanted).toLowerCase()));
     }
 
     // --- sorting -------------------------------------------------------
@@ -317,14 +360,41 @@
         // and the header stepped up and down across the table.
         let control = null;
         if (column.filter === 'choice') {
-          const options = [...new Set(rows.map((r) => String(valueOf(column, r) ?? '')).filter(Boolean))].sort();
-          control = el('select', {
-            class: 'th-filter',
-            onchange: (e) => { view.filters[column.label] = e.target.value; rerender(); },
-          },
-          el('option', { value: '', selected: !view.filters[column.label] }, 'all'),
-          ...options.map((option) =>
-            el('option', { value: option, selected: view.filters[column.label] === option }, option)));
+          const options = [...new Set(rows.flatMap((r) => choiceParts(column, r)))].sort();
+          const chosen = pickedChoices(view.filters[column.label]);
+          const set = new Set(chosen);
+          const apply = (next) => {
+            view.filters[column.label] = next.length ? next : null;
+            rerender();
+          };
+          const summary = !chosen.length
+            ? 'all'
+            : chosen.length === 1 ? chosen[0] : `${chosen.length} of ${options.length}`;
+          const panel = el('div', { class: 'th-choices' },
+            el('div', { class: 'th-choices-head' },
+              el('button', { type: 'button', class: 'linkbtn',
+                             onclick: () => apply([...options]) }, 'All'),
+              el('button', { type: 'button', class: 'linkbtn',
+                             onclick: () => apply([]) }, 'None')),
+            ...options.map((option) => el('label', { class: 'th-choice' },
+              el('input', {
+                type: 'checkbox',
+                checked: set.has(option),
+                onchange: (e) => {
+                  const next = new Set(set);
+                  if (e.target.checked) next.add(option); else next.delete(option);
+                  // Every box ticked is the same question as none, and reads
+                  // better as "all" than as "7 of 7".
+                  apply(next.size === options.length ? [] : [...next]);
+                },
+              }),
+              el('span', {}, option))));
+          // A details/summary rather than a popover library: it opens in place,
+          // closes on the next click anywhere, and needs no script to do it.
+          control = el('details', { class: 'th-choicebox' },
+            el('summary', { class: 'th-filter', title: `Filter by ${column.label.toLowerCase()}` },
+               summary),
+            panel);
         } else if (column.filter === 'range' || column.filter === 'days') {
           const isDays = column.filter === 'days';
           const blank = { low: '', high: '', unit: DEFAULT_UNIT };
@@ -610,6 +680,28 @@
    *   than adding one. For the first paint and for corrections, neither of
    *   which is somewhere Back should return to.
    */
+  /**
+   * Keep the address in step with the tab that is actually showing.
+   *
+   * These two screens put their tab in the address, and a couple of places
+   * switched the tab directly -- "Show me what they said" on the skipped
+   * note, for one. The content moved and the address did not, so the tab
+   * buttons pointed at where you already were: pressing "Find requests" asked
+   * to go to /requests while the address still said /requests, go() saw the
+   * same address and did nothing, and the only way out was to press the other
+   * tab first. Replacing rather than pushing, because switching tab in place
+   * is not a second entry in the history.
+   *
+   * @param {string} path - The address for the tab now showing.
+   */
+  function keepAddress(path) {
+    const target = addr(path);
+    const [now] = splitAddr(here());
+    if (splitAddr(target)[0] === now) return;
+    history.replaceState({ url: target }, '', target);
+    showingUrl = target;
+  }
+
   function go(target, { replace = false } = {}) {
     if (target === here() && !replace) return;
     if (replace) history.replaceState({ url: target }, '', target);
@@ -3054,6 +3146,21 @@
             job.status === 'queued' || job.status === 'running'
               ? el('button', { class: 'ghost', onclick: () => cancelDownload(job.id) }, 'Cancel')
               : el('span', { class: `tag ${cls === 'done' ? 'ok' : cls === 'failed' ? 'bad' : 'dim'}` }, `${job.percent}%`),
+            // Plenty of downloads fail for reasons that do not last -- one
+            // track timing out, the gateway briefly refusing -- and trying
+            // again meant finding the release and starting it by hand.
+            job.status === 'failed'
+              ? el('button', {
+                  title: 'Delete what was fetched and start over',
+                  onclick: async () => {
+                    try {
+                      await api(`/api/downloads/${job.id}/retry`, { method: 'POST' });
+                      toast('Downloading again', 'ok');
+                    } catch (e) { toast(e.message, 'bad'); }
+                    pollDownloads(true);
+                  },
+                }, 'Retry')
+              : null,
             // Whenever there is something on disk to remove, however the
             // download ended. This was done-only, so a download that failed
             // partway -- nine of ten tracks, the folder sitting there named
@@ -4188,13 +4295,66 @@
             label: 'Result',
             value: requestOutcome,
             filter: 'text',
-            class: 'result',
+            class: 'result req-result',
             cell: requestResultCell,
+          },
+          {
+            // Saying no to a match. The matcher is confident about a wrong
+            // one and stays confident, so taking the release off the queue
+            // lasted until the next check put it straight back.
+            label: '',
+            filter: false,
+            class: 'row-actions',
+            cell: (r) => el('span', {},
+              r.deezer_id
+                ? el('button', {
+                    class: 'danger',
+                    title: 'This release does not fill this request. It leaves the queue and '
+                           + 'will not be matched to it again.',
+                    onclick: (e) => { e.stopPropagation(); rejectMatch(r); },
+                  }, 'Not this')
+                : null),
           },
         ],
       }),
     );
     requestsPick();
+  }
+
+  /**
+   * Say that a release does not fill a request.
+   *
+   * The release leaves the queue, the request goes back to having no match,
+   * and the next check will not propose the same pairing again -- which is
+   * what made removing it from the queue by hand pointless. The request stays
+   * open for something that does fill it, and the refusal is kept: it is the
+   * only evidence there is of the matcher being wrong.
+   *
+   * @param {object} row - A request row carrying a deezer_id.
+   */
+  async function rejectMatch(row) {
+    const named = [row.deezer_artist, row.deezer_title].filter(Boolean).join(' — ')
+      || `release ${row.deezer_id}`;
+    if (!confirm(`"${named}" does not fill request ${row.id}?
+
+It leaves the queue and will not be matched to this request again. The request stays open.`)) {
+      return;
+    }
+    try {
+      await api('/api/requests/reject', {
+        method: 'POST',
+        body: {
+          tracker: row.tracker || state.requestsTracker,
+          request_id: row.id,
+          deezer_id: row.deezer_id,
+        },
+      });
+      toast('Noted. It will not be offered for this request again.', 'ok');
+      releasesChanged();
+      if (state.requestTab === 'history') loadHistory();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
   }
 
   // Check a specific set of request ids.
@@ -4312,14 +4472,43 @@
       done();
       refreshStatus();
       releasesChanged();
+      // What the run actually produced, at the top, before the hundreds of
+      // rows that produced nothing. A check of two hundred requests that finds
+      // three worth filling used to say "Done. 200 request(s) checked" and
+      // leave the three to be found by scrolling -- and they are the whole
+      // reason the check was run.
+      const qualified = liftQualifying();
       jobFinished(log, stoppedEarly
         ? `Stopped after ${stoppedEarly.checked} request(s): the tracker will not answer any more just yet. `
           + 'Run it again shortly.'
-        : `Done. ${checked} request(s) checked.`);
+        : `Done. ${checked} request(s) checked.`
+          + (qualified ? ` ${qualified} can be filled — they are at the top.` : ' None can be filled.'));
     } catch (e) {
       done();
       toast(e.message, 'bad');
     }
+  }
+
+  /**
+   * Put the requests worth acting on at the top of the list.
+   *
+   * A check of two hundred requests that finds three worth filling left the
+   * three wherever the tracker's own ordering had put them. They are what the
+   * run was for, and they are also the ones that want looking at by hand --
+   * a wrong match is refused from this list.
+   *
+   * A stable partition rather than a sort, so within each half the order the
+   * tracker gave is kept.
+   *
+   * @returns {number} How many qualified.
+   */
+  function liftQualifying() {
+    const canFill = (row) => Boolean(requestResult(row)?.fillable);
+    const yes = state.requestRows.filter(canFill);
+    if (!yes.length || yes.length === state.requestRows.length) return yes.length;
+    state.requestRows = [...yes, ...state.requestRows.filter((r) => !canFill(r))];
+    renderRequestRows();
+    return yes.length;
   }
 
   /**
@@ -4397,6 +4586,7 @@
     $$('#scan-tabs button').forEach((b) => {
       b.classList.toggle('active', b.dataset.scantab === name);
     });
+    keepAddress(name === 'history' ? '/scan/history' : '/scan');
     if (name === 'history') loadScanHistory();
   }
 
@@ -4576,14 +4766,16 @@
           label: 'Outcome',
           value: (r) => r.outcome,
           filter: 'choice',
+          parts: (r) => [r.uploaded_at ? 'uploaded' : r.outcome],
           cell: (r) => el('span', {},
-            el('span', { class: 'pill' }, r.outcome),
-            r.reason ? el('div', { class: 'hint' }, r.reason) : null),
+            uploadedPill(r) || el('span', { class: 'pill' }, r.outcome),
+            r.reason && !r.uploaded_at ? el('div', { class: 'hint' }, r.reason) : null),
         },
         {
           label: 'Trackers',
           class: 'found-trackers',
           value: trackerSummary,
+          parts: trackerParts,
           filter: 'choice',
           cell: (r) => el('span', {}, ...trackerTags(r)),
         },
@@ -4666,6 +4858,7 @@
     $$('#requests-tabs button').forEach((b) => {
       b.classList.toggle('active', b.dataset.reqtab === name);
     });
+    keepAddress(name === 'history' ? '/requests/history' : '/requests');
     if (name === 'history') loadHistory();
   }
 
@@ -4758,6 +4951,7 @@
           label: 'Trackers',
           class: 'found-trackers',
           value: (r) => (r.found_on || r.missing_from ? trackerSummary(r) : ''),
+          parts: trackerParts,
           filter: 'choice',
           cell: (r) => {
             const tags = (r.found_on || []).length || (r.missing_from || []).length
@@ -4772,13 +4966,15 @@
         },
         {
           label: 'Outcome',
-          value: (r) => (HISTORY_STATUS[r.status] || [r.status || 'Unknown'])[0],
+          value: (r) => (r.uploaded_at
+            ? 'Uploaded'
+            : (HISTORY_STATUS[r.status] || [r.status || 'Unknown'])[0]),
           filter: 'choice',
           cell: (r) => {
             const pair = HISTORY_STATUS[r.status] || [r.status || 'Unknown', ''];
             return el('span', {},
-              el('span', { class: `pill ${pair[1]}` }, pair[0]),
-              r.reason ? el('div', { class: 'hint' }, r.reason) : null);
+              uploadedPill(r) || el('span', { class: `pill ${pair[1]}` }, pair[0]),
+              r.reason && !r.uploaded_at ? el('div', { class: 'hint' }, r.reason) : null);
           },
         },
         {
@@ -5042,11 +5238,28 @@
         return;
       }
       right.replaceChildren(spinner('Loading release'));
+      // The side-by-side view is where the two are actually compared, so it is
+      // where "these are not the same record" is decided. Saying so needed the
+      // queue, three tabs away, and did not stick.
+      const notThis = el('div', { class: 'row split-head' },
+        el('h3', { class: 'section-title' }, 'Deezer release'),
+        el('button', {
+          class: 'danger',
+          title: 'This release does not fill this request. It leaves the queue and '
+                 + 'will not be matched to it again.',
+          onclick: () => rejectMatch({
+            id: String(id),
+            tracker: code,
+            deezer_id: match.deezer_id,
+            deezer_artist: match.deezer_artist,
+            deezer_title: match.deezer_title,
+          }),
+        }, 'Not this release'));
       try {
         const album = await api(`/api/album/${match.deezer_id}`);
-        right.replaceChildren(el('h3', { class: 'section-title' }, 'Deezer release'), albumPanel(album));
+        right.replaceChildren(notThis, albumPanel(album));
       } catch (e) {
-        right.replaceChildren(el('h3', { class: 'section-title' }, 'Deezer release'), empty(e.message));
+        right.replaceChildren(notThis, empty(e.message));
       }
     })();
 
@@ -5353,15 +5566,28 @@
           cell: (f) => el('span', {}, String(f.year || '—')),
         },
         {
+          // How much release this is. Four tracks and forty are different
+          // propositions -- for the download, for the upload, and for
+          // deciding which of them to do first -- and the queue was the one
+          // list that would not say.
+          label: 'Tracks',
+          value: (f) => Number(f.deezer_tracks) || 0,
+          filter: 'range',
+          class: 'nowrap',
+          cell: (f) => el('span', {}, f.deezer_tracks ? String(f.deezer_tracks) : '—'),
+        },
+        {
           label: 'Trackers',
           class: 'found-trackers',
           value: trackerSummary,
+          parts: trackerParts,
           filter: 'choice',
           cell: (f) => el('span', {}, ...trackerTags(f)),
         },
         {
           label: 'Source',
           value: (f) => (f.sources || [f.kind]).join(', '),
+          parts: (f) => f.sources || [f.kind],
           filter: 'choice',
           cell: (f) => el('span', {}, ...sourceTags(f)),
         },
@@ -5378,6 +5604,19 @@
           filter: 'days',
           class: 'nowrap',
           cell: (f) => whenCell(f.checked_at, staleNote(f.checked_at)),
+        },
+        {
+          // Deciding about one release is the common case, and it was a
+          // two-step: tick the box, travel to the toolbar, press. The toolbar
+          // still does several at once, which is what it is for.
+          label: '',
+          filter: false,
+          class: 'row-actions',
+          cell: (f) => el('span', {},
+            el('button', { class: 'ghost', title: 'Take it off the queue. A later scan can find it again.',
+                           onclick: (e) => { e.stopPropagation(); dismissRows([f], false); } }, 'Remove'),
+            el('button', { class: 'danger', title: 'Never list this release again.',
+                           onclick: (e) => { e.stopPropagation(); dismissRows([f], true); } }, 'Blocklist')),
         },
       ],
     }));
@@ -5416,6 +5655,48 @@
    * @param {object} row - A queue row.
    * @returns {string} e.g. "OPS missing, RED has it".
    */
+  /**
+   * The tracker verdicts on a row, one string each.
+   *
+   * What trackerSummary joins together. The filter needs them apart: ticking
+   * "OPS missing" should find every row OPS is missing, not only the rows
+   * whose whole verdict happens to read "OPS missing, RED has it".
+   *
+   * @param {object} row - Anything with found_on / missing_from.
+   * @returns {string[]} One phrase per tracker verdict.
+   */
+  /**
+   * The "posted" pill, for a release that has been uploaded.
+   *
+   * The stamp was written on every successful upload and only ever read to
+   * keep the row out of the queue, so both lookup histories went on saying
+   * "missing from RED" about something posted to RED an hour earlier. It is
+   * the most settled answer either page has and it was the one they would not
+   * give.
+   *
+   * @param {object} row - A history row.
+   * @returns {Element|null} The pill, or null when it has not been uploaded.
+   */
+  function uploadedPill(row) {
+    if (!row.uploaded_at) return null;
+    const where = (row.uploaded_to || []).join(', ');
+    return el('span', {
+      class: 'pill ok',
+      title: `Uploaded ${where ? `to ${where} ` : ''}${ago(row.uploaded_at)}`,
+    }, where ? `uploaded to ${where}` : 'uploaded');
+  }
+
+  function trackerParts(row) {
+    const parts = [
+      ...(row.missing_from || []).map((t) => `${t} missing`),
+      ...(row.found_on || []).map((t) => `${t} has it`),
+    ];
+    // Drawn as a tag in the cell and never present in the value, so it could
+    // not be filtered for at all.
+    if (row.already_on_tracker === true) parts.push('already on tracker');
+    return parts.length ? parts : ['not checked on any tracker'];
+  }
+
   function trackerSummary(row) {
     const missing = (row.missing_from || []).map((t) => `${t} missing`);
     const found = (row.found_on || []).map((t) => `${t} has it`);
@@ -5519,7 +5800,23 @@
   async function dismissFound(blacklist) {
     const picked = foundSelection();
     if (!picked.length) return toast('Nothing selected', 'bad');
-    const what = `${picked.length} release${picked.length === 1 ? '' : 's'}`;
+    return dismissRows(picked, blacklist);
+  }
+
+  /**
+   * Take releases off the queue, optionally for good.
+   *
+   * Split out of dismissFound so a row can offer the same two decisions
+   * without first being ticked. Deciding about one release is the common case
+   * and it was a two-step: tick the box, travel to the toolbar, press.
+   *
+   * @param {object[]} picked - The rows to act on.
+   * @param {boolean} blacklist - Never list them again, rather than just now.
+   */
+  async function dismissRows(picked, blacklist) {
+    const what = picked.length === 1
+      ? `${picked[0].artist || ''} — ${picked[0].title || ''}`.trim() || 'this release'
+      : `${picked.length} releases`;
     if (blacklist && !confirm(`Blacklist ${what}?
 
 They will not be listed again, even if a later scan finds them.`)) {
@@ -5842,6 +6139,7 @@ They will not be listed again, even if a later scan finds them.`)) {
           label: 'Trackers',
           class: 'found-trackers',
           value: (r) => (r.outcomes || []).map((o) => `${o.tracker} ${o.ok ? 'ok' : 'failed'}`).join(', '),
+          parts: (r) => (r.outcomes || []).map((o) => `${o.tracker} ${o.ok ? 'ok' : 'failed'}`),
           filter: 'choice',
           cell: (r) => el('span', {}, ...uploadOutcomeTags(r)),
         },
@@ -6288,6 +6586,14 @@ They will not be listed again, even if a later scan finds them.`)) {
       if (section.hint && !isWide(section)) {
         field.append(el('p', { class: 'meta-form-hint meta-form-note' }, section.hint));
       }
+      // The field the validator refused. The message used to go into the prose
+      // above thirteen fields and leave the reader to work out which one it
+      // meant: "You must specify at least one genre" with the genre list four
+      // screens down reads as a form that will not save and will not say why.
+      if (section.error) {
+        field.classList.add('meta-form-bad');
+        field.append(el('p', { class: 'meta-form-hint meta-form-error' }, step.detail || 'Fix this to carry on.'));
+      }
       return field;
     };
 
@@ -6296,6 +6602,10 @@ They will not be listed again, even if a later scan finds them.`)) {
         el('section', { class: 'meta-group' },
            group.group ? el('h4', { class: 'meta-group-head' }, group.group) : null,
            el('div', { class: 'meta-form' }, ...group.fields.map(drawField)))));
+      // Scrolled to, because the form is taller than the screen and a field
+      // highlighted below the fold is a field nobody has been shown.
+      const bad = body.querySelector('.meta-form-bad');
+      if (bad) requestAnimationFrame(() => bad.scrollIntoView({ block: 'center', behavior: 'smooth' }));
     };
     draw();
 
@@ -6924,12 +7234,39 @@ They will not be listed again, even if a later scan finds them.`)) {
 
     const stateTag = { waiting: 'warn', done: 'ok', failed: 'bad', cancelled: 'dim' }[flow.state] || 'dim';
     const head = card.querySelector('.flow-head');
-    if (head.dataset.state !== flow.state) {
-      head.dataset.state = flow.state;
+    // The head carries two things that change independently of the run's
+    // state: how many uploads are still queued behind this one, and whether
+    // this one is filling a request. Keyed on all three so neither is stale.
+    const waiting = state.uploadQueue.length;
+    const context = flow.context || {};
+    const headKey = `${flow.state}|${waiting}|${context.request_url || ''}`;
+    // data-state stays the plain state, because the rail counts the cards
+    // waiting on somebody with it. The composite goes in its own attribute.
+    head.dataset.state = flow.state;
+    if (head.dataset.head !== headKey) {
+      head.dataset.head = headKey;
       head.replaceChildren(
         ...[
           el('h2', {}, flow.label),
           el('span', { class: `tag ${stateTag}` }, flow.state === 'waiting' ? 'needs you' : flow.state),
+          // Filling a request is the one upload where posting the wrong
+          // release cannot be undone, and the card said only which folder it
+          // was reading. The request it is answering is one click now.
+          context.request_url
+            ? el('a', {
+                class: 'tag warn tag-link',
+                href: context.request_url,
+                target: '_blank',
+                rel: 'noopener',
+                title: 'Open the request this fills',
+              }, `fills ${context.request_tracker || ''} #${context.request_id || ''}`.replace('  ', ' '))
+            : null,
+          // What is still to come. It was on a panel of its own above the
+          // cards, which is not where you are looking while answering one.
+          (flow.state === 'running' || flow.state === 'waiting') && waiting
+            ? el('span', { class: 'tag dim', title: 'Uploads queued behind this one' },
+                 `${waiting} more waiting`)
+            : null,
           flow.state === 'running' || flow.state === 'waiting'
             ? el('button', { class: 'ghost', onclick: () => cancelFlow(flow.id) }, 'Cancel')
             // Finished, so the way off the page is dismissing it rather than

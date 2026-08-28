@@ -142,6 +142,46 @@ async def main() -> int:
     check("and a track that already had one is not rewritten",
           second == [("Ronan", "main"), ("Nikki Ocean", "guest")], str(second))
 
+    # --- a compilation has no album artist to demote against ---------
+    # Deezer credits one to "Various Artists", which is not somebody the
+    # release is by -- it is a word meaning "many of them", and both trackers
+    # file compilations under it rather than under anybody. Demoting against it
+    # made every real performer on every track a stranger to the album credits,
+    # and filling the hole that left wrote "Various Artists" in as the main
+    # artist of all twenty-one tracks.
+    comp_soup = {"artist": {"name": "Various Artists"},
+                 "contributors": [{"name": "Various Artists", "role": "Main"}]}
+    comp_tracks = {
+        "1": {
+            "1": {"artists": [("Lock", "main"), ("arnetes", "main")]},
+            "2": {"artists": [("Eastern Sage", "main"), ("Various Artists", "main")]},
+        }
+    }
+    comp_album = [("Various Artists", "main"), ("Lock", "main"),
+                  ("arnetes", "main"), ("Eastern Sage", "main")]
+    comp_credits, comp_out = scraper.refine_artists(comp_soup, comp_album, comp_tracks)
+    check("the placeholder is not a credit on the release",
+          not any("various" in n.lower() for n, _r in comp_credits), str(comp_credits))
+    check("nor on any track",
+          not any("various" in n.lower()
+                  for t in comp_out["1"].values() for n, _r in t["artists"]),
+          str(comp_out["1"]["2"]["artists"]))
+    check("and every performer keeps the track they are actually on",
+          comp_out["1"]["1"]["artists"] == [("Lock", "main"), ("arnetes", "main")],
+          str(comp_out["1"]["1"]["artists"]))
+    check("with a main artist each, which the trackers require",
+          all(any(r == "main" for _n, r in t["artists"]) for t in comp_out["1"].values()), "")
+
+    # A release credited to nobody else at all keeps it rather than being left
+    # with no artist, which no tracker would take.
+    only_credits, _only_tracks = scraper.refine_artists(
+        {"artist": {"name": "Various Artists"}},
+        [("Various Artists", "main")],
+        {"1": {"1": {"artists": [("Various Artists", "main")]}}},
+    )
+    check("unless it is the only credit there is",
+          only_credits == [("Various Artists", "main")], str(only_credits))
+
     # An album with no main artist of its own has nothing to promote, so the
     # track keeps the credits it arrived with rather than losing them to a
     # rule that has no better answer.

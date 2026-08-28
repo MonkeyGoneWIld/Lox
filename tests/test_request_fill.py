@@ -349,6 +349,43 @@ async def main() -> int:
             check(f"and fills nothing {label}", value is None, str(value))
             check(f"but says why {label}",
                   any("auto-answered" in line for line in log), "")
+        # --- but one match is not a choice -------------------------
+        # Auto-answering used to mean never filling anything, which made the
+        # setting a way to turn request filling off: a release queued because
+        # it fills an open request went up without filling the request it was
+        # fetched for. One match is the unambiguous case and the release was
+        # searched for on the strength of it; several is a choice, and picking
+        # one on a default is the thing worth refusing, because filling a
+        # request is a claim against somebody else's and there is no undo.
+        class OneRequest(StubTracker):
+            """A tracker with exactly one open request for this release."""
+
+            async def request(self, action, data=None, **_):
+                if action == "requests":
+                    return {"results": [OPEN_REQUESTS[0]]}
+                return await StubTracker.request(self, action, data)
+
+        cfg.upload.dry_run = False
+        seen, value, log = await drive([], tracker=OneRequest())
+        check("auto-answering fills the one unambiguous match", value == 8811, str(value))
+        check("without asking about it", not seen, str([s["prompt"] for s in seen]))
+        check("and says which one it filled",
+              any("8811" in line for line in log), "")
+
+        # A single match the tracker no longer has is not filled, which is
+        # also the proof that the id is confirmed against the tracker rather
+        # than taken from the search result: a stale hit would otherwise be
+        # posted against a request that has been filled or deleted.
+        class GoneRequest(StubTracker):
+            """One search hit, and the tracker has never heard of it."""
+
+            async def request(self, action, data=None, **_):
+                if action == "requests":
+                    return {"results": [{**OPEN_REQUESTS[0], "requestId": 4041}]}
+                raise RequestError("no such request")
+
+        _seen, value, _log = await drive([], tracker=GoneRequest())
+        check("a stale single match is not filled", value is None, str(value))
     finally:
         cfg.upload.yes_all = False
         cfg.upload.dry_run = False
