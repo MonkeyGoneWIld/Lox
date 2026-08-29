@@ -377,12 +377,21 @@
           const summary = !chosen.length
             ? 'all'
             : chosen.length === 1 ? chosen[0] : `${chosen.length} of ${options.length}`;
+          // One button, because there was only ever one outcome. "All" ticked
+          // every box, which matches every row; "None" ticked none, which is
+          // no filter at all and also matches every row. Two buttons, the same
+          // table -- and the checkbox handler already collapses a full set to
+          // an empty one, so "All" was a slower way of pressing "None".
+          //
+          // Shown only when something is selected: with nothing ticked there
+          // is nothing to clear, and a button that cannot do anything is worse
+          // than no button.
           const panel = el('div', { class: 'th-choices' },
-            el('div', { class: 'th-choices-head' },
-              el('button', { type: 'button', class: 'linkbtn',
-                             onclick: () => apply([...options]) }, 'All'),
-              el('button', { type: 'button', class: 'linkbtn',
-                             onclick: () => apply([]) }, 'None')),
+            chosen.length
+              ? el('div', { class: 'th-choices-head' },
+                  el('button', { type: 'button', class: 'linkbtn',
+                                 onclick: () => apply([]) }, 'Clear'))
+              : null,
             ...options.map((option) => el('label', { class: 'th-choice' },
               el('input', {
                 type: 'checkbox',
