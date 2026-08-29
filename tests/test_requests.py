@@ -15,6 +15,7 @@ import asyncio
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta
 
 # Before importing lox: the config is read at import time.
 ROOT = tempfile.mkdtemp(prefix="lox-requests-")
@@ -196,6 +197,12 @@ async def main() -> int:
     # an availability lookup, sometimes a second tracker call -- and when the
     # "is it already up" search then missed, the release was filed under Found
     # as worth uploading. Both halves stop at the tracker's own isFilled.
+    # Relative to now, not a fixed date: age_of() reports the largest unit
+    # that fits, so a hardcoded timestamp tests "days" until it is a week
+    # old and then starts failing on its own.
+    added_at = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+    filled_at = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+
     class OneRequest:
         """A tracker serving a single request, filled or not."""
 
@@ -209,12 +216,12 @@ async def main() -> int:
                 "requestId": 8811, "categoryName": "Music", "title": "Eden Sauvage",
                 "year": 2025, "artists": [[{"name": "Los Eclipses"}]],
                 "formatList": ["FLAC"], "mediaList": ["WEB"], "bitrateList": ["Lossless"],
-                "totalBounty": 1024 ** 3, "timeAdded": "2026-08-20 09:23:07",
+                "totalBounty": 1024 ** 3, "timeAdded": added_at,
                 "description": "",
             }
             if self.filled:
                 row.update({"isFilled": True, "fillerName": "someone",
-                            "torrentId": 3730745, "timeFilled": "2026-08-20 11:14:26"})
+                            "torrentId": 3730745, "timeFilled": filled_at})
             return row if action == "request" else {"results": [row], "pages": 1}
 
         def can_check(self, tracker):
@@ -247,7 +254,7 @@ async def main() -> int:
     check("it is not offered as fillable", got.fillable is False, str(got.fillable))
     check("and counts as already on the tracker",
           got.already_on_tracker is True, str(got.already_on_tracker))
-    check("the age it has sat open is reported", got.created == "2026-08-20 09:23:07", got.created)
+    check("the age it has sat open is reported", got.created == added_at, got.created)
 
     # An open one still goes the whole way.
     gw = OneRequest(filled=False)
