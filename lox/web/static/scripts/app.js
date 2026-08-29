@@ -43,6 +43,9 @@
     // after the other, and which of them goes first is a decision -- the
     // first one to post owns the group the second one adds to.
     uploadTrackers: [],
+    //: Uploads still to come after the one running, for the batch paths that
+    //: do not go through the Uploading tab's own queue.
+    uploadsPending: 0,
     // The download folder as it was last read, and what is ticked in it.
     folders: [],
     // The tracker chip being dragged into a new position, if any.
@@ -594,6 +597,22 @@
       try { localStorage.setItem(`fold:${id}`, node.open ? 'open' : 'shut'); } catch { /* ignore */ }
     });
   }
+
+  // A details element does not close when you click past it, so the filter
+  // menu stayed open over the table until it was clicked a second time -- and
+  // opening a second column left the first one hanging open behind it. One
+  // listener for the document rather than one per menu, because the menus are
+  // rebuilt on every render and their listeners would go with them.
+  document.addEventListener('click', (e) => {
+    $$('.th-choicebox[open]').forEach((box) => {
+      if (!box.contains(e.target)) box.open = false;
+    });
+  });
+  // Escape closes the one you are in, which is what it does everywhere else.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    $$('.th-choicebox[open]').forEach((box) => { box.open = false; });
+  });
 
   const empty = (message) => el('p', { class: 'empty' }, message);
   const spinner = (label) => el('p', { class: 'empty' }, el('span', { class: 'spinner' }), ' ' + label);
@@ -1794,6 +1813,20 @@
   // albums. Uploads ask questions, and two uploads asking at once gives you a
   // prompt you cannot tell the release for -- so those still run in turn, each
   // starting as soon as its own download lands.
+  /**
+   * How many uploads are still to come after the one running.
+   *
+   * The Uploading tab's own queue keeps this in state.uploadQueue, but the
+   * queue page's "Download & upload selected" does not use it: it downloads
+   * the batch and then calls startUpload for each in turn, so the count on the
+   * card was always zero for the one path that most needs it.
+   *
+   * @param {number} n - How many are left after the current one.
+   */
+  function uploadsPending(n) {
+    state.uploadsPending = Math.max(0, n);
+  }
+
   async function bulkDownloadAndUpload(entries) {
     if (!state.uploadTrackers.length) return toast('Pick a tracker to upload to first', 'bad');
     clearPicks();
@@ -1808,17 +1841,23 @@
     })));
 
     // One at a time from here, in the order they were picked.
-    for (const { id, item, label, queued } of started) {
-      if (!queued) continue;
-      const job = await waitForDownload(queued.id);
-      if (!job || job.status !== 'done' || !job.folder) {
-        toast(`${label}: ${job?.error || 'download did not finish'}`, 'bad');
-        continue;
+    const usable = started.filter((s) => s.queued);
+    try {
+      for (const [index, { id, item, label, queued }] of usable.entries()) {
+        const job = await waitForDownload(queued.id);
+        if (!job || job.status !== 'done' || !job.folder) {
+          toast(`${label}: ${job?.error || 'download did not finish'}`, 'bad');
+          continue;
+        }
+        go(addr('/uploading'));
+        // Everything after this one, so the card can say what is behind it.
+        uploadsPending(usable.length - index - 1);
+        // Where this one release is missing from, not where uploads go in
+        // general: a release OPS already has should not be offered to OPS.
+        await startUpload(job.folder, uploadTargets(item), id);
       }
-      go(addr('/uploading'));
-      // Where this one release is missing from, not where uploads go in
-      // general: a release OPS already has should not be offered to OPS.
-      await startUpload(job.folder, uploadTargets(item), id);
+    } finally {
+      uploadsPending(0);
     }
   }
 
@@ -5927,6 +5966,22 @@ It leaves the queue and will not be matched to this request again. The request s
   const trackerHome = (code) => (state.trackers.find((t) => t.code === code) || {}).url || '';
 
   /**
+   * Where one request lives on its tracker.
+   *
+   * Built rather than carried, so a request chosen at the prompt links the
+   * same way as one that was already matched -- both are a number and a
+   * tracker, and Gazelle spells the address the same on either site.
+   *
+   * @param {string} code - Tracker code.
+   * @param {string|number} id - Request id.
+   * @returns {string} The address, or "" when the tracker is unknown.
+   */
+  function requestHref(code, id) {
+    const base = trackerHome(code);
+    return base && id ? `${base.replace(/\/+$/, '')}/requests.php?action=view&id=${id}` : '';
+  }
+
+  /**
    * Where each tracker verdict on a row leads.
    *
    * The stored rows carry this from the server, because it knows which group
@@ -7032,6 +7087,14 @@ They will not be listed again, even if a later scan finds them.`)) {
                ? trackerTag(o.tracker, 'ok', 'uploaded', o.url, `Open it on ${o.tracker}`)
                : el('span', { class: `tag ${o.ok ? 'ok' : 'bad'}` },
                     o.ok ? (result.dry_run ? 'would upload' : 'uploaded') : (o.error || 'failed')),
+             // Which request this tracker's post answered. A filled request is
+             // a second page that now points at this upload, and the result
+             // named only the torrent.
+             o.request_id
+               ? trackerTag(o.tracker, 'warn', `filled #${o.request_id}`,
+                            requestHref(o.tracker, o.request_id),
+                            `Open the ${o.tracker} request this filled`)
+               : null,
              el('span', { class: 'card-sub' }, o.folder ? basename(o.folder) : '')),
           ...detail,
         ),
@@ -7182,6 +7245,41 @@ They will not be listed again, even if a later scan finds them.`)) {
     card.classList.remove('answering');
     $$('button, input, select, textarea', card).forEach((c) => { c.disabled = false; });
     $$('.answering-note', card).forEach((note) => note.remove());
+  }
+
+  /**
+   * The requests an upload is answering, as tags.
+   *
+   * Two things worth saying, and they are not the same: the request this
+   * release was already matched to before the run started, and the request a
+   * tracker's post actually filled. A run auto-answering its prompts fills the
+   * linked one without asking, which used to happen silently -- the operator
+   * was told the release went up and left to find out for themselves whether
+   * the request they queued it for had been answered.
+   *
+   * @param {object} context - The flow's context.
+   * @returns {Element[]} Zero or more tags.
+   */
+  function flowRequestTags(context) {
+    const filled = context.filled_requests || {};
+    const urls = context.request_urls || {};
+    const tags = [];
+    const seen = new Set();
+
+    for (const [tracker, id] of Object.entries(filled)) {
+      seen.add(String(id));
+      tags.push(trackerTag(tracker, 'ok', `filled ${tracker} #${id}`,
+                           urls[tracker] || requestHref(tracker, id) || context.request_url || '',
+                           `Open the ${tracker} request this filled`));
+    }
+    // Still only linked: named so the operator can check it is the right one
+    // before the post goes out.
+    if (context.request_id && !seen.has(String(context.request_id))) {
+      tags.push(trackerTag(context.request_tracker || '', 'warn',
+                           `fills ${context.request_tracker || ''} #${context.request_id}`.replace('  ', ' '),
+                           context.request_url || '', 'Open the request this fills'));
+    }
+    return tags;
   }
 
   function flowStep(flow) {
@@ -7427,9 +7525,16 @@ They will not be listed again, even if a later scan finds them.`)) {
     // The head carries two things that change independently of the run's
     // state: how many uploads are still queued behind this one, and whether
     // this one is filling a request. Keyed on all three so neither is stale.
-    const waiting = state.uploadQueue.length;
+    //
+    // Both queues, because there are two: the Uploading tab's own folder queue
+    // and the queue page's "Download & upload selected", which downloads a
+    // batch and then calls startUpload for each in turn without going near
+    // uploadQueue -- so the count was always zero for the path that most
+    // needs it.
+    const waiting = state.uploadQueue.length + (state.uploadsPending || 0);
     const context = flow.context || {};
-    const headKey = `${flow.state}|${waiting}|${context.request_url || ''}`;
+    const requestTags = flowRequestTags(context);
+    const headKey = `${flow.state}|${waiting}|${requestTags.map((t) => t.textContent).join(',')}`;
     // data-state stays the plain state, because the rail counts the cards
     // waiting on somebody with it. The composite goes in its own attribute.
     head.dataset.state = flow.state;
@@ -7442,15 +7547,7 @@ They will not be listed again, even if a later scan finds them.`)) {
           // Filling a request is the one upload where posting the wrong
           // release cannot be undone, and the card said only which folder it
           // was reading. The request it is answering is one click now.
-          context.request_url
-            ? el('a', {
-                class: 'tag warn tag-link',
-                href: context.request_url,
-                target: '_blank',
-                rel: 'noopener',
-                title: 'Open the request this fills',
-              }, `fills ${context.request_tracker || ''} #${context.request_id || ''}`.replace('  ', ' '))
-            : null,
+          ...requestTags,
           // What is still to come. It was on a panel of its own above the
           // cards, which is not where you are looking while answering one.
           (flow.state === 'running' || flow.state === 'waiting') && waiting

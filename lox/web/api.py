@@ -1241,7 +1241,7 @@ def _record_upload(
         store.flush(UPLOADS)
 
 
-def _forget_download(downloader: Downloader, folder: str) -> None:
+def _forget_download(downloader: Downloader, folder: str, album_id: str = "") -> None:
     """Drop the finished download a release was uploaded from.
 
     An upload leaves the release seeding from the per-tracker link directories
@@ -1249,48 +1249,107 @@ def _forget_download(downloader: Downloader, folder: str) -> None:
     a folder that is not there any more -- sitting on the Downloading list with
     a Delete button for a path that no longer exists.
 
-    Only finished jobs, and only when the folder really has gone: a job still
-    running is still about something.
+    Matched on the album first and the folder second. Paths are the fragile
+    half of this: the downloader strips a trailing dot from a title when it
+    names the folder, the pipeline renames the folder partway through the
+    upload, and either is enough for a path comparison to miss and leave the
+    row behind. The album id is the same number at both ends.
+
+    Only finished jobs: one still running is still about something.
 
     Args:
         downloader: The download registry.
         folder: The release folder that was uploaded.
+        album_id: The Deezer release, when the upload came from one.
     """
     target = os.path.abspath(folder)
-    if os.path.isdir(target):
-        return
+    folder_gone = not os.path.isdir(target)
     for job_id, job in list(downloader.jobs.items()):
         if job.status in ("queued", "running"):
             continue
-        if job.folder and os.path.abspath(job.folder) == target:
+        if album_id and str(job.album_id) == str(album_id):
+            del downloader.jobs[job_id]
+            continue
+        # By path only where the path really has gone, which is what says the
+        # row is about nothing. A folder still on disk is still worth a row.
+        if folder_gone and job.folder and os.path.abspath(job.folder) == target:
             del downloader.jobs[job_id]
 
 
-def _upload_context(store: CheckerStore, album_id: str) -> dict[str, Any]:
+def _linked_requests(store: CheckerStore, album_id: str, folder: str) -> list[dict[str, Any]]:
+    """Every open request this release has already been matched to.
+
+    Matched by Deezer id where the upload came from a queue row, and otherwise
+    by folder name against the stored title -- an upload started by hand from
+    the Uploading tab carries no id, and it is still the same release. Without
+    the fallback, uploading a queued release by pressing Upload instead of
+    "Download & upload" filled nothing and said nothing, for a pairing that was
+    already on record.
+
+    Args:
+        store: The checker store.
+        album_id: The Deezer release, when the upload came from one.
+        folder: The release folder, for the name fallback.
+
+    Returns:
+        One entry per open linked request, tracker and id included.
+    """
+    basename = os.path.basename(str(folder or "").rstrip("/\\")).lower()
+    found: list[dict[str, Any]] = []
+    for key, entry in (store.load("requests") or {}).items():
+        # A request already answered is not one to fill again.
+        if entry.get("uploaded_at") or entry.get("filled"):
+            continue
+        if not entry.get("deezer_id"):
+            continue
+
+        if album_id and str(entry.get("deezer_id")) == str(album_id):
+            pass
+        elif not album_id and basename:
+            title = str(entry.get("album") or entry.get("deezer_title") or "").strip().lower()
+            artist = str(entry.get("artist") or entry.get("deezer_artist") or "").strip().lower()
+            # Both have to be long enough to mean something: a one-letter
+            # artist matches almost any folder, and filling the wrong request
+            # is not undoable.
+            if len(title) < 3 or len(artist) < 3 or title not in basename or artist not in basename:
+                continue
+        else:
+            continue
+
+        tracker, _sep, request_id = str(key).partition(":")
+        found.append({
+            "tracker": tracker,
+            "request_id": request_id,
+            "request_url": entry.get("request_url") or entry.get("url") or "",
+        })
+    return found
+
+
+def _upload_context(store: CheckerStore, album_id: str, folder: str = "") -> dict[str, Any]:
     """What an upload is for, beyond the folder it is reading.
 
     Args:
         store: The checker store.
         album_id: The Deezer release, when the upload came from one.
+        folder: The release folder, for uploads started by hand.
 
     Returns:
-        ``request_url``, ``request_tracker`` and ``request_id`` when this
-        release fills an open request, or an empty dict.
+        The first linked request for the card to name, plus every one of them
+        keyed by tracker for the pipeline to fill. Empty when there are none.
     """
-    if not album_id:
+    linked = _linked_requests(store, album_id, folder)
+    if not linked:
         return {}
-    for key, entry in (store.load("requests") or {}).items():
-        if str(entry.get("deezer_id") or "") != str(album_id):
-            continue
-        if entry.get("uploaded_at") or entry.get("filled"):
-            continue
-        tracker, _sep, request_id = str(key).partition(":")
-        return {
-            "request_url": entry.get("request_url") or entry.get("url") or "",
-            "request_tracker": tracker,
-            "request_id": request_id,
-        }
-    return {}
+    first = linked[0]
+    return {
+        "request_url": first["request_url"],
+        "request_tracker": first["tracker"],
+        "request_id": first["request_id"],
+        # Per tracker, because a request lives on one: the pipeline asks this
+        # per tracker as it works through them.
+        "linked_requests": {r["tracker"]: r["request_id"] for r in linked},
+        "request_urls": {r["tracker"]: r["request_url"] for r in linked if r["request_url"]},
+    }
 
 
 def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: list[str]) -> None:
@@ -2477,8 +2536,13 @@ async def api_upload(request: web.Request) -> web.Response:
 
     downloader: Downloader = request.app["downloader"]
 
+    context = _upload_context(store, album_id, folder)
+
     async def run(f):
-        result = await run_uploads(f, folder, trackers, source=source, auto_rename=auto_rename)
+        result = await run_uploads(
+            f, folder, trackers, source=source, auto_rename=auto_rename,
+            linked_requests=context.get("linked_requests") or {},
+        )
         # Where the release actually ended up. The pipeline renames the folder
         # partway through, so the path this started with is not the one on disk
         # when it finishes -- and both of these went looking for the old name,
@@ -2489,21 +2553,21 @@ async def api_upload(request: web.Request) -> web.Response:
         # list slightly less true than it was before.
         if result.get("succeeded") and not cfg.upload.dry_run:
             _mark_uploaded(store, album_id, final, result["succeeded"])
-            _forget_download(downloader, final)
+            _forget_download(downloader, final, album_id)
         _record_upload(store, f, final, trackers, album_id, result)
         return result
 
     label = f"{os.path.basename(folder)} to {', '.join(trackers)}"
+    # What this upload is for, in place before the run starts. An upload that
+    # fills a request is the one case where posting the wrong release cannot be
+    # undone, and the card had the folder name and nothing else -- the request
+    # it was answering was three tabs away.
     flow = flows.start(
         "upload",
         f"{'Dry run of ' if cfg.upload.dry_run else 'Uploading '}{label}",
         run,
+        context=context,
     )
-    # What this upload is for. An upload that fills a request is the one case
-    # where posting the wrong release cannot be undone, and the card had the
-    # folder name and nothing else -- the request it was answering was three
-    # tabs away.
-    flow.context = _upload_context(store, album_id)
     return json_response(
         {"flow_id": flow.id, "trackers": trackers, "linking": cfg.linking.enabled, "dry_run": cfg.upload.dry_run}
     )

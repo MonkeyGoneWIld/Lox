@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import platform
 import re
@@ -274,6 +275,8 @@ async def upload(
     on_uploaded: "Callable[[str, str | None], None] | None" = None,
     on_tracker: "Callable[[str], None] | None" = None,
     link_derived: "Callable[[str, str], Awaitable[str]] | None" = None,
+    linked_requests: dict[str, str] | None = None,
+    on_request: "Callable[[str, int], None] | None" = None,
 ) -> None:
     """Upload an album folder to Gazelle Site.
 
@@ -527,7 +530,22 @@ async def upload(
                 compress_pictures(upload_path)
 
             if not request_id and cfg.upload.requests.check_requests:
-                request_id = await check_requests(gazelle_site, searchstrs)
+                request_id = await check_requests(
+                    gazelle_site,
+                    searchstrs,
+                    # What a request check already matched this release to on
+                    # THIS tracker. A request lives on one tracker, so the
+                    # answer is per-tracker rather than per-release.
+                    linked_request_id=(linked_requests or {}).get(tracker),
+                )
+            if request_id and on_request is not None:
+                # Said out loud to whoever is watching. A filled request is a
+                # page that now points at this upload, and the card had no way
+                # to say which one -- the operator was told the release went up
+                # and left to find out for themselves whether the request they
+                # queued it for had been answered.
+                with contextlib.suppress(TypeError, ValueError):
+                    on_request(tracker, int(request_id))
 
             torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
                 gazelle_site,

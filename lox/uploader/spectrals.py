@@ -564,6 +564,27 @@ async def report_lossy_master(
     click.secho("\nReported upload for Lossy Master/WEB Approval Request.", fg="cyan")
 
 
+#: What lox fetched the release from, said the way a staffer reading the report
+#: wants it: where it came from, then the address. Offered as the starting text
+#: rather than sent -- it is the operator's report and they may have more to say
+#: about the source than a URL, but an empty box for a question with an obvious
+#: answer is a question asked for nothing.
+LOSSY_SOURCE_NOTE = "Downloaded Directly from Deezer:"
+
+
+def lossy_comment_default(source_url: str | None) -> str:
+    """The text the lossy-approval box starts with.
+
+    Args:
+        source_url: Where the release was fetched from, when it is known.
+
+    Returns:
+        A comment to start from, or "" when there is no source to name.
+    """
+    url = (source_url or "").strip()
+    return f"{LOSSY_SOURCE_NOTE} {url}" if url else ""
+
+
 async def generate_lossy_approval_comment(source_url, filenames):
     while True:
         comment = await click.prompt(
@@ -574,7 +595,7 @@ async def generate_lossy_approval_comment(source_url, filenames):
                 fg="cyan",
                 bold=True,
             ),
-            default="",
+            default=lossy_comment_default(source_url),
         )
         if comment or source_url:
             return comment

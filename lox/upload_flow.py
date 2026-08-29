@@ -1221,11 +1221,15 @@ class FlowPrompts:
             if key in answer:
                 metadata[key] = str(answer.get(key) or "").strip() or None
 
+        # Emptied means emptied, for both. Genres used to be the exception:
+        # clearing the list left the old ones in place, so a genre removed
+        # because it was wrong came straight back, the record validated on the
+        # strength of it, and the upload went out with the genre the operator
+        # had just deleted. An empty list is an answer -- and one the validator
+        # is there to refuse.
         for key in ("genres", "urls"):
             if isinstance(answer.get(key), list):
-                values = [str(v).strip() for v in answer[key] if str(v).strip()]
-                if values or key == "urls":
-                    metadata[key] = values
+                metadata[key] = [str(v).strip() for v in answer[key] if str(v).strip()]
 
         edits = answer.get("tracks")
         if isinstance(edits, dict):
@@ -1649,6 +1653,8 @@ async def run_upload(
     link_for: Any = None,
     on_uploaded: Any = None,
     link_derived: Any = None,
+    linked_requests: dict[str, str] | None = None,
+    on_request: Any = None,
 ) -> dict[str, Any]:
     """Upload one folder to every chosen tracker, asking the browser as it goes.
 
@@ -1712,6 +1718,8 @@ async def run_upload(
             on_uploaded=on_uploaded,
             on_tracker=on_tracker,
             link_derived=link_derived,
+            linked_requests=linked_requests,
+            on_request=on_request,
         )
 
     uploading.reset(token)
@@ -1737,6 +1745,7 @@ async def run_uploads(
     *,
     source: str = "WEB",
     auto_rename: bool = False,
+    linked_requests: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Upload one folder to several trackers, hardlinking per tracker as it goes.
 
@@ -1775,10 +1784,24 @@ async def run_uploads(
     # that stops on the second tracker must not report the second as uploaded,
     # nor the first as failed.
     posted_to: dict[str, str] = {}
+    # Which request each tracker's post filled, so the card can link it. A
+    # filled request is a page that now points at this upload, and the operator
+    # was told the release went up and left to find out for themselves whether
+    # the request they queued it for had been answered.
+    filled: dict[str, int] = {}
 
     def on_uploaded(tracker: str, url: Any) -> None:
         posted_to[tracker] = str(url or "")
         flow.note(f"{tracker} took the upload.")
+
+    def on_request(tracker: str, request_id: int) -> None:
+        filled[tracker] = request_id
+        flow.note(f"{tracker}: filling request {request_id}.")
+        # On the card while it is still running, not only in the result.
+        context = dict(flow.context or {})
+        context.setdefault("filled_requests", {})
+        context["filled_requests"] = {**context["filled_requests"], tracker: request_id}
+        flow.context = context
 
     async def link(tracker: str, path: str, label: str) -> str:
         """Place one prepared folder where a tracker can seed it from.
@@ -1835,6 +1858,7 @@ async def run_uploads(
             posted = await run_upload(
                 flow, folder, trackers, source=source, auto_rename=auto_rename,
                 link_for=link_for, on_uploaded=on_uploaded, link_derived=link_derived,
+                linked_requests=linked_requests, on_request=on_request,
             )
         except click.Abort:
             flow.note("Aborted.", "warning")
@@ -1860,6 +1884,8 @@ async def run_uploads(
                     # page that knows the exact torrent id was sending people
                     # to a search box.
                     "url": posted_to.get(tracker, ""),
+                    # The request this post filled, if it filled one.
+                    "request_id": filled.get(tracker),
                     "would_post": posted.get("fields") or {},
                     "descriptions": posted.get("descriptions") or {},
                     "posts": posted.get("posts") or [],
@@ -1874,6 +1900,7 @@ async def run_uploads(
             "folder": folder,
             # Where it ended up, which is what has to be removed afterwards.
             "source_folder": source_folder,
+            "filled_requests": dict(filled),
             "outcomes": outcomes,
             "succeeded": succeeded,
             "dry_run": _dry_run(),

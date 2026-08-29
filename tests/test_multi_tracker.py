@@ -520,6 +520,8 @@ def ui_checks() -> None:
           pathlib.Path("lox/flow.py").read_text(encoding="utf-8"), "")
     web_api = pathlib.Path("lox/web/api.py").read_text(encoding="utf-8")
     css = pathlib.Path("lox/web/static/css/app.css").read_text(encoding="utf-8")
+    up_src = pathlib.Path("lox/uploader/__init__.py").read_text(encoding="utf-8")
+    up_src = pathlib.Path("lox/uploader/__init__.py").read_text(encoding="utf-8")
     check("with an endpoint that refuses to drop a running one",
           '@routes.post("/api/flows/{flow_id}/dismiss")' in web_api
           and '"that run is not finished"' in web_api, "")
@@ -550,7 +552,6 @@ def ui_checks() -> None:
 
     # "Open" is an anchor styled as a button, so the button-to-button gap rule
     # never applied to it and it sat flush against Rename.
-    css = pathlib.Path("lox/web/static/css/app.css").read_text(encoding="utf-8")
     check("every control in a row-actions cell is spaced",
           ".table td.row-actions > span {" in css
           and ".table td.row-actions button + button" not in css, "")
@@ -724,8 +725,68 @@ def ui_checks() -> None:
     check("so a request cannot be offered as a group to post into",
           "_GROUP_QUESTION" in flow_src and "_REQUEST_QUESTION" in flow_src, "")
     fill_src = pathlib.Path("lox/uploader/request_fill.py").read_text(encoding="utf-8")
-    check("and auto-answering fills the one unambiguous match",
-          "if len(results) != 1:" in fill_src, "")
+    # Auto-answering fills the request this release was already matched to, and
+    # nothing else. Filling any single search hit decided on a default the one
+    # thing worth refusing; filling nothing made the setting a way to turn
+    # request filling off.
+    check("and auto-answering fills only what was already matched",
+          "if cfg.upload.yes_all and linked_request_id:" in fill_src, "")
+    check("asked for before anything is searched",
+          fill_src.index("linked_request_id:") < fill_src.index("get_request_results("), "")
+    check("and confirmed against the tracker, in case it has gone since",
+          "no longer there; asking instead" in fill_src, "")
+
+    # The pairing is per tracker, because a request lives on one.
+    check("the pipeline is told which request belongs to which tracker",
+          "linked_request_id=(linked_requests or {}).get(tracker)" in up_src, "")
+    check("and says which one it filled",
+          "on_request(tracker, int(request_id))" in up_src, "")
+    check("so the card can name it, filled or merely linked",
+          "function flowRequestTags(context)" in js and "filled_requests" in js, "")
+    check("and the result links it per tracker",
+          "function requestHref(code, id)" in js and "`filled #${o.request_id}`" in js, "")
+    check("with a manual upload finding the pairing by folder name",
+          "def _linked_requests(store: CheckerStore, album_id: str, folder: str)" in web_api
+          and "title not in basename or artist not in basename" in web_api, "")
+    check("and the context in place before the run starts",
+          "context=context," in web_api and "flow.context = dict(context or {})" in
+          pathlib.Path("lox/flow.py").read_text(encoding="utf-8"), "")
+
+    # A genre removed came straight back, and the record validated on it.
+    check("an emptied genre list is empty",
+          'metadata[key] = [str(v).strip() for v in answer[key] if str(v).strip()]' in flow_src
+          and 'if values or key == "urls":' not in flow_src, "")
+
+    # The lossy report asked for a comment with an empty box, for a question
+    # whose answer lox already knows.
+    spectral_src = pathlib.Path("lox/uploader/spectrals.py").read_text(encoding="utf-8")
+    check("the lossy report starts from where the release came from",
+          "def lossy_comment_default" in spectral_src
+          and "default=lossy_comment_default(source_url)" in spectral_src, "")
+
+    # Five albums at once meant five times five streams open to Deezer.
+    dl_src = pathlib.Path("lox/deezer/download.py").read_text(encoding="utf-8")
+    check("the cap on track downloads is shared by every album",
+          "def _stream_slots(self)" in dl_src
+          and "semaphore = self._stream_slots()" in dl_src, "")
+    check("and a slow track fails on its own rather than taking the album",
+          "OSError, TimeoutError) as e:" in dl_src, "")
+    check("saying what went wrong, not only how many",
+          'job.error += f" -- {reasons[0]}"' in dl_src, "")
+
+    # A path comparison is the fragile half: the downloader strips a trailing
+    # dot from a title, and the pipeline renames the folder mid-upload.
+    check("the download is forgotten by album, not only by path",
+          'if album_id and str(job.album_id) == str(album_id):' in web_api, "")
+
+    # A details element does not close when you click past it.
+    check("the filter menu closes when you click away",
+          "$$('.th-choicebox[open]').forEach" in js and "box.contains(e.target)" in js, "")
+
+    # The queue page's batch never touched the Uploading tab's own queue.
+    check("the card counts both ways of queueing an upload",
+          "state.uploadQueue.length + (state.uploadsPending || 0)" in js
+          and "uploadsPending(usable.length - index - 1)" in js, "")
 
     # The folder is renamed mid-run, so the path the run started with is not
     # the one on disk when it ends.

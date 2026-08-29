@@ -17,62 +17,64 @@ if TYPE_CHECKING:
     from lox.trackers.base import BaseGazelleApi
 
 
-async def check_requests(gazelle_site: "BaseGazelleApi", searchstrs: list[str]) -> int | None:
+async def check_requests(
+    gazelle_site: "BaseGazelleApi",
+    searchstrs: list[str],
+    linked_request_id: int | str | None = None,
+) -> int | None:
     """Search for requests on site and offer a choice to fill one.
+
+    Auto-answering fills exactly one thing without asking: the request this
+    release was already matched to by a request check, on this tracker. That
+    pairing was decided by a search that ran on its own time and can be looked
+    at in the lookup history -- filling it is carrying out a decision already
+    made, not making one on a default.
+
+    Everything else is asked, whatever the auto-answer setting says. A search
+    at upload time that turns up three candidates is a choice, and filling a
+    request is a claim against somebody else's specific request with no undo;
+    a release with no linked request at all is a discovery, and worth stopping
+    for. Auto-answering used to skip the question entirely, which made the
+    setting a way to turn request filling off; then it filled any single match,
+    which decided on a default the thing worth refusing.
 
     Args:
         gazelle_site: The tracker API instance.
         searchstrs: Search strings to find requests.
+        linked_request_id: The request this release is already matched to on
+            this tracker, when a request check found one.
 
     Returns:
-        Request ID if user chooses to fill one, None otherwise. Nothing is ever
-        filled in a dry run -- the whole upload is skipped there -- but the id
-        is still returned, so it appears in the payload the rehearsal reports.
+        Request ID if a request is to be filled, None otherwise. Nothing is
+        ever filled in a dry run -- the whole upload is skipped there -- but the
+        id is still returned, so it appears in the payload the rehearsal
+        reports.
     """
-    results = await get_request_results(gazelle_site, searchstrs)
-    print_request_results(gazelle_site, results, " / ".join(searchstrs))
-
-    # Auto-answering used to mean not filling anything, ever. That made the
-    # setting a way to turn request filling off, which is not what it says on
-    # it: a release queued because it fills an open request, uploaded with
-    # prompts auto-answered, went up without filling the request it was
-    # fetched for.
-    #
-    # So it fills the unambiguous case and only that. One match is not a
-    # choice, and the release was searched for on the strength of it. Several
-    # is a choice, and picking one on a default is the thing worth refusing:
-    # filling a request is a claim against somebody else's specific request,
-    # and there is no undo. Both outcomes are said out loud, because a run
-    # that quietly did neither is the state this started in.
-    if cfg.upload.yes_all:
-        if len(results) != 1:
-            # Always says why, including when nothing matched. An unattended run
-            # that quietly filled no request is indistinguishable from one that
-            # never looked, and the log is the only place that can tell them
-            # apart afterwards.
+    # The linked one is settled before anything is searched for: it costs a
+    # tracker call to confirm rather than a search, and it is the answer.
+    if cfg.upload.yes_all and linked_request_id:
+        try:
+            chosen = int(linked_request_id)
+        except (TypeError, ValueError):
+            chosen = 0
+        if chosen:
             click.secho(
-                f"Not filling a request: {len(results)} matched and prompts are being "
-                "auto-answered, so there is no unambiguous one to fill."
-                if results else
-                "Not filling a request: nothing matched, and prompts are being auto-answered.",
+                f"Filling request {chosen}, which this release was already matched to. "
+                "Prompts are being auto-answered.",
+                fg="cyan",
+            )
+            # Confirmed against the tracker even so: a match recorded last week
+            # can name a request somebody has since filled or deleted, and the
+            # confirmation is what re-reads it.
+            if await _confirm_request_id(gazelle_site, chosen) is True:
+                return chosen
+            click.secho(
+                f"Request {chosen} is no longer there; asking instead.",
                 fg="yellow",
             )
-            return None
-        only = results[0]
-        try:
-            chosen = int(only["requestId"])
-        except (KeyError, TypeError, ValueError):
-            click.secho("Not filling a request: the one match has no usable id.", fg="yellow")
-            return None
-        click.secho(
-            f"Filling the one matching request ({chosen}) -- prompts are being auto-answered.",
-            fg="cyan",
-        )
-        # Still confirmed against the tracker, which is what re-reads the
-        # request and prints what it asks for. A stale search result naming a
-        # request that has since been filled or deleted must not be posted
-        # against.
-        return chosen if await _confirm_request_id(gazelle_site, chosen) is True else None
+
+    results = await get_request_results(gazelle_site, searchstrs)
+    print_request_results(gazelle_site, results, " / ".join(searchstrs))
 
     # A dry run asks even when the search found nothing.
     #

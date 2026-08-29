@@ -320,18 +320,29 @@ class FlowRegistry:
         """Initialize an empty registry."""
         self.flows: dict[str, Flow] = {}
 
-    def start(self, kind: str, label: str, driver: Callable[[Flow], Awaitable[Any]]) -> Flow:
+    def start(
+        self,
+        kind: str,
+        label: str,
+        driver: Callable[[Flow], Awaitable[Any]],
+        context: dict[str, Any] | None = None,
+    ) -> Flow:
         """Run a driver coroutine as a flow.
 
         Args:
             kind: Family.
             label: Description.
             driver: Coroutine taking the flow.
+            context: What the run is about, set before the driver starts. It
+                has to be in place first: the driver adds to it as it goes --
+                which request it filled, and on which tracker -- and a caller
+                assigning it afterwards would wipe that.
 
         Returns:
             The registered flow, already running.
         """
         flow = Flow(kind, label)
+        flow.context = dict(context or {})
         self.flows[flow.id] = flow
 
         async def run() -> None:

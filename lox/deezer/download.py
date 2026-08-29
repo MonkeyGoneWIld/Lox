@@ -213,6 +213,14 @@ class Downloader:
         # the worker carrying it.
         self._running: dict[str, asyncio.Task] = {}
         self._stopping = False
+        # Every track download in the process, not every track download in one
+        # album. The same number sized both the pool of album workers AND each
+        # album's own track semaphore, so five albums at once meant five times
+        # five streams open to Deezer -- which timed out, one track at a time,
+        # for releases that downloaded perfectly on their own. Created lazily:
+        # a semaphore binds to the running loop, and this is built before there
+        # is one.
+        self._streams: asyncio.Semaphore | None = None
 
     @property
     def download_dir(self) -> str:
@@ -253,6 +261,12 @@ class Downloader:
         for listener in self._listeners:
             with contextlib.suppress(Exception):
                 listener(job)
+
+    def _stream_slots(self) -> asyncio.Semaphore:
+        """The cap on simultaneous track downloads, shared by every album."""
+        if self._streams is None:
+            self._streams = asyncio.Semaphore(max(1, self.concurrency))
+        return self._streams
 
     async def start(self) -> None:
         """Spin up the worker pool if it is not already running."""
@@ -416,7 +430,9 @@ class Downloader:
 
             await self._fetch_cover(job, meta)
 
-            semaphore = asyncio.Semaphore(self.concurrency)
+            # Shared, so the total in flight is the setting rather than the
+            # setting squared.
+            semaphore = self._stream_slots()
             await asyncio.gather(
                 *(
                     self._download_track(job, song, track, meta, semaphore)
@@ -427,7 +443,15 @@ class Downloader:
             failures = [t for t in job.tracks if t.status != "done"]
             if failures:
                 job.status = "failed"
+                # Naming one reason, because "1 of 1 track(s) failed" says only
+                # that something went wrong and leaves the log with nothing to
+                # go on. The rest are on the tracks themselves.
+                reasons = [t.error for t in failures if t.error]
                 job.error = f"{len(failures)} of {len(job.tracks)} track(s) failed"
+                if reasons:
+                    job.error += f" -- {reasons[0]}"
+                    if len(set(reasons)) > 1:
+                        job.error += f" (and {len(set(reasons)) - 1} other reason(s))"
             else:
                 job.status = "done"
                 self._settle_folder(job)
@@ -529,9 +553,14 @@ class Downloader:
 
                 track.path = path
                 track.status = "done"
-            except (DeezerGWError, DownloadError, aiohttp.ClientError, OSError) as e:
+            # TimeoutError was not in here, and asyncio raises it plainly
+            # rather than as a ClientError: a slow track took the whole album
+            # down with it instead of failing on its own.
+            except (DeezerGWError, DownloadError, aiohttp.ClientError, OSError, TimeoutError) as e:
                 track.status = "failed"
-                track.error = str(e)
+                track.error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                debug.log("download: album=%s track=%s failed: %s",
+                          job.album_id, track.title, track.error, level=logging.WARNING)
             finally:
                 self._notify(job)
 

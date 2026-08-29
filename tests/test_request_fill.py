@@ -150,12 +150,14 @@ class StubTracker:
         return {}
 
 
-async def drive(answers: list, tracker=None):
+async def drive(answers: list, tracker=None, linked=None):
     """Run check_requests, answering each question in turn.
 
     Args:
         answers: One answer per question, in order.
         tracker: The stub tracker to use.
+        linked: The request this release was already matched to on this
+            tracker, as a request check would have recorded it.
 
     Returns:
         Tuple of (steps seen, returned value, log lines).
@@ -167,7 +169,8 @@ async def drive(answers: list, tracker=None):
 
     async def run():
         with FlowPrompts(flow, os.environ["LOX_DOWNLOAD_DIR"]):
-            out["value"] = await check_requests(tracker or StubTracker(), ["Doja Cat Scarlet"])
+            out["value"] = await check_requests(
+                tracker or StubTracker(), ["Doja Cat Scarlet"], linked_request_id=linked)
 
     task = asyncio.create_task(run())
     for reply in answers:
@@ -330,33 +333,43 @@ async def main() -> int:
     finally:
         cfg.upload.dry_run = False
 
-    # --- auto-answered prompts are not prompts -------------------------
+    # --- auto-answering fills what was already decided, and nothing else ---
     #
-    # Turning prompts off has to turn this one off too. It did not, so an
-    # unattended run stopped on a question nobody was there to click -- and
-    # after the dry-run change above, it stopped on every release rather than
-    # only the ones with a matching request.
+    # This rule has been wrong twice in opposite directions. First it filled
+    # nothing ever, which made the auto-answer setting a way to turn request
+    # filling off: a release queued BECAUSE it fills an open request went up
+    # without filling it. Then it filled any single search hit, which decided
+    # on a default the one thing worth refusing -- filling a request is a claim
+    # against somebody else's specific request and there is no undo.
+    #
+    # What it fills now is the request this release was already matched to by a
+    # request check, on this tracker. That pairing was decided by a search that
+    # ran on its own time and can be read back in the lookup history; filling
+    # it is carrying out a decision, not making one. Everything else is asked,
+    # whatever the setting says.
     cfg.upload.yes_all = True
     try:
-        for label, tracker, dry in (
-            ("with matches", None, False),
-            ("with none", Empty(), False),
-            ("in a dry run", Empty(), True),
-        ):
-            cfg.upload.dry_run = dry
-            seen, value, log = await drive(["n"], tracker=tracker)
-            check(f"auto-answering asks nothing {label}", not seen, str([s["prompt"] for s in seen]))
-            check(f"and fills nothing {label}", value is None, str(value))
-            check(f"but says why {label}",
-                  any("auto-answered" in line for line in log), "")
-        # --- but one match is not a choice -------------------------
-        # Auto-answering used to mean never filling anything, which made the
-        # setting a way to turn request filling off: a release queued because
-        # it fills an open request went up without filling the request it was
-        # fetched for. One match is the unambiguous case and the release was
-        # searched for on the strength of it; several is a choice, and picking
-        # one on a default is the thing worth refusing, because filling a
-        # request is a claim against somebody else's and there is no undo.
+        cfg.upload.dry_run = False
+
+        # The linked one: filled, without a question.
+        seen, value, log = await drive([], linked=8811)
+        check("auto-answering fills the request already matched to this release",
+              value == 8811, str(value))
+        check("without asking about it", not seen, str([s["prompt"] for s in seen]))
+        check("and says which one, so an unattended run can be read back",
+              any("8811" in line for line in log), "")
+
+        # No linked request: asked, even though prompts are auto-answered.
+        # A search at upload time that turns up candidates is a choice.
+        seen, value, _log = await drive(["n"])
+        check("with nothing linked it asks, auto-answer or not",
+              bool(seen), str([s["prompt"] for s in seen]))
+        check("offering what the search found",
+              seen and seen[0]["values"][:2] == [URL_8811, URL_9902],
+              str(seen[0]["values"]) if seen else "")
+        check("and fills nothing when the answer is no", value is None, str(value))
+
+        # One search hit is still a choice when nothing linked it.
         class OneRequest(StubTracker):
             """A tracker with exactly one open request for this release."""
 
@@ -365,27 +378,27 @@ async def main() -> int:
                     return {"results": [OPEN_REQUESTS[0]]}
                 return await StubTracker.request(self, action, data)
 
-        cfg.upload.dry_run = False
-        seen, value, log = await drive([], tracker=OneRequest())
-        check("auto-answering fills the one unambiguous match", value == 8811, str(value))
-        check("without asking about it", not seen, str([s["prompt"] for s in seen]))
-        check("and says which one it filled",
-              any("8811" in line for line in log), "")
+        seen, value, _log = await drive(["n"], tracker=OneRequest())
+        check("a single unlinked match is asked about rather than assumed",
+              bool(seen), str([s["prompt"] for s in seen]))
 
-        # A single match the tracker no longer has is not filled, which is
-        # also the proof that the id is confirmed against the tracker rather
-        # than taken from the search result: a stale hit would otherwise be
-        # posted against a request that has been filled or deleted.
+        # A linked request the tracker no longer has: not filled on the
+        # strength of a stale record, and not abandoned either -- the search
+        # runs and the question is asked.
         class GoneRequest(StubTracker):
-            """One search hit, and the tracker has never heard of it."""
+            """The linked request has been filled or deleted since."""
 
             async def request(self, action, data=None, **_):
                 if action == "requests":
-                    return {"results": [{**OPEN_REQUESTS[0], "requestId": 4041}]}
+                    return {"results": [OPEN_REQUESTS[0]]}
                 raise RequestError("no such request")
 
-        _seen, value, _log = await drive([], tracker=GoneRequest())
-        check("a stale single match is not filled", value is None, str(value))
+        seen, value, log = await drive(["n"], tracker=GoneRequest(), linked=4041)
+        check("a linked request that has gone is not filled", value is None, str(value))
+        check("and it says so rather than going quiet",
+              any("no longer there" in line for line in log), "")
+        check("then asks, rather than abandoning the request search",
+              bool(seen), str([s["prompt"] for s in seen]))
     finally:
         cfg.upload.yes_all = False
         cfg.upload.dry_run = False
