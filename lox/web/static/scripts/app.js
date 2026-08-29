@@ -4275,6 +4275,22 @@
    */
   const resultKey = (tracker, id) => `${tracker || state.requestsTracker || ''}:${id}`;
 
+  /**
+   * Where one request opens beside the release it matched.
+   *
+   * The page that answers the question both tables are really asking -- is
+   * this the same record? -- so anything naming a matched release should lead
+   * here rather than to one side of the comparison on its own.
+   *
+   * @param {string} tracker - Tracker code.
+   * @param {string|number} id - Request id.
+   * @returns {string} The address.
+   */
+  function compareHref(tracker, id) {
+    return addr(`/requests/${encodeURIComponent(tracker || state.requestsTracker || '')}`
+                + `/${encodeURIComponent(id)}`);
+  }
+
   /** What a check said about one request, or null while nothing has. */
   const requestResult = (row) => state.requestResults.get(resultKey(row.tracker, row.id)) || null;
 
@@ -4410,11 +4426,7 @@
               class: 'rowlink',
               href: r.url,
               title: 'Open the request beside the Deezer release',
-              onclick: (e) => {
-                e.preventDefault();
-                go(addr(`/requests/${encodeURIComponent(r.tracker || state.requestsTracker || '')}`
-                        + `/${encodeURIComponent(r.id)}`));
-              },
+              onclick: (e) => { e.preventDefault(); go(compareHref(r.tracker, r.id)); },
             }, `${r.artist || '?'} — ${r.title || `Request ${r.id}`}`),
           },
           {
@@ -4717,12 +4729,16 @@ It leaves the queue and will not be matched to this request again. The request s
           text: true,
           value: (r) => `${r.deezer_artist || ''} ${r.deezer_title || ''}`.trim(),
           filter: 'text',
-          cell: (r) => (r.deezer_id
-            ? el('a', {
-                href: albumHref(r.deezer_id),
-                onclick: (e) => { e.preventDefault(); goAlbum(r.deezer_id); },
-              }, `${r.deezer_artist || '?'} — ${r.deezer_title || ''}`)
-            : el('span', {}, `${r.deezer_artist || '?'} — ${r.deezer_title || ''}`)),
+          // The request and the release, side by side. This went to the
+          // Deezer album on its own, which is one half of the comparison the
+          // row exists to prompt: the question is whether the two are the same
+          // record, and answering it meant finding the request separately.
+          cell: (r) => el('a', {
+            class: 'rowlink',
+            href: compareHref(r.tracker, r.id),
+            title: 'Open the request beside the release it matched',
+            onclick: (e) => { e.preventDefault(); go(compareHref(r.tracker, r.id)); },
+          }, `${r.deezer_artist || '?'} — ${r.deezer_title || ''}`),
         },
         {
           label: 'Fills',

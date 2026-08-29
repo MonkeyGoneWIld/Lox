@@ -89,9 +89,12 @@ const scope = `
   const state = { requestResults: new Map(), requestMatches: new Map(),
                   requestRows: [], requestsTracker: 'OPS' };
   const resultKey = (tracker, id) => \`\${tracker || state.requestsTracker || ''}:\${id}\`;
+  ${extract('function compareHref(tracker, id) {')}
   const $ = (sel) => (sel === '#requests-queued-panel' ? PANEL
                      : sel === '#requests-queued' ? HOST : null);
-  const el = (tag) => document.createElement(tag);
+  const el = (tag, attrs = {}) => Object.assign(document.createElement(tag), { attrs });
+  const addr = (p) => p;
+  const go = () => {};
   const dataTable = (spec) => { DRAW(spec); return document.createElement('div'); };
   const fillPastedRequestRow = () => {};
   const requestResultCell = () => null;
@@ -105,11 +108,11 @@ const scope = `
   const queueRowFor = (m) => m;
   ${extract('function renderQueued() {')}
   ${extract('function applyRequestResult(match) {')}
-  return { applyRequestResult, renderQueued, state };
+  return { applyRequestResult, renderQueued, state, compareHref };
 `;
 
 // eslint-disable-next-line no-new-func
-const { applyRequestResult, state } = new Function('PANEL', 'HOST', 'DRAW', scope)(
+const { applyRequestResult, state, compareHref } = new Function('PANEL', 'HOST', 'DRAW', scope)(
   panel, host, (spec) => { drawn = spec; },
 );
 
@@ -168,6 +171,18 @@ check('the same request number on two trackers is two rows',
 check('the table is built from the results, not from the rows on screen',
       state.requestRows.length === 0 && rows().length === 3,
       `rows on screen: ${state.requestRows.length}`);
+
+// --- the release name opens the comparison, not one side of it -------------
+// The question this table exists to prompt is whether the request and the
+// release are the same record. It linked to the Deezer album on its own, which
+// is half of that -- answering it meant going and finding the request.
+const release = drawn.columns.find((c) => c.label === 'Release');
+const link = release.cell(rows()[0]);
+check('the release name is a link', link.tagName === 'A', link.tagName);
+check('to the request beside the release it matched',
+      link.attrs.href === compareHref('OPS', '80162'), String(link.attrs.href));
+check('and not to one side of the comparison on its own',
+      !String(link.attrs.href).startsWith('/album/'), String(link.attrs.href));
 
 const failed = results.filter(([, ok]) => !ok);
 console.log(`\n${results.length - failed.length}/${results.length} passed`);
