@@ -2,9 +2,15 @@ import os
 
 import asyncclick as click
 
+from lox.certs import use_certifi_roots
 from lox.config import Cfg, find_config_path, get_user_cfg_path, setup_config
 from lox.config.store import SettingsStore
 from lox.config.validations import validate as validate_config
+
+# Before anything opens a TLS connection -- importing a module does not, so
+# here is early enough. An unserviced Windows certificate store reports live
+# tracker certificates as expired; see lox/certs.py for what that looks like.
+use_certifi_roots()
 
 
 def _config_location() -> str:

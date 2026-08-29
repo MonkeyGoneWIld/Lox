@@ -68,6 +68,14 @@ class Field(NamedTuple):
     independent credentials -- four image-host keys, five metadata sources --
     cannot be tested by a single button at the top: it can only report on one
     of them, which is what "Test connection" beside five tokens was doing."""
+    on_page: str = ""
+    """Where this setting is edited, when that is not the settings page.
+
+    A field still has to be declared to be validated and saved -- the settings
+    API will not accept a key it does not know -- but a setting that governs
+    one screen belongs on that screen. The scan filters read as rules the
+    whole app obeys when they sit in a list beside the tracker budget, and
+    that is exactly how they came to be understood as one."""
 
     def as_dict(self) -> dict[str, Any]:
         """Serialize for the settings page."""
@@ -142,15 +150,17 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "checker",
         "Tracker budget",
-        "Nothing contacts a tracker until you press a check button. These numbers bound what one press can cost. "
+        "How much lox is allowed to ask a tracker for, and how fast. These bound what one press of a check "
+        "button can cost, and they bound the background confirmation of stale queue rows the same way. "
         "The defaults are conservative guesses, not measured limits.",
         category="Accounts",
     ),
     Section(
         "queue",
         "What reaches the queue",
-        "Everything a check found is kept. This decides which of it is worth acting on, and it is applied when "
-        "the queue is drawn -- so widening it brings rows back without spending tracker budget again.",
+        "Everything a check found is kept. This decides which of it is worth acting on. The rule is applied "
+        "when the queue is drawn, so widening it brings rows straight back -- nothing is re-checked and "
+        "nothing was thrown away.",
         category="Accounts",
     ),
     Section("upload", "Uploading", "How the pipeline behaves while it works through a release.",
@@ -222,7 +232,12 @@ FIELDS: tuple[Field, ...] = (
           "Where downloads land. Defaults to the main download directory."),
     Field("metadata.deezer.preferred_format", "Preferred quality", "choice", "deezer",
           choices=("FLAC", "MP3_320", "MP3_128")),
-    Field("metadata.deezer.format_fallback", "Accept lower quality if unavailable", "bool", "deezer"),
+    Field("metadata.deezer.format_fallback", "Accept lower quality if unavailable", "bool", "deezer",
+          "Off, a release Deezer will not serve as FLAC fails instead of downloading. Either way you are "
+          "asked before a lower-quality download is kept."),
+    Field("metadata.deezer.confirm_lower_quality", "Ask before keeping a lower-quality download", "bool", "deezer",
+          "A download that came back below your preferred quality stops and asks: keep it, or throw the "
+          "folder away. Off, it is kept without asking."),
     Field("metadata.deezer.concurrent_downloads", "Simultaneous track downloads", "int", "deezer",
           minimum=1, maximum=8),
 
@@ -246,26 +261,50 @@ FIELDS: tuple[Field, ...] = (
     Field("checker.tracker_switch_delay", "Pause when switching tracker (seconds)", "float", "checker", minimum=0),
     Field("checker.failure_threshold", "Failures before a tracker is benched", "int", "checker", minimum=1),
     Field("checker.cooldown_seconds", "Bench duration (seconds)", "int", "checker", minimum=0),
-    Field("checker.min_tracks", "Ignore albums with fewer tracks than", "int", "checker", "0 disables.", minimum=0),
-    Field("checker.min_date", "Ignore releases before", "text", "checker", "YYYY-MM-DD. Blank disables.",
-          placeholder="2025-01-01"),
-    Field("checker.max_date", "Ignore releases after", "text", "checker", "YYYY-MM-DD. Blank disables.",
-          placeholder="2026-12-31"),
-    Field("checker.min_confidence", "Minimum request match confidence", "float", "checker",
-          "Artist and title must also clear their own thresholds.", minimum=0.0, maximum=1.0),
+
+    # --- Scan filters, edited on the Scan tab -------------------------
+    # Declared here so they are validated and saved like any other setting,
+    # and marked as living elsewhere so the settings page does not show them.
+    # They narrow what a SCAN looks at and nothing else: the request checker,
+    # the album page and the search results never consult them.
+    Field("checker.min_tracks", "Ignore albums with fewer tracks than", "int", "checker",
+          minimum=0, on_page="scan"),
+    Field("checker.min_date", "Ignore releases before", "text", "checker", on_page="scan"),
+    Field("checker.max_date", "Ignore releases after", "text", "checker", on_page="scan"),
+    Field("checker.album_recheck_after_days", "Look up an album again after", "int", "checker",
+          minimum=0, maximum=3650, on_page="scan"),
     # --- What reaches the queue ---------------------------------------
     # One dropdown whose every option is a whole sentence about a situation,
     # and one checkbox. The page fills the choices in from the trackers you
     # actually have configured.
+    # A request-matching threshold, filed with requests. It spent a while under
+    # "Tracker budget", where it read as something about rate limiting.
+    Field("checker.min_confidence", "Minimum request match confidence", "float", "requests",
+          "How closely a Deezer release must match a request before it counts as a fill. Artist and title "
+          "must also clear their own thresholds.", minimum=0.0, maximum=1.0),
+
     Field("checker.queue_when", "Queue a release when it is", "choice", "queue",
           "Everything a check found is kept either way. This decides which of it is worth acting on.",
           choices=QUEUE_CHOICES, labels=QUEUE_LABELS),
     Field("checker.queue_requests_too", "Also queue anything that fills an open request", "bool", "queue",
           "Even when it does not match the rule above. An open request is a reason to upload on its own."),
 
+    # Edited on the Requests tab, beside the search it governs, which is the
+    # only place it means anything: it decides how long a request lookup is
+    # trusted for. Under "What reaches the queue" it read as a rule about the
+    # queue, which it is not -- nothing in the queue consults it, and a queue
+    # row you re-check by hand is always re-checked.
+    Field("checker.request_recheck_after_days", "Look up a request again after", "int", "checker",
+          "Days. 0 keeps an answer for good.", minimum=0, maximum=3650, on_page="requests"),
+
+    Field("checker.queue_recheck_after_days", "Confirm a queue row again after", "int", "queue",
+          "Days. A queue row says nobody has uploaded the release yet, and that stops being true without "
+          "anyone telling you. Rows older than this are confirmed again in the background, one at a time, "
+          "and only while nothing else is running. 0 turns it off.",
+          minimum=0, maximum=3650),
+
     Field("checker.state_dir", "Scan history directory", "path", "paths",
-          "Which albums and requests have already been checked, so a rescan does not spend tracker budget "
-          "asking again."),
+          "Where lox keeps what it has already looked up, and the saved searches on the Scan tab."),
 
     # --- Linking ------------------------------------------------------
     Field("linking.enabled", "Hardlink releases per tracker", "bool", "linking"),
@@ -274,6 +313,10 @@ FIELDS: tuple[Field, ...] = (
           "Hardlink unless your client cannot follow them. Copy means a second full copy of every release.",
           choices=("hardlink", "symlink", "copy")),
     Field("linking.per_tracker_dirs", "Separate folder per tracker", "bool", "linking"),
+    Field("linking.remove_source_after_upload", "Delete the download once it is seeding", "bool", "linking",
+          "After a successful upload the release is seeding from the linked folders, and the original "
+          "download is a duplicate that stays on the Uploading list for ever. Only ever applies with "
+          "linking on, never to a dry run, and never when no tracker took it."),
     Field("linking.fallback_to_copy", "Fall back to a real copy if linking fails", "bool", "linking",
           "Leave off so a cross-filesystem mistake fails loudly instead of doubling disk usage."),
 
@@ -404,7 +447,10 @@ def sections_with_fields() -> list[dict[str, Any]]:
     """Return sections, each carrying its own fields, in display order."""
     out = []
     for section in SECTIONS:
-        fields = [f.as_dict() for f in FIELDS if f.section == section.id]
+        # `on_page` fields are edited on the screen they govern, so they are
+        # not offered here. They are still declared, still validated and still
+        # saved through the same endpoint.
+        fields = [f.as_dict() for f in FIELDS if f.section == section.id and not f.on_page]
         # A section with no editable fields but a test still earns its place:
         # the torrent clients are declared in config.toml, and hiding the
         # section hid the only way to check they answer.

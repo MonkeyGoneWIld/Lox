@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>lox</title>
   <link rel="icon" href="{{ static_root_url }}/images/favicon.ico?v={{ asset_version }}" sizes="any">
-  <link rel="icon" type="image/svg+xml" href="{{ static_root_url }}/images/icon.svg?v={{ asset_version }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ static_root_url }}/images/favicon-32x32.png?v={{ asset_version }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ static_root_url }}/images/favicon-16x16.png?v={{ asset_version }}">
+  <link rel="icon" type="image/png" sizes="196x196" href="{{ static_root_url }}/images/favicon-196x196.png?v={{ asset_version }}">
   <link rel="apple-touch-icon" href="{{ static_root_url }}/images/apple-touch-icon-152x152.png?v={{ asset_version }}">
   <link rel="stylesheet" href="{{ static_root_url }}/css/fonts.css?v={{ asset_version }}">
   <link rel="stylesheet" href="{{ static_root_url }}/css/app.css?v={{ asset_version }}">
@@ -14,7 +16,7 @@
   <div id="app">
     <nav id="sidebar">
       <div class="brand">
-        <img src="{{ static_root_url }}/images/icon.svg?v={{ asset_version }}" alt="" class="brand-logo">
+        <img src="{{ static_root_url }}/images/logo.png?v={{ asset_version }}" alt="" class="brand-logo">
         <div>
           <div class="brand-name">lox</div>
           <div class="brand-sub">deemix &times; lox</div>
@@ -126,50 +128,117 @@
       </section>
 
       <section class="view" id="view-missing">
+        <!-- Two halves, as on Requests: setting a scan up, and looking back at
+             what has already been checked. -->
+        <div class="segmented reqtabs" id="scan-tabs">
+          <button type="button" class="active" data-scantab="run">Scan</button>
+          <button type="button" data-scantab="history">Lookup History</button>
+        </div>
+
+        <div id="scan-tab-run">
+        <!-- First, because they decide what a scan will even look at, and
+             because reading them after pressing Scan is reading them too late.
+             They apply to scanning and to nothing else, so they live here
+             rather than on the settings page, where they would read as rules
+             the whole app obeys.
+
+             Four short answers, so four fields side by side. They were four
+             full-width bands with a rule under each, which is the layout the
+             request form needs for its fifty checkboxes and which turned four
+             numbers into a screenful. -->
         <div class="panel">
-          <h2>Saved searches</h2>
-          <p class="hint">Re-runnable Deezer queries. Running one is free &mdash; it feeds albums into the collect step below.</p>
-          <div id="watchlists"></div>
-          <form class="row" id="watchlist-form">
-            <input type="text" id="watchlist-name" placeholder="Name, e.g. New house releases">
-            <select id="watchlist-kind">
-              <option value="new_releases">New releases (genre)</option>
-              <option value="chart">Chart (genre)</option>
-              <option value="search">Album search</option>
-              <option value="artist">Artist discography</option>
-              <option value="playlist">Playlist</option>
-              <option value="module">Channel module</option>
-            </select>
-            <input type="text" id="watchlist-target" placeholder="Genre ID, search text, or entity ID">
-            <button type="submit">Save search</button>
-          </form>
+          <h2>Scan filters</h2>
+          <p class="hint">What a scan will even look at. A release ruled out here is never looked up at all.
+            These apply to scanning only &mdash; requests, searches and anything you check by hand ignore them.</p>
+          <div class="scanfilters" id="scan-filters"></div>
         </div>
 
         <div class="panel">
           <h2>Scan Deezer against your trackers</h2>
-          <p class="hint">Paste playlist URLs, channel module URLs or album URLs, one per line. Expanding them
-            is free; checking each album against a tracker is not.</p>
-          <textarea id="missing-sources" rows="4" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-..."></textarea>
+          <p class="hint">Paste Deezer links &mdash; a playlist, a channel module, an artist, an album &mdash;
+            one per line. Each one is expanded into the albums it holds, and every album is then
+            checked against your trackers.</p>
+          <!-- autocomplete=off so a reload does not hand back the list the
+               last scan ran, sitting in the box looking like the next thing
+               you were about to do. -->
+          <textarea id="missing-sources" rows="3" autocomplete="off" placeholder="https://www.deezer.com/playlist/2228601362&#10;https://www.deezer.com/en/channels/module/8fc2bf46-...&#10;https://www.deezer.com/artist/27"></textarea>
           <div class="row">
             <div class="segmented" id="missing-trackers"></div>
-            <label class="check"><input type="checkbox" id="missing-skip-known" checked> Skip albums already resolved</label>
             <button class="primary" id="missing-scan">Scan</button>
+            <!-- Saving is the same links, kept. It was a second form below
+                 this one asking for a name, a kind and an id -- three
+                 questions about the link already in the box. -->
+            <button id="missing-save">Save for later</button>
           </div>
-          <p class="hint" id="missing-cost"></p>
           <div class="joblog" id="missing-collect-log" hidden></div>
           <div class="joblog" id="missing-check-log" hidden></div>
         </div>
+
+        <!-- Collapsible, because a long list of saved searches is taller than
+             the screen and sits between the scan box and its own results.
+             A details element rather than a script: it remembers nothing by
+             itself, so the state is kept alongside. -->
+        <details class="panel panel-fold" id="watchlist-panel" open>
+          <summary>
+            <h2>Saved searches</h2>
+            <span class="hint" id="watchlist-summary"></span>
+          </summary>
+          <p class="hint">Links you kept. Deezer names them; rename any of them if its name is unhelpful.
+            Scanning several at once is one scan over all of them.</p>
+          <div class="row">
+            <button class="primary" id="watchlist-scan" disabled>Scan selected</button>
+            <button id="watchlist-scan-all">Scan all</button>
+            <button class="danger" id="watchlist-delete" disabled>Delete</button>
+            <span class="hint" id="watchlist-count"></span>
+          </div>
+          <div id="watchlists"></div>
+        </details>
 
         <div class="panel" id="missing-candidates-panel" hidden>
           <h2>Results</h2>
           <div class="row">
             <button id="missing-check">Check again</button>
+            <span class="hint" id="missing-selected"></span>
+            <span class="hint" id="missing-cost"></span>
           </div>
-          <table class="table" id="missing-table"></table>
+          <div id="missing-table"></div>
+        </div>
+        </div>
+
+        <div id="scan-tab-history" hidden>
+          <div class="panel">
+            <h2>Lookup History</h2>
+            <p class="hint">Every album a scan has looked up, and what it found. A later scan leaves these
+              alone until the answer goes stale &mdash; select any of them and press Check again to
+              ask now.</p>
+            <div class="row">
+              <button class="primary" id="scanhistory-rerun" disabled>Check again</button>
+              <button id="scanhistory-clear-filters">Clear filters</button>
+              <button id="scanhistory-forget">Forget</button>
+              <span class="hint" id="scanhistory-count"></span>
+            </div>
+            <!-- Its own, because a re-check started here used to report into
+                 the queue's log on another page: the button did nothing you
+                 could see, and the only way to know it was working was to go
+                 and look somewhere else. -->
+            <div class="joblog" id="scanhistory-log" hidden></div>
+          </div>
+          <div id="scanhistory-results"></div>
         </div>
       </section>
 
       <section class="view" id="view-requests">
+        <!-- Two halves of the same job: finding requests to fill, and looking
+             back at the ones already looked up. The second used to have no
+             page at all -- the answers were stored, because they are what stops
+             a second run paying for the same lookups, but there was nowhere to
+             read them. -->
+        <div class="segmented reqtabs" id="requests-tabs">
+          <button type="button" class="active" data-reqtab="find">Find requests</button>
+          <button type="button" data-reqtab="history">Lookup History</button>
+        </div>
+
+        <div id="requests-tab-find">
         <div class="panel">
           <h2>Find requests</h2>
           <div class="row">
@@ -181,78 +250,130 @@
                IDs behind the ones they share, so this cannot be a fixed list. -->
           <div class="filters" id="requests-filters"></div>
 
-          <div class="row">
-            <button id="requests-fetch">Fetch open requests</button>
+          <!-- The default fetches and looks up; the other stops at the list. -->
+          <div class="row" id="requests-actions-row">
+            <button class="primary" id="requests-fetch-check">Fetch and Deezer Lookup</button>
+            <button id="requests-fetch">Fetch Requests</button>
+            <!-- When the lookups happen, not whether. A list-only fetch
+                 looks nothing up regardless of this box. -->
+            <label class="check">
+              <input type="checkbox" id="requests-pipeline" checked>
+              Look up on Deezer as requests arrive
+            </label>
+            <button class="danger" id="requests-cancel" hidden>Cancel</button>
             <span class="hint" id="requests-cost"></span>
           </div>
-          <p class="hint">Checking each request costs one more call on top of the fetch.</p>
 
-          <!-- Checking is an action on a list, so it lives with the list rather
-               than above an empty box. The button that starts it sits under the
-               results; this half is only about getting requests into the list in
-               the first place. -->
+          <!-- Shown only while a search or a check is running. -->
+          <div class="reqprogress" id="requests-progress" hidden>
+            <div class="bar"><div class="bar-fill" id="requests-progress-bar" style="width:0%"></div></div>
+            <span class="hint" id="requests-progress-label"></span>
+          </div>
+
           <details class="paste-ids">
-            <summary>Check specific requests instead</summary>
+            <summary>Or paste specific requests</summary>
             <textarea id="requests-ids" rows="3" placeholder="Request IDs or URLs, one per line"></textarea>
             <div class="row">
-              <button class="primary" id="requests-check-pasted">Check these</button>
+              <button class="primary" id="requests-check-pasted">Deezer Lookup</button>
               <label class="check filebtn">
                 <input type="file" id="requests-file" accept=".txt,.csv,.log,text/plain" hidden>
-                Check a list from a file&hellip;
+                Import from File
               </label>
-              <span class="hint">A file starts checking as soon as you pick it.</span>
             </div>
           </details>
           <div class="joblog" id="requests-log" hidden></div>
+          <!-- What the run skipped, and why. One panel, replaced by the next
+               run rather than stacked on top of the last one. -->
+          <div id="requests-skipped" hidden></div>
+        </div>
+
+        <!-- How much of the search is on screen and how much there was. This
+             was a toast, which vanished -- for the one number that decides
+             whether to read more pages, the wrong place to put it. -->
+        <div class="requests-summary" id="requests-summary" hidden></div>
+        <!-- What the run actually produced, above the hundreds of rows that
+             produced nothing. A check of two hundred requests that finds three
+             worth filling is a run about those three, and they are also the
+             ones worth a second pair of eyes before anything is uploaded. -->
+        <div class="panel" id="requests-queued-panel" hidden>
+          <h2>Added to the queue</h2>
+          <p class="hint">Every request a check here has matched to a release, filled in as it
+            goes. Worth a look before any of it is downloaded &mdash; a match is the matcher's
+            opinion, and it is cheaper to disagree with it here than after the release has been
+            fetched and posted.</p>
+          <div id="requests-queued"></div>
         </div>
         <div id="requests-results"></div>
+        </div>
+
+        <div id="requests-tab-history" hidden>
+          <div class="panel">
+            <h2>Lookup History</h2>
+            <div class="row">
+              <button class="primary" id="history-rerun" disabled>Check again</button>
+              <button id="history-clear-filters">Clear filters</button>
+              <span class="hint" id="history-count"></span>
+            </div>
+            <!-- The same reason as the scan's: pressing Check again jumped to
+                 another sub-tab to show progress, so the page you pressed it
+                 on had nothing to say for itself. -->
+            <div class="joblog" id="history-log" hidden></div>
+          </div>
+          <div id="history-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-found">
+        <!-- What is waiting to be uploaded, and what has been refused. The
+             blacklist used to be a one-way door: the entry went into a file
+             nothing could read back, and the only way out was to clear the
+             whole thing at once. -->
+        <div class="segmented reqtabs" id="queue-tabs">
+          <button type="button" class="active" data-queuetab="queue">Queue</button>
+          <button type="button" data-queuetab="blacklist">Blacklist</button>
+        </div>
+
+        <div id="queue-tab-queue">
         <div class="panel">
-          <h2>Releases worth uploading</h2>
-          <p class="hint">Everything a scan or a request check matched to a Deezer release and did not find on a
-            tracker. Kept so the budget you already spent is not spent again.</p>
+          <h2>Upload Queue</h2>
+          <p class="hint">Releases that exist on Deezer and are missing from at least one of
+            your trackers.</p>
           <div class="row">
-            <button class="primary" id="found-download">Download selected</button>
-            <button id="found-upload">Download &amp; upload selected</button>
+            <!-- The default is the one that finishes the job. Downloading on
+                 its own leaves the release in the download folder waiting for
+                 a second decision nobody meant to make. -->
+            <button class="primary" id="found-upload">Download &amp; upload selected</button>
+            <button id="found-download">Download selected</button>
             <button id="found-recheck">Re-check on trackers</button>
             <!-- Two ways off the list, because they answer different
                  questions: one forgets the row so a later scan can find it
                  again, the other says never show me this release. -->
             <button id="found-dismiss">Remove</button>
             <button class="danger" id="found-blacklist">Blacklist</button>
-            <button id="found-restore" hidden>Clear blacklist</button>
             <span class="hint" id="found-count"></span>
           </div>
-          <!-- Filtering the list you already have, which is a different
-               question from what the settings decide reaches it at all. This
-               one is throwaway: it narrows what is on screen and forgets it
-               when you leave. -->
-          <div class="row queue-filter">
-            <input type="search" id="found-search" placeholder="Artist or title">
-            <select id="found-tracker">
-              <option value="">Any tracker</option>
-            </select>
-            <select id="found-source">
-              <option value="">Scans and requests</option>
-              <option value="scan">Scans only</option>
-              <option value="request">Request fills only</option>
-            </select>
-            <button id="found-filter-clear" hidden>Clear filter</button>
-            <span class="hint" id="found-filtered"></span>
-          </div>
-          <!-- What the queue rules in Settings kept out. Shown as a count with
-               a way to look, never as a silently shorter list. -->
-          <div class="row held-note" id="found-held-row" hidden>
-            <span class="hint" id="found-held"></span>
-            <button class="linkbtn" id="found-held-toggle">Show them</button>
-          </div>
-          <!-- A re-check spends a tracker call per release and used to show
-               nothing but a Stop button while it did. -->
+          <!-- A queue row is a claim about somebody else's tracker, and it
+               decays. This says whether lox is keeping it honest by itself. -->
+          <p class="hint" id="found-upkeep"></p>
           <div class="joblog" id="found-log" hidden></div>
         </div>
         <div id="found-body"></div>
+        </div>
+
+        <div id="queue-tab-blacklist" hidden>
+          <div class="panel">
+            <h2>Blacklist</h2>
+            <p class="hint">Releases you have refused. Nothing here is collected by a scan, matched to a
+              request or listed in the queue &mdash; saying no once means not being asked again. Take one
+              off and it can be found as normal.</p>
+            <div class="row">
+              <button class="primary" id="blacklist-restore" disabled>Take off the blacklist</button>
+              <button class="danger" id="blacklist-clear">Clear the whole list</button>
+              <span class="hint" id="blacklist-count"></span>
+            </div>
+          </div>
+          <div id="blacklist-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-downloads">
@@ -264,10 +385,27 @@
       </section>
 
       <section class="view" id="view-uploads">
+        <!-- Two halves, as on Requests and Scan: what is waiting to be
+             uploaded, and what has been. An upload is the one thing here that
+             cannot be run again to find out what it did -- the torrent is
+             posted and the flow is gone with the page. -->
+        <div class="segmented reqtabs" id="upload-tabs">
+          <button type="button" class="active" data-uptab="folders">Ready to upload</button>
+          <button type="button" data-uptab="history">Upload History</button>
+        </div>
+
+        <div id="upload-tab-folders">
         <div class="row toolbar">
           <button id="folders-refresh">Refresh folders</button>
+          <button class="primary" id="folders-upload" disabled>Upload selected</button>
+          <button class="danger" id="folders-delete" disabled>Delete selected</button>
+          <span class="hint" id="folders-selected"></span>
+          <!-- Which trackers, and in what order they run when there are two.
+               Uploading to both is two uploads in sequence, and which goes
+               first decides who owns the group the other one adds to. -->
           <span class="hint">Upload to:</span>
-          <div class="segmented" id="upload-tracker"></div>
+          <div class="upload-targets" id="upload-tracker"></div>
+          <span class="hint" id="upload-order-note"></span>
           <!-- The same two settings as Settings → Uploading, not copies of
                them: these write through to the config and are re-read from the
                server, so the two pages cannot disagree. -->
@@ -280,8 +418,26 @@
           <span class="hint" id="uploads-dir"></span>
         </div>
         <p class="hint" id="linking-note"></p>
+        <!-- What is uploading and what is waiting behind it. -->
+        <div id="upload-queue" hidden></div>
         <div id="folders-list"></div>
         <div id="upload-flows"></div>
+        </div>
+
+        <div id="upload-tab-history" hidden>
+          <div class="panel">
+            <h2>Upload History</h2>
+            <p class="hint">Every upload this install has run: what it was posted as, which trackers took
+              it, and everything it printed on the way. Kept because an upload cannot be run again to
+              find out what it did.</p>
+            <div class="row">
+              <button id="uphistory-refresh">Refresh</button>
+              <button class="danger" id="uphistory-clear">Clear history</button>
+              <span class="hint" id="uphistory-count"></span>
+            </div>
+          </div>
+          <div id="uphistory-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-settings">

@@ -127,13 +127,36 @@ async def main() -> int:
               for f in labelled
               for shown, stored in zip(f.labels, f.choices, strict=True)), "")
 
-    # --- what reaches the queue is two questions, not six -------------
+    # --- what reaches the queue is about the queue --------------------
     # The first version asked for a three-way rule per tracker, an all/any to
     # combine them, and an enum for requests: a truth table with dropdowns in
     # front of it. Nobody wants to say "RED must already be there".
+    #
+    # And it went on to include the request-lookup window, which is not about
+    # the queue at all -- nothing in the queue consults it, and a queue row you
+    # re-check by hand is always re-checked. It is edited on the Requests tab
+    # now, beside the search it governs.
     queue_keys = {f.key for f in FIELDS if f.section == "queue"}
-    check("the queue is configured by two settings",
-          queue_keys == {"checker.queue_when", "checker.queue_requests_too"}, str(sorted(queue_keys)))
+    check("the queue is configured by a rule, a switch and a staleness window",
+          queue_keys == {"checker.queue_when", "checker.queue_requests_too",
+                         "checker.queue_recheck_after_days"},
+          str(sorted(queue_keys)))
+    check("the request lookup window is not one of the queue's settings",
+          "checker.request_recheck_after_days" not in queue_keys, "")
+
+    # How long a queue row is trusted before it is confirmed again in the
+    # background. A row claims nobody has uploaded the release yet, and that
+    # stops being true without anyone telling you.
+    stale = next(f for f in FIELDS if f.key == "checker.queue_recheck_after_days")
+    check("the queue staleness window is a number of days", stale.kind == "int", stale.kind)
+    check("and 0 turns it off rather than meaning immediately", stale.minimum == 0, str(stale.minimum))
+
+    # How long a request check is trusted. Offered on the Requests page, beside
+    # the search it governs, because a setting reachable only from another page
+    # is a setting nobody changes.
+    window = next(f for f in FIELDS if f.key == "checker.request_recheck_after_days")
+    check("the recheck window is a number of days", window.kind == "int", window.kind)
+    check("and cannot be negative", window.minimum == 0, str(window.minimum))
     for dead in ("checker.queue_red", "checker.queue_ops", "checker.queue_dic",
                  "checker.queue_match", "checker.queue_requests",
                  "checker.queue_require_somewhere_missing"):
@@ -145,6 +168,32 @@ async def main() -> int:
     check("and none of them asks you to think in truth tables",
           not any(w in " ".join(rule.labels).lower()
                   for w in ("must", "any one", "combine", "doesn't matter")), "")
+
+    # --- Qobuz: 401 is not a bad app ID ------------------------------
+    # Measured against the live API. 400 means the app ID is wrong; 401 means
+    # the app ID got through and the request is not authenticated, which Qobuz
+    # answers to every catalogue endpoint when no user token is attached. This
+    # test read 401 as "bad app ID" and never sent the token at all, so a
+    # correct app ID and a saved token reported as a rejected app ID.
+    from lox.web.settings_api import _qobuz_verdict  # noqa: PLC0415
+
+    for status, has_token, want_ok, must_say in (
+        (200, True, True, "both work"),
+        (200, False, True, "App ID works"),
+        (400, False, False, "rejected the app ID"),
+        (400, True, False, "rejected the app ID"),
+        (401, True, False, "rejected the auth token"),
+        (401, False, False, "without a user auth token"),
+        (403, True, False, "rejected the auth token"),
+        (503, True, False, "HTTP 503"),
+    ):
+        passed, message = _qobuz_verdict(status, has_token)
+        label = f"{status} with{'' if has_token else 'out'} a token"
+        check(f"{label} -> {'pass' if want_ok else 'fail'}", passed is want_ok, message)
+        check(f"  and says so: {must_say!r}", must_say.lower() in message.lower(), message)
+
+    check("a 401 never blames the app ID",
+          "app id" not in _qobuz_verdict(401, True)[1].lower().split("--")[1], _qobuz_verdict(401, True)[1])
 
     # --- and every test named anywhere is dispatchable ---------------
     from lox.web import create_app_async  # noqa: PLC0415
@@ -232,7 +281,19 @@ async def main() -> int:
         check("and per-field tests",
               any(f.get("test") for s in payload["sections"] for f in s["fields"]), "")
         listed = {f["key"] for s in payload["sections"] for f in s["fields"]}
-        check("every field is served", listed == keys, str(sorted(keys ^ listed)))
+        # Every field except the ones edited on the screen they govern. The
+        # scan filters are declared here so the settings API validates and
+        # saves them, but they belong on the Scan tab: sat in a list beside
+        # the tracker budget they read as rules the whole app obeys, which is
+        # how they came to be understood as one.
+        elsewhere = {f.key for f in FIELDS if f.on_page}
+        check("the scan filters are edited on the Scan tab",
+              elsewhere >= {"checker.min_tracks", "checker.min_date", "checker.max_date"},
+              str(sorted(elsewhere)))
+        check("every other field is served", listed == keys - elsewhere,
+              str(sorted((keys - elsewhere) ^ listed)))
+        check("and none of them leaks onto the settings page",
+              not (listed & elsewhere), str(sorted(listed & elsewhere)))
     finally:
         await session.close()
         await runner.cleanup()

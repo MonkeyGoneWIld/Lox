@@ -1,86 +1,107 @@
 # Lox
 
-**A Deezer-to-Gazelle upload pipeline with a web UI.** Find a release on Deezer, check whether RED and OPS already have
-it, look at what the checker found, download it in FLAC, and upload it to whichever trackers are missing it — without
-leaving the browser.
+**A Deezer-to-Gazelle upload pipeline with a web UI.** Find a release on Deezer, check whether RED and OPS already
+have it, download it in FLAC, and upload it to whichever trackers are missing it — without leaving the browser.
 
-> **Built on [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon) `0.10.0`**, whose tagging, spectral,
-> transcoding and upload machinery this uses under Apache-2.0. Lox is not affiliated with that project and is not
-> maintained by it — please do not take problems here to them. If you want the supported, reviewed thing, use
-> [smokin-salmon/smoked-salmon](https://github.com/smokin-salmon/smoked-salmon). Everything Deezer-shaped, the web UI,
-> the tracker budget, the checker and the per-tracker seeding layout are Lox's.
->
-> Written with heavy help from an LLM. Read the code before you point it at an account you care about.
+> [!WARNING]
+> **This project was built with AI.** Most of this codebase was written with heavy help from an LLM and has had no
+> external review. It holds a Deezer session credential, spends your tracker API budget, and posts to your tracker
+> accounts. Read the code before you point it at an account you care about, run it on infrastructure you control,
+> and do not expose it to the internet.
 
----
+![The Deezer search results that start every upload](docs/screenshots/search.jpg)
 
-## The one thing to understand first
-
-**Trackers are only contacted when you press a button that says so.**
-
-RED and OPS have small API budgets and punish bursts with hours-long lockouts. So every tracker call in this app goes
-through a single gateway that spends from a token bucket, spaces calls apart, and opens a circuit breaker after repeated
-failures. Search, Explore, album metadata, FLAC checks and downloads never touch a tracker at all.
-
-The sidebar shows the remaining budget per tracker at all times. When a scan would overdraw it, the scan **stops early
-and keeps its place** rather than blowing the limit.
+**[Read the documentation →](https://github.com/MonkeyGoneWIld/Lox/wiki)**
 
 ---
 
-## What it does
+## Overview
 
-### Check one album, then upload it
+Lox sits between Deezer and your Gazelle trackers. It searches and browses Deezer, asks the trackers whether they
+already have a release, downloads what they are missing in FLAC, and runs it through the full upload pipeline —
+tagging, spectrals, descriptions, `.torrent` creation, per-tracker hardlinks, and the post itself.
 
-Open any album and press **Check RED** or **Check all**. The checker searches the tracker, opens each candidate torrent
-group, and tells you what it found — including the groups it *rejected* and why:
+Four ways to find work — Search, Browse, Scan, Requests — feed one three-stage pipeline: **Queue → Downloading →
+Uploading**. One release is prepared once and offered to every tracker that wants it.
 
-```
-RED · not on tracker · 4 call(s), 2 search(es) · artist page
-  ├─ Ana Vidal — Nocturne Variations (Remixes) (2026)   title mismatch (0.81)     WEB FLAC Lossless
-  └─ Anna Vidale — Nocturnes (2019)                     artist mismatch            CD FLAC Lossless
-OPS · not on tracker · 2 call(s), 1 search(es)
-  └─ Ana Vidal — Nocturne Variations (2026)             no WEB FLAC in group       CD MP3 320
-```
+> [!IMPORTANT]
+> **Trackers are only contacted when you press a button that says so.** RED and OPS have small API budgets and punish
+> bursts with hours-long lockouts, so every tracker call goes through one gateway that spends from a token bucket,
+> spaces calls apart, and benches a tracker after repeated failures. The remaining budget per tracker is shown in the
+> sidebar at all times. Search, Browse, album metadata, FLAC checks and downloads never touch a tracker at all.
 
-Every group is a link. Open them, confirm the checker got it right, then press **Download & upload to RED + OPS**. The
-near misses are the point — a "missing" verdict is only trustworthy if you can see what it looked at.
+---
 
-### Check a list of requests against Deezer
+## Features
 
-Paste request IDs or URLs, or upload a `.txt` list. For each request lox fetches it from the tracker, searches Deezer,
-scores the match, then rejects it unless it clears every gate independently:
+### Find work
 
-| Gate | Rule |
-|---|---|
-| Artist score | ≥ 0.50 |
-| Title score | ≥ 0.40 |
-| Combined | ≥ `checker.min_confidence` (0.70) |
-| Track count | Exact match when it can be determined |
-| Availability | Every track streamable in your region |
-| FLAC | All tracks lossless, when the request is FLAC-only |
-| External sources | Discogs, MusicBrainz, Bandcamp, Beatport, Qobuz, Tidal, Apple Music and Metal-Archives must agree on the track count |
+**Search Deezer** for an album, track or artist, and check any result against your trackers from the page it appears
+on.
 
-Filling a request with the wrong edition is worse than not filling it, so a great artist score cannot rescue a poor title
-score. Only the request fetch costs tracker budget; everything after it is free.
+**Browse** Deezer channels, charts by genre, and editorial new releases. Channels are read out of the page's
+`__DZR_APP_STATE__`, which is the surface deemix never exposed. Any channel module can be sent to the Scan tab with
+one click.
 
-### Saved Deezer searches
+![Deezer channels and genres, browsable from inside lox](docs/screenshots/browse.jpg)
 
-The **Scan** tab keeps re-runnable queries — new releases by genre, a chart, an album search, an artist's
-discography, a playlist, or a channel module. Running one is free and drops its albums straight into the scan.
-Set one up for new releases in your genre and it becomes a one-click routine: paste or pick the sources, press **Scan**,
-and it expands them and checks everything that comes out against the trackers you picked, without stopping to ask you to
-confirm a list you did not choose.
+**Scan** re-runnable saved searches — new releases by genre, a chart, an album search, an artist's discography, a
+playlist, or a channel module. Expanding them is free; only the tracker check costs budget. Scan filters (minimum
+track count, release date window, how long an answer stays trusted) rule releases out before any tracker is contacted.
 
-### Explore
+![Saved searches and scan filters on the Scan tab](docs/screenshots/scan.png)
 
-Deezer channels, charts by genre, and editorial new releases. Channels are read out of the page's `__DZR_APP_STATE__`,
-which is the surface deemix never exposed. Any channel module can be sent to the Scan tab with one click.
+**Requests** — search open requests on RED or OPS with per-tracker filters, then look each one up on Deezer
+automatically. Both trackers run Gazelle and both search pages look identical, but the parameter names and the numeric
+IDs behind the labels differ, so lox keeps one filter vocabulary per tracker rather than one shared table that would
+quietly search for the wrong thing.
 
-### Downloading
+![Per-tracker request filters](docs/screenshots/requests.png)
 
-With an ARL set, downloads happen in-process: stream URLs resolved through Deezer's media API, the Blowfish-striped
-payload decrypted as it streams, tags and cover art written from the Deezer metadata. The result is a plain release
-folder the upload flow already understands.
+Every lookup is kept with its outcome, so you can see what matched, what was rejected, and why.
+
+![Request lookup history with outcomes](docs/screenshots/requests-history.png)
+
+### Checking
+
+- **Shows its work.** A check reports the torrent groups it *rejected* and why — title mismatch, artist mismatch, no
+  WEB FLAC in the group — each one a link you can open. A "missing" verdict is only trustworthy if you can see what it
+  looked at.
+- **Independent gates for request fills.** Artist score ≥ 0.50, title score ≥ 0.40, combined ≥ the minimum confidence,
+  exact track count, every track streamable in your region, and all-lossless when the request is FLAC-only. A great
+  artist score cannot rescue a poor title score, because filling a request with the wrong edition is worse than not
+  filling it.
+- **Track counts cross-checked** against Discogs, MusicBrainz, Bandcamp, Beatport, Qobuz, Tidal, Apple Music and
+  Metal-Archives, so a deluxe edition does not get posted against a standard-edition request.
+- **Budgeted and breakered.** A scan that would overdraw the budget stops early and keeps its place rather than
+  blowing the limit.
+- **Background re-confirmation.** A queue row says nobody has uploaded the release yet, and that stops being true
+  without anyone telling you. Rows past a configurable age are confirmed again in the background, one at a time, and
+  only while nothing else is running.
+
+### The pipeline
+
+**Queue** holds everything a check found to be missing, with a rule deciding which of it is worth acting on — missing
+from any tracker, from every tracker, from one named tracker, or missing from one and already on the others. The rule
+is applied when the queue is drawn, so widening it brings rows straight back: nothing is re-checked and nothing was
+thrown away. A blacklist keeps releases you have decided against from coming back on the next scan.
+
+![The upload queue, with per-tracker missing badges](docs/screenshots/queue.png)
+
+**Downloading** happens in-process with an ARL set: stream URLs resolved through Deezer's media API, the
+Blowfish-striped payload decrypted as it streams, tags and cover art written from the Deezer metadata. The result is a
+plain release folder the upload flow already understands.
+
+**Uploading** runs the pipeline once per release and offers it to every tracker that is missing it — one transcode,
+one set of spectrals, one `.torrent` per tracker. Prompts that need a human, like the lossy-master question, appear in
+the console and are answered there.
+
+![Spectrals and the lossy-master prompt in the upload console](docs/screenshots/uploading.jpg)
+
+Every upload is kept in a history with what it posted, which trackers took it, and everything it printed on the way —
+because an upload cannot be run again to find out what it did.
+
+![Upload history with per-tracker results](docs/screenshots/upload-history.png)
 
 ### Hardlinked per-tracker folders
 
@@ -100,47 +121,178 @@ hardlinks — the same thing cross-seed does:
 ```
 
 A 500 MB release costs 500 MB no matter how many trackers it goes to. Point qBittorrent at `/links` and both torrents
-seed from their own directory.
+seed from their own directory. The seedbox entry that injects into your torrent client is tracker-aware: set
+`tracker = "RED"` to restrict an entry to one tracker, and use `{tracker}` in `directory` and `label` so one entry
+serves both with the right save path and category.
 
-**Hardlinks cannot cross filesystems.** `linking.link_dir` must be on the same volume as your downloads. If it isn't,
-lox fails loudly rather than silently making real copies — unless you set `linking.fallback_to_copy = true`.
-
-The seedbox entry that injects into your torrent client is tracker-aware: set `tracker = "RED"` to restrict an entry to
-one tracker, and use `{tracker}` in `directory` and `label` so one entry serves both with the right save path and
-category. Leaving `directory` empty derives it from `linking.link_dir` automatically.
+> [!WARNING]
+> **Hardlinks cannot cross filesystems.** The seeding directory must be on the same volume as your downloads. If it is
+> not, lox fails loudly rather than silently making real copies — unless you turn on *fall back to a real copy*.
 
 ### Dry run
 
-```bash
-lox up "/music/Ana Vidal - Nocturne Variations" --dry-run
-```
-
-Or tick **Dry run** in the Uploads tab, or set `upload.dry_run = true` in config.
-
-Everything runs — tagging, renaming, spectral generation and upload, cover handling, description assembly, hardlinking,
-`.torrent` creation — except the two steps you cannot take back:
+Everything runs — tagging, renaming, spectral generation, cover handling, description assembly, hardlinking,
+`.torrent` creation — except the steps you cannot take back:
 
 | Step | Dry run |
 |---|---|
 | Post the torrent to the tracker | skipped, prints the payload it would have sent |
-| Fill a request | skipped (it rides along with the upload) |
+| Fill a request | skipped |
 | File a lossy-master report | skipped |
 | Edit a torrent description | skipped |
 | Transfer to seedbox / add to download client | skipped, prints the save path and category it would have used |
 | Upload cover art and spectrals to an image host | skipped, stand-in links on `dry-run.invalid` |
-| Copy the URL to your clipboard | skipped |
 
-Everything else happens for real, because those are the parts worth checking before a real run: the files are tagged,
-the folder is renamed, the downconversion runs and its output is **kept** — listed on the result with a Delete button,
-rather than removed before you can look at it. The descriptions are printed in full, not summarised as a character
-count, since reading them is the point of rehearsing.
+The downconversion output is **kept** and listed with a Delete button rather than removed before you can look at it,
+and descriptions are printed in full rather than summarised as a character count — reading them is the point of
+rehearsing.
 
-The `.torrent` is still written so you can inspect it, but its comment is left blank rather than stamped with a URL
-containing a placeholder torrent ID.
+### Settings, all in the UI
+
+82 settings across 16 sections, grouped into Accounts, Uploading, Files and Maintenance, applied without a restart.
+Sixteen of them can be tested against the real service rather than checked for being non-empty: the Deezer ARL
+(including whether the account holds a streaming licence), each tracker's credentials, the seeding layout (by making a
+real hardlink and comparing inodes), every torrent client, the Discord webhook, every path, and each image-host and
+metadata-source key on its own.
+
+### Everything else
+
+- **Configuration that is wrong does not stop startup.** lox comes up, shows a banner naming what is wrong, and the
+  operations that need the setting refuse with a message pointing at it — because a container that restart-loops over
+  a path you could have fixed in the UI is worse than one that starts and tells you.
+- **First-run account setup.** The first person to open the UI creates the username and password; until then every
+  route redirects to setup, so a fresh instance is never briefly open.
+- **Redacted logs.** ARLs, session cookies, API keys and webhook URLs never reach disk. Bounded at 8 MB per file and
+  1 GB in total, tailed live under Settings → Debug, downloadable as a diagnostics bundle.
+- **Discord notifications** for scan results and fillable requests.
+- **Light and dark themes**, and a no-build SPA — no toolchain, no bundle step.
+- **Every upstream CLI command still works**, including `lox up <path>` and `lox up <path> --dry-run`.
 
 ---
 
-## Install
+## Installation
+
+> **Full walkthrough:** the [wiki](https://github.com/MonkeyGoneWIld/Lox/wiki/Installation) covers every step in
+> detail, including [getting your ARL](https://github.com/MonkeyGoneWIld/Lox/wiki/Deezer-Setup),
+> [tracker credentials](https://github.com/MonkeyGoneWIld/Lox/wiki/Tracker-Setup) and the
+> [seeding layout](https://github.com/MonkeyGoneWIld/Lox/wiki/Seeding-and-Hardlinks).
+
+### Requirements
+
+- Docker
+- A Deezer account with an active streaming subscription — a free account cannot download
+- An account on at least one of RED or OPS, with upload rights
+- Downloads and the seeding directory **on the same filesystem**
+
+### Deploy
+
+Paste this into Portainer, Dockge, or a `docker-compose.yml` and fill in the two paths. Everything is set inline, so
+no `.env` file is needed — and there is **no config file to write**. The Deezer ARL, tracker credentials, image hosts,
+seeding layout, budgets and notifications are all set in the UI under Settings afterwards.
+
+```yaml
+services:
+  lox:
+    image: ghcr.io/monkeygonewild/lox:alpha
+    container_name: lox
+    restart: unless-stopped
+    command: ["ui"]
+
+    ports:
+      # Scope this to one interface. The UI can spend your tracker API budget,
+      # read your Deezer session and upload to your tracker accounts.
+      # Keep the host port below 32768 — ports in the ephemeral range can be
+      # transiently taken by an outbound connection, making the bind fail at random.
+      - "127.0.0.1:5015:5015"
+
+    environment:
+      TZ: "Etc/UTC"
+
+      # ── Bootstrap: read before the settings page exists ──────────────────
+      LOX_HOST: "0.0.0.0"
+      LOX_PORT: "5015"
+
+      # The address you actually reach the UI on, for the links the UI prints.
+      # LOX_HOST is the bind address, which is 0.0.0.0 here and useless in a link.
+      LOX_DISPLAY_HOST: "192.168.1.25"
+
+      # Optional shared secret for scripts and the healthcheck. People sign in
+      # with an account created on first use, so leaving this empty is fine.
+      # `openssl rand -hex 32` if you want one. Minimum 16 characters.
+      LOX_AUTH_TOKEN: ""
+
+      # ── Paths inside the container ──────────────────────────────────────
+      # These must sit under a volume you actually mounted below. All are
+      # created if missing, and all can be corrected under Settings → Paths.
+      LOX_DOWNLOAD_DIR: "/data/media/deemix"
+      LOX_TORRENTS_DIR: "/config/torrents"
+      LOX_TMP_DIR: "/config/spectrals"
+      LOX_STATE_DIR: "/config/state"
+      LOX_LOG_DIR: "/config/logs"
+      LOX_SETTINGS_DIR: "/config"
+
+      HOME: "/config"
+
+    # Match the user that owns your media and runs your torrent client, so
+    # hardlinks work and the client can read what lox writes.
+    user: "1000:1000"
+
+    volumes:
+      # settings.toml, the database, .torrent output and spectral scratch.
+      - /path/to/appdata/lox:/config
+      # One mount for media, so downloads and hardlink targets share a filesystem.
+      - /path/to/nas/data:/data
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5015/api/health', timeout=5).status==200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+```
+
+Then open `http://<host>:5015`, create the account it asks for, and work through Settings → Accounts. Every section
+has a Test button, so nothing has to be guessed at.
+
+#### Portainer
+
+**Stacks → Add stack → Web editor.** Paste the compose above, edit the two volume paths and `LOX_DISPLAY_HOST`, then
+**Deploy the stack**. To update later, open the stack, tick **Re-pull image**, and redeploy.
+
+#### Dockge
+
+**Compose → + Compose**, name it `lox`, paste the compose above into the editor, edit the paths, then **Save** and
+**Start**. Dockge writes it to its stacks directory, so the file stays editable from the UI afterwards.
+
+### Two things that will bite you
+
+> [!IMPORTANT]
+> **Put the download directory and the seeding directory on the same filesystem.** Different volumes means no
+> hardlinks, which means a second full copy of every release. Mounting their common parent as one volume — as the
+> `/data` mount above does — is the simplest guarantee, and the **Seeding layout** test under Settings will tell you
+> whether it actually worked.
+
+> [!IMPORTANT]
+> **`LOX_DOWNLOAD_DIR` is a path inside the container.** With the mounts above, `/data/media/deemix` means
+> `/path/to/nas/data/media/deemix` on the host. It is created if missing, but only the part below the mount point: if
+> the volume itself is wrong, the directory gets made *inside* the container and vanishes on the next restart. lox
+> reports what it found at the nearest existing parent, and the uid it is running as, so you can tell the two apart.
+
+### Build from source
+
+```bash
+git clone https://github.com/MonkeyGoneWIld/Lox.git
+```
+
+Then `cp .env.example .env`, fill in `CONFIG`, `NAS` and `PUID`/`PGID`, and bring it up:
+
+```bash
+docker compose up -d --build
+```
+
+The bundled [`docker-compose.yml`](docker-compose.yml) reads its paths from `.env` rather than from inline values.
+
+### Without Docker
 
 Needs Python 3.11+, plus `sox`, `flac`, `lame` and `mp3val` on PATH.
 
@@ -148,197 +300,78 @@ Needs Python 3.11+, plus `sox`, `flac`, `lame` and `mp3val` on PATH.
 uv tool install git+https://github.com/MonkeyGoneWIld/Lox
 ```
 
-Then write a config (see [`data/config.default.toml`](data/config.default.toml) for every option) and run:
+Then start the UI:
 
 ```bash
 lox ui
 ```
 
-The UI comes up on `http://127.0.0.1:5015` — change it under `[upload.web_interface]`. The `lox` command still works
-as an alias, and every upstream CLI command is unchanged.
+It comes up on `http://127.0.0.1:5015`. Outside Docker, `config.toml` is looked for at the repo root, then
+`~/.config/lox/`, then `~/.config/smoked-salmon/` — upstream's location, still read so an existing install keeps
+working. Nothing is ever written there. See [`data/config.default.toml`](data/config.default.toml) for every option.
 
 ---
 
-## Docker
+## Documentation
 
-```bash
-cp .env.example .env
-openssl rand -hex 32   # put this in LOX_AUTH_TOKEN
-docker compose up -d
-```
-
-That is the whole setup. **No config file.** [`docker-compose.yml`](docker-compose.yml) supplies the handful of
-bootstrap values through `LOX_*` environment variables; everything else is configured in the UI under Settings, each
-section with a Test button, and stored in `settings.toml` on the mounted volume.
-
-Two things will bite you if you skip them:
-
-**The first person to open the UI creates the account.** There is no password to set in advance: lox asks for a
-username and one the first time it is opened, stores it as an scrypt hash in `accounts.toml`, and wants it from then
-on. Until that account exists every route redirects to setup, so a fresh instance is never briefly open.
-
-`LOX_AUTH_TOKEN` is still read and still works — it is how the healthcheck and any script authenticates — but it is
-optional, and it is no longer the only way in. The UI can spend your tracker API budget, read your authenticated
-Deezer session and start uploads to your tracker accounts, so compose binds to `127.0.0.1` by default regardless.
-
-**Put the download directory and the seeding directory on the same filesystem.** Different volumes means no hardlinks.
-Mounting their common parent as one volume is the simplest guarantee — and the Seeding layout test will tell you
-whether it actually worked.
-
-On first load the UI asks for the token and stores an httpOnly cookie for 30 days. Sign out from Settings. A `?token=`
-query parameter and the `X-Auth-Token` header both still work for scripts and the healthcheck.
-
-## Configuration
-
-Almost everything is set in the UI under **Settings** — 82 settings across 16 sections grouped into Accounts,
-Uploading, Files and Maintenance, applied without a restart. Sixteen things can be tested against the real service
-rather than checked for being non-empty: eight whole sections, and eight individual credentials that stand on their
-own. A section holding four image-host keys cannot be answered by one button at the top, so each key has its own:
-
-| Test | What it actually proves |
+| | |
 |---|---|
-| Deezer | Logs in with the ARL and reports the account, plus whether it holds a streaming licence — a valid ARL without one cannot download |
-| RED / OPS / DIC | Calls `index`, reports your username and whether it authenticated by API key or session cookie |
-| Seeding layout | Creates a real hardlink between the download and seeding directories and compares inodes |
-| Torrent client | Connects to every configured client and reports its version |
-| Discord | Posts a test message |
-| Paths | Checks every directory exists and is writable |
-| ptpimg / ptscreens / oeimg / imgbb | Each key against its own host. Nothing is uploaded — a settings test should not put a real file on a public host |
-| Discogs / Apple Music / Qobuz / Tidal | Each token against its own API, with a known lookup |
+| [Installation](https://github.com/MonkeyGoneWIld/Lox/wiki/Installation) | Full setup walkthrough, Docker and bare metal |
+| [Deezer Setup](https://github.com/MonkeyGoneWIld/Lox/wiki/Deezer-Setup) | Getting your ARL, and what it can and cannot do |
+| [Tracker Setup](https://github.com/MonkeyGoneWIld/Lox/wiki/Tracker-Setup) | API keys, session cookies, the budget |
+| [Settings Reference](https://github.com/MonkeyGoneWIld/Lox/wiki/Settings-Reference) | Every setting in the UI, section by section |
+| [Environment Variables](https://github.com/MonkeyGoneWIld/Lox/wiki/Environment-Variables) | Every `LOX_*` bootstrap variable |
+| [Seeding and Hardlinks](https://github.com/MonkeyGoneWIld/Lox/wiki/Seeding-and-Hardlinks) | Per-tracker folders, torrent clients, save paths |
+| [Using Lox](https://github.com/MonkeyGoneWIld/Lox/wiki/Using-Lox) | Search, Browse, Scan, Requests and the pipeline |
+| [Requests](https://github.com/MonkeyGoneWIld/Lox/wiki/Requests) | Matching gates, filters, filling a request |
+| [Uploading](https://github.com/MonkeyGoneWIld/Lox/wiki/Uploading) | What the pipeline does, dry run, prompts |
+| [Command Line](https://github.com/MonkeyGoneWIld/Lox/wiki/Command-Line) | Every CLI command |
+| [Updating and Backups](https://github.com/MonkeyGoneWIld/Lox/wiki/Updating-and-Backups) | Upgrades, what to back up, restores |
+| [Troubleshooting](https://github.com/MonkeyGoneWIld/Lox/wiki/Troubleshooting) | When something breaks |
+| [FAQ](https://github.com/MonkeyGoneWIld/Lox/wiki/FAQ) | Common questions |
 
-### Logs
-
-lox writes a rolling log to `<settings dir>/logs/lox.log`, or wherever `LOX_LOG_DIR` points. It is bounded twice:
-**8 MB per file** and **1 GB in total**, with the oldest files dropped once the cap is reached. Both limits are
-editable under Settings → Debug.
-
-Everything is redacted at the formatter, so ARLs, session cookies, API keys and webhook URLs never reach disk — the log
-is safe to share. Turn on Debug mode for verbose output; Settings → Debug tails it live and offers both the log file
-and a diagnostics bundle for download.
-
-UI settings live in `settings.toml`. Nothing ever rewrites `config.toml`, and deleting `settings.toml` reverts to
-whatever the bootstrap says.
-
-### Bootstrap
-
-Three values are read before a web server exists, so they cannot come from a page the server has not started yet:
-
-| Environment | Config key | |
-|---|---|---|
-| `LOX_HOST` | `upload.web_interface.host` | |
-| `LOX_PORT` | `upload.web_interface.port` | |
-| `LOX_AUTH_TOKEN` | `upload.web_interface.auth_token` | Optional. For scripts and the healthcheck; people sign in with an account. |
-
-The directories are bootstrapped the same way, but they are *not* in that list — the server does not need them to serve
-a page, and a wrong path has to be fixable from the UI rather than only by editing compose:
-
-| Environment | Config key | |
-|---|---|---|
-| `LOX_DOWNLOAD_DIR` | `directory.download_directory` | Created if missing. |
-| `LOX_TORRENTS_DIR` | `directory.dottorrents_dir` | Created if missing. |
-| `LOX_TMP_DIR` | `directory.tmp_dir` | Optional. Created if missing. |
-| `LOX_STATE_DIR` | `checker.state_dir` | Optional. Created if missing. |
-| `LOX_LOG_DIR` | `logging.directory` | Optional. Created if missing. |
-| `LOX_SETTINGS_DIR` | — | Optional. Where `settings.toml` and the database go. |
-
-Anything set under Settings → Paths overrides the environment. The environment wins over `config.toml`, so a stale
-mounted file cannot override a deployment. With the environment set, no config file is needed at all.
-
-### When configuration is wrong
-
-lox starts anyway and shows a banner naming what is wrong, and the operations that need the setting refuse with a
-message pointing at it. Only a bad bind address or an auth token under 16 characters still stops startup — everything
-else is something you fix on the settings page, and exiting on the way up means never reaching that page. A container
-that restart-loops over a path you could have corrected in the UI is worse than one that starts and tells you.
-
-Directories are created when missing, so the interesting failures are the ones creation cannot fix. `isdir()` returns
-False for a volume mounted from the wrong host path, a volume mounted but empty, *and* a directory that is right there
-but owned by a uid the container is not running as — so lox reports what it actually found at the nearest parent that
-does exist, and the uid it is running as, rather than only saying the path is missing.
-
-Outside Docker, `config.toml` is looked for at the repo root, then `~/.config/lox/`, then `~/.config/smoked-salmon/` —
-upstream's location, still read so an existing install keeps working. Nothing is ever written there.
-
-### Request filters
-
-The Requests tab builds its own filters from whichever tracker is selected, because the two do not agree. Both run
-Gazelle and both search pages look identical, but the parameter names differ and so do the numeric IDs behind the
-labels — media `WEB` is `7` on RED and `1` on OPS, encoding `Lossless` is `8` on RED and `0` on OPS, and the tag mode
-is `tags_type=0|1` on one and `tag_mode=any|all` on the other. A shared table would not fail on one of them; it would
-succeed with the wrong filter and report nothing unusual.
-
-`lox/checker/request_filters.py` holds one vocabulary per tracker, transcribed from their live search pages rather
-than from the Gazelle source, so it matches what those sites are running. RED alone offers *include old* and
-*search descriptions*; OPS alone offers a bounty range. A tracker with no entry there — DIC — gets only the filters
-that need no IDs, and the UI says so rather than offering options that would search for the wrong thing.
-
-Each page of results is one tracker call and holds 25 requests, so the fetch size is chosen in pages — the unit the
-cost is actually measured in — with that cost shown next to the button.
-
-### Getting your ARL
-
-Log into Deezer, open developer tools → Application → Cookies → `https://www.deezer.com`, and copy the `arl` value. It
-is a full session credential: anyone holding it is logged into your account. Paste it into Settings → Deezer and press
-Test.
+---
 
 ## What Lox changes
 
-Beyond the web UI, the Deezer integration and the checker, these are the behavioural differences from the upstream
-pipeline it is built on:
+Built on [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon) `0.10.0`, whose tagging, spectral,
+transcoding and Gazelle upload machinery this uses. Everything Deezer-shaped, the web UI, the tracker budget, the
+checker and the per-tracker seeding layout are Lox's. Beyond those, the behavioural differences from upstream:
 
 - **Deezer only** — metadata search is restricted to Deezer. Bandcamp, Beatport, Discogs, iTunes, JunoDownload,
   MusicBrainz, Qobuz and Tidal are disabled as *sources*, though several are still used to verify request track counts.
-- **Folders are moved, not copied** — releases are moved into `download_directory` with `shutil.move`, and an emptied
-  source parent is removed. The `hardlinks` and `remove_source_dir` options are gone; use `[linking]` instead.
-- **Lossy-master prompts always ask** — even with `yes_all`. Auto-answering "no" asserts something about a release
-  nobody looked at. In the web UI the prompt appears in the upload console and you answer it there.
+- **Folders are moved, not copied** — releases are moved into the download directory, and an emptied source parent is
+  removed. The `hardlinks` and `remove_source_dir` options are gone; use the seeding layout instead.
+- **Lossy-master prompts always ask** — even with auto-answer on. Answering "no" automatically asserts something about
+  a release nobody looked at.
 - **No upstream footer** — the "Uploaded with smoked-salmon" line is dropped from torrent and transcode descriptions.
 - **Icons** point at `img.onlyimage.org` rather than `ptpimg.me`.
 
 ---
 
-## How it fits together
-
-```
-lox/deezer/     gw.py, crypto.py, download.py, explore.py
-                   Private gw-light API, Blowfish stream decryption, channels
-
-lox/checker/    gateway.py    every tracker call, budgeted and breakered
-                   matching.py   title/artist/edition heuristics, request scoring
-                   missing.py    collect (free) then check (budgeted)
-                   requests_check.py + trackcount.py
-                   watchlists.py saved searches
-                   store.py      debounced atomic JSON state
-
-lox/seeding/    links.py      hardlinked per-tracker folders
-
-lox/web/        api.py        JSON API, auth middleware, path validation
-                   jobs.py       background jobs with progress
-                   static/       no-build SPA
-```
-
----
-
 ## Status and caveats
 
-Verified where it could be. Around 440 assertions run in CI across twelve suites, covering the prompt bridge, the
-metadata form, the request filters and their per-tracker IDs, the dry run, the settings page, and the Deezer credit
-rules. The UI pieces are driven in a real browser against the shipped script and stylesheet rather than a copy of them.
-Ruff and basedpyright run on every push.
+Around 440 assertions run in CI across twelve suites, covering the prompt bridge, the metadata form, the request
+filters and their per-tracker IDs, the dry run, the settings page and the Deezer credit rules. The UI pieces are
+driven in a real browser against the shipped script and stylesheet. Ruff and basedpyright run on every push.
 
 **What has not been exercised against the real thing:** the download chain (Deezer's media token flow and the Blowfish
-decryption), the channel page scraping, live tracker calls under real rate limits, and a live torrent-client injection.
-Deezer changes those surfaces; expect the download path to be the first thing that breaks.
+decryption), the channel page scraping, live tracker calls under real rate limits, and a live torrent-client
+injection. Deezer changes those surfaces; expect the download path to be the first thing that breaks.
 
-The tracker budget defaults are conservative guesses, not measured limits. Tune `[checker]` to what your trackers
-actually allow.
+The tracker budget defaults are conservative guesses, not measured limits. Tune them to what your trackers actually
+allow.
 
 ---
 
 ## Licence and attribution
 
-Apache-2.0, the same licence as [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon), from which the
-tagging, spectral, transcoding and Gazelle upload machinery comes. The `LICENSE` file and upstream's copyright notices
-are retained, and the full commit history is preserved so authorship is traceable.
+[Apache-2.0](LICENSE), the same licence as [smoked-salmon](https://github.com/smokin-salmon/smoked-salmon), from which
+the tagging, spectral, transcoding and Gazelle upload machinery comes. Upstream's copyright notices are retained and
+the full commit history is preserved so authorship is traceable.
+
+Lox is not affiliated with smoked-salmon and is not maintained by it — please do not take problems here to them. If
+you want the supported, reviewed thing, use
+[smokin-salmon/smoked-salmon](https://github.com/smokin-salmon/smoked-salmon).
 
 deemix is GPL-3.0 and none of its code is used here — the UI resembles it, it does not reuse it.

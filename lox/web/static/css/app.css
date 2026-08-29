@@ -331,11 +331,6 @@ button.ghost { background: none; }
 
 /* ---------- cards ---------- */
 
-/* Above a grid of covers, when any of them can be ticked. Quiet, because it
-   is an offer and not an instruction. */
-.grid-tools { margin-bottom: 12px; }
-.grid-tools .hint { margin: 0; }
-
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
@@ -349,7 +344,10 @@ button.ghost { background: none; }
    width:100%, which only means "one grid cell" while the grid is there. */
 .artist-page { display: block; }
 
-.card { position: relative; cursor: pointer; }
+/* Shift-click is a range, not a text drag. Without user-select the browser
+   reads the shift as "extend the selection" and paints every title and artist
+   between the two cards blue. Nothing on a card is text anyone wants to copy. */
+.card { position: relative; cursor: pointer; user-select: none; -webkit-user-select: none; }
 
 /* Selection. The tick sits on the art, appears on hover, and stays put once
    ticked so a selection is visible without hovering every card. */
@@ -363,8 +361,57 @@ button.ghost { background: none; }
 }
 
 .card:hover .card-pick, .card-pick:focus-within, .card.picked .card-pick { opacity: 1; }
-.card-pick input { width: 17px; height: 17px; cursor: pointer; }
+
+/* A ring, not a box. The browser's own checkbox is a filled white square with
+   a blue tick -- it belongs to a form, and on top of album art it reads as a
+   piece of chrome that landed there. Empty it is a hollow circle, so the art
+   underneath still shows through; taken it fills with the one signal colour
+   and carries its own tick. */
+.card-pick input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 21px;
+  height: 21px;
+  margin: 0;
+  cursor: pointer;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: transparent;
+  /* The art behind can be any colour, so the ring carries its own contrast
+     rather than trusting whatever it lands on. */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.card-pick input:hover { border-color: var(--accent); }
+
+.card-pick input:checked {
+  /* Longhands, not the `background` shorthand. A shorthand carrying a var()
+     cannot be resolved when the sheet is parsed, so it is held pending -- and
+     the background-image below, in this same rule, then collapses the rest of
+     it to nothing. The circle came out with its tick and no fill behind it. */
+  background-color: var(--accent);
+  border-color: var(--accent);
+  /* The tick is drawn rather than typed: a glyph would inherit the page font
+     and sit off-centre in a 21px circle. */
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%2317150f" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>');
+  background-size: 15px 15px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.card-pick input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .card.picked .card-art { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* While a batch is open, the per-card download and upload buttons are gone.
+   They sit under the pointer on exactly the cards being ticked, and one stray
+   press sends a single release off on its own -- a download you did not ask
+   for, or worse, an upload. The batch has its own buttons in the bar. */
+body.picking .card-actions { display: none; }
+
+/* Pushes what follows to the far end. Acting on the batch is one kind of
+   thing; changing what the batch is, is another. */
+.bar-gap { flex: 1 1 auto; }
 
 .pick-bar {
   position: sticky;
@@ -794,8 +841,70 @@ button.link {
 .hitlist .hit { display: flex; flex-direction: column; gap: 1px; padding: 6px 0 6px 9px; border-left: 2px solid var(--border); margin-bottom: 5px; }
 .hitlist .hit.matched { border-left-color: var(--ok); }
 
-.watchrow { border-bottom: 1px solid var(--border); padding: 8px 0; }
-.watchrow:last-of-type { border-bottom: 0; }
+/* Renaming happens in the row, not in a dialogue over the top of it: the name
+   you are changing is worth having on screen while you change it.
+
+   The rest of the saved-search row is gone: it is one of the app's tables now,
+   so it gets the same column filters, the same sorting and the same
+   shift-click selection as every other list rather than its own grid with no
+   way to find a search by name. */
+.watch-rename { display: flex; align-items: center; gap: 8px; }
+.watch-rename input { flex: 1; min-width: 0; }
+
+/* A filter bar for a list that is not a table. The downloads are cards with
+   progress bars, so they cannot carry per-column filters -- but forty of them
+   still need narrowing. */
+.listfilter { margin-bottom: 12px; }
+.listfilter .th-filter { width: auto; min-width: 180px; }
+.listfilter select.th-filter { min-width: 120px; }
+
+/* The scan's filters. Four short answers -- a count, two dates and an age --
+   so four fields across, wrapping when there is no room for four.
+
+   They were four full-width bands with a rule under each, borrowed from the
+   request form. That layout earns its width on a group of fifty checkboxes;
+   spent on a single number it puts one short answer per screen-wide line, and
+   the four of them filled the top of the page. */
+.scanfilters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 16px 24px;
+  margin-top: 14px;
+  max-width: 1120px;
+}
+
+.scanfield { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.scanfield .reqlabel { padding: 0; }
+.scancontrol { display: flex; align-items: center; gap: 8px; }
+.scancontrol select { width: auto; }
+
+/* Wide enough for a date and no wider. The base rule stretches every input to
+   its container, which on a grid cell is the whole column. */
+.scanfield input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
+  width: 100%;
+  max-width: 160px;
+}
+
+/* A date is picked off a calendar, not typed in a format you have to be told.
+   The browser draws that calendar and its little icon itself, in whichever
+   scheme it thinks the page is -- which on a dark page with no colour-scheme
+   declared is a black icon on a black field, and a white popup.
+
+   Scoped to these inputs rather than set on :root: the app paints its own
+   controls, so the only things that need the browser told are the ones it
+   still draws. */
+input[type="date"] { color-scheme: dark; }
+:root[data-theme="light"] input[type="date"] { color-scheme: light; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) input[type="date"] { color-scheme: light; }
+}
+input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; opacity: 0.65; }
+input[type="date"]:hover::-webkit-calendar-picker-indicator { opacity: 1; }
+
+/* The way back to a rolling default, in the space the note would have used.
+   Only shown when there is a date of your own to go back from. */
+.filter-reset { padding: 0; font-size: 11.5px; color: var(--text-dim); }
+.filter-reset:hover { color: var(--accent); }
 
 .filebtn { border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 16px; background: var(--bg-input); }
 .filebtn:hover { border-color: var(--accent); }
@@ -806,8 +915,6 @@ select {
   border-radius: var(--radius);
   padding: 9px 12px;
 }
-
-#watchlist-form input[type="text"] { flex: 1; min-width: 150px; }
 
 .spinner {
   width: 15px;
@@ -859,17 +966,88 @@ select {
   scroll-margin-top: 104px;
 }
 
+/* Every heading on this page is its own address, so every one of them is a
+   link -- but it is a heading first, and a page of blue underlined section
+   titles reads as a menu of things to press rather than as a page. It looks
+   like the heading it is until the pointer is on it. */
+.settings-category .anchor,
+.settings-section h3 .anchor,
+#settings-body h2 .anchor {
+  color: inherit;
+  text-decoration: none;
+}
+.settings-category .anchor:hover,
+.settings-section h3 .anchor:hover,
+#settings-body h2 .anchor:hover { text-decoration: underline; }
+
+/* The sticky save bar sits over the top of the page, so a heading scrolled to
+   the very top lands underneath it. */
+.settings-section h3,
+#settings-body h2 { scroll-margin-top: 104px; }
+
+/* Where the address just took you, for as long as it takes to see it. Landing
+   halfway down a long page with nothing marked leaves you hunting for the
+   section you asked for. */
+.addressed { animation: addressed 1.8s ease-out; border-radius: var(--radius); }
+@keyframes addressed {
+  0%, 30% { background: var(--accent-edge); box-shadow: 0 0 0 6px var(--accent-edge); }
+  100% { background: transparent; box-shadow: 0 0 0 6px transparent; }
+}
+
+/* Somebody who asked not to be moved about is not moved about. */
+@media (prefers-reduced-motion: reduce) {
+  .addressed { animation-duration: 0.01ms; }
+}
+
 /* A credential that stands on its own gets its own test beside its label. */
-.setting-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.setting-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }
 .setting-head > label { flex: 1; min-width: 0; }
 .field-test { font-size: 11.5px; padding: 4px 10px; flex: none; }
 
+/* Settings line up across a row, not just down a column.
+
+   Every setting is a label, a control and a note. Laid out as independent
+   flex columns they only ever agreed by luck: a two-line label pushed its own
+   box down while the box beside it stayed put, a long note stretched one cell
+   and left its neighbour floating, and a checkbox -- which had no control row
+   at all -- sat level with the labels rather than with the controls. Reading
+   across a row of four settings meant reading four different layouts.
+
+   Each setting spans the same three grid rows, so every label in a row shares
+   a baseline, every control shares one, and every note starts at the same
+   height. settingField() guarantees the three parts, empty or not. */
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
-  margin-top: 14px;
+  gap: 20px 18px;
+  margin-top: 16px;
+  align-items: start;
 }
+
+.settings-grid > .setting {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+}
+
+@supports (grid-template-rows: subgrid) {
+  .settings-grid > .setting {
+    grid-row: span 3;
+    grid-template-rows: subgrid;
+  }
+}
+
+/* The label row keeps its height whether or not there is a label in it, so a
+   row of checkboxes does not close up while the row above it does not. */
+.setting-head { min-height: 19px; }
+.setting-head:empty { min-height: 19px; }
+.setting-control { display: flex; flex-direction: column; gap: 8px; justify-content: flex-start; }
+.setting-control > * { margin: 0; }
+/* An empty note takes no space but still holds its row open for the notes
+   beside it. */
+.setting-help:empty { display: none; }
 
 /* One torrent client per card: how to reach it above the rule, what to do with
    it below. Without the border the two clients ran into each other and the
@@ -893,12 +1071,7 @@ select {
 
 /* Same field layout as the settings page, reused wherever a form needs to say
    what it accepts rather than expecting you to remember. */
-.filters {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
-  margin: 12px 0 14px;
-}
+.filters { margin: 12px 0 14px; }
 
 /* The card fills its panel, and everything in it fills the card.
    It used to be capped at 1100px and then each thing inside it capped again --
@@ -955,30 +1128,370 @@ select {
 
 /* Tick lists inside a filter field: scrollable so a 16-entry encoding list does
    not push everything else off the panel. */
-.checkgroup {
+/* The request search, laid out the way the trackers lay theirs out: a label
+   on the left, its controls flowing across the rest of the row.
+
+   Two things this gets wrong if left alone. The form does not want the whole
+   width of a wide screen -- a search box stretched to 1700px looks like a
+   mistake, and the sites cap theirs -- so it is held to a readable measure.
+   And the groups need air between them: run "Release types" straight into
+   "Formats" with a single gap and fifty checkboxes read as one field. */
+.reqform {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  max-height: 132px;
-  overflow-y: auto;
-  padding: 7px 9px;
-  background: var(--bg-input);
+  margin: 14px 0 18px;
+  max-width: 1120px;
+}
+
+/* Each row is a band with a rule under it, rather than rows floating in one
+   field of whitespace. Eighteen pixels of gap was not enough to tell where
+   "Release types" ended and "Formats" began -- fifty checkboxes in a column of
+   air read as one list, and the labels down the left were the only thing
+   suggesting otherwise. A line does that job at a glance and costs no height.
+
+   The last row has no rule, because a rule under the final row is a border
+   around nothing. */
+.reqrow {
+  display: grid;
+  grid-template-columns: 136px 1fr;
+  gap: 16px;
+  align-items: start;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.reqrow:first-child { padding-top: 4px; }
+.reqrow:last-child { border-bottom: 0; }
+
+/* A group of ticks is taller than a text box, so it gets more room around it
+   than a one-line row needs. */
+.reqrow:has(.reqgroup) { padding: 16px 0; }
+
+.reqlabel { font-size: 13px; font-weight: 600; padding-top: 4px; color: var(--text-dim); }
+.reqfield { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
+
+/* Text boxes are as wide as the thing you type in them, not as wide as the
+   window.
+
+   The selector carries the same :not() chain as the global "inputs fill their
+   field" rule further up, because that rule scores four attribute selectors
+   and a plain `.reqfield input[type=search]` loses to it -- which is why the
+   search box was still stretching to 800px with a 420px rule sitting right
+   here. Specificity, not cascade order. */
+.reqfield input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
+  width: 420px;
+  max-width: 100%;
+}
+
+.reqfield input.reqsmall:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]) {
+  width: 110px;
+}
+.reqhint { margin: 0; font-size: 11.5px; }
+
+/* The search's own bar, under the buttons that start it. Its .bar comes from
+   the download list, so a page of requests being read looks like anything else
+   in the app that takes a while. */
+.reqprogress {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 10px 0 4px;
+  max-width: 1120px;
+}
+
+.reqprogress .bar { flex: 1; margin-top: 0; }
+
+/* The two halves of Requests: finding them, and looking back at the ones
+   already looked up. */
+.reqtabs { margin-bottom: 14px; }
+
+/* What the search actually covered. Stays on screen: it was a toast, and the
+   number that decides whether to read more pages is not a thing to show for
+   four seconds and take away. */
+.requests-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 
-.checkgroup .check { font-size: 12.5px; }
+/* A partial read is worth noticing, because more of it is one click away. */
+.requests-summary.partial { border-left: 3px solid var(--accent); color: var(--text); }
 
-/* Each group's own "Only specified", sitting under the list it applies to
-   rather than as one switch for all three -- which is what the tracker does,
-   and what stops it silently hiding every request that left the choice open. */
-.strict-check { font-size: 11.5px; color: var(--text-dim); margin-top: 5px; }
-.filter-toggles { grid-column: 1 / -1; }
-.filter-note { grid-column: 1 / -1; color: var(--warn); }
+/* Dates do not read well broken over two lines. */
+.table td.nowrap { white-space: nowrap; }
+
+/* ---------- sortable, filterable tables ---------- */
+/* The filter belongs in the column it filters. In a bar above the table,
+   nothing said which control narrowed which column. */
+.datatable { width: 100%; }
+.datatable .col-pick { width: 34px; vertical-align: middle; }
+
+/* Two rows in every header cell, whether or not the column has a filter.
+   Sized cells and unsized ones together made the labels sit at different
+   heights across the row. */
+.datatable thead th {
+  vertical-align: top;
+  padding-bottom: 10px;
+}
+
+/* A column is a label, the filter that narrows it, and the values -- one
+   stack, on one centre line. They were all left-aligned against cells of very
+   different widths, so a short label sat at the far left of a wide column with
+   its filter box under it and the values somewhere off to the side, and
+   nothing in a column looked like it belonged to anything else in it.
+
+   The release name is the exception and stays left: a column of ragged
+   centred titles cannot be scanned down, which is the one thing that column
+   is for. Its header goes left with it, so the label still sits over the
+   values it names. */
+.datatable thead th > .th-label {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 20px;
+}
+
+/* The slot is the same height in every column, filter or no filter, so the
+   header does not step up where a column has nothing to filter on. */
+.datatable thead th > .th-filter-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding-top: 6px;
+}
+
+.datatable td { text-align: center; }
+.datatable th.col-pick, .datatable td.col-pick { text-align: center; }
+
+/* Text that is read rather than compared. */
+.datatable th.col-text > .th-label,
+.datatable th.col-text > .th-filter-slot { justify-content: flex-start; }
+.datatable td.col-text { text-align: left; }
+.datatable th.col-text .th-filter, .datatable th.col-text .th-range-pair { margin-right: auto; }
+
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  padding: 0 0 6px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.th-sort:hover { color: var(--text); }
+.th-sort.active { color: var(--accent); }
+.th-arrow { font-size: 9px; }
+
+/* A track Deezer will not hand over. The row stays legible -- it is still
+   part of the release -- but it should not read as available. */
+.track-missing { opacity: 0.55; }
+.track-missing .track-title { text-decoration: line-through; }
+
+/* Every filter control is the same height, whatever kind it is.
+
+   A select is laid out by the browser from its own font metrics and a text
+   input from its padding, so the same rule gave a dropdown several pixels
+   more height than the box beside it -- and a header row with one of each
+   stepped up and down across the table. Fixing the height and the box model
+   is what makes the row read as one row. */
+.th-filter {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  min-width: 0;
+  height: 28px;
+  box-sizing: border-box;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 4px 7px;
+  vertical-align: middle;
+}
+
+/* Number inputs come with spinners that shrink the usable width to nothing in
+   a narrow column, and nobody nudges a year one at a time. */
+.th-filter[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.th-filter[type="number"]::-webkit-outer-spin-button,
+.th-filter[type="number"]::-webkit-inner-spin-button { appearance: none; margin: 0; }
+
+select.th-filter { padding-right: 22px; }
+
+/* A choice column is a set of facts, so its filter is a set of tick boxes --
+   the way a spreadsheet asks the same question. It was a single-select of the
+   whole joined value, so asking for "OPS missing" meant finding a row whose
+   entire verdict happened to read that, and a fact only ever drawn as a tag
+   ("already on tracker") was not in the list at all.
+
+   details/summary rather than a popover library: it opens in place and closes
+   on the next click without a line of script.
+
+   Written first against --panel and --line, neither of which this stylesheet
+   has: both resolved to nothing, so the menu had no ground and no edge and the
+   table showed straight through it. */
+/* A panel that can be folded away. The saved searches grow without limit and
+   sit between the scan box and its own results, so a long list pushed the
+   thing you came to read off the screen. */
+.panel-fold > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.panel-fold > summary::-webkit-details-marker { display: none; }
+.panel-fold > summary::marker { content: ""; }
+.panel-fold > summary h2 { margin: 0; }
+.panel-fold > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid var(--text-dim);
+  transition: transform 0.12s ease;
+}
+.panel-fold[open] > summary::before { transform: rotate(90deg); }
+.panel-fold > summary:hover::before { border-left-color: var(--accent); }
+/* Folded, the heading is the whole panel, so it should not keep the gap the
+   open one leaves under it. */
+.panel-fold:not([open]) { padding-bottom: 14px; }
+
+.th-choicebox { position: relative; max-width: 220px; }
+.th-choicebox > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text);
+  /* The header uppercases and letter-spaces its own text, which is right for
+     a column label and wrong for the value of a control sitting under it. */
+  text-transform: none;
+  letter-spacing: normal;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.th-choicebox > summary::-webkit-details-marker { display: none; }
+/* The value takes the room and truncates; the arrow keeps its own. */
+.th-choice-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.th-choicebox > summary::marker { content: ""; }
+/* Something to say it opens. Without it the control read as a label. */
+.th-choicebox > summary::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid var(--text-dim);
+  transition: transform 0.12s ease;
+}
+.th-choicebox[open] > summary { border-color: var(--accent); }
+.th-choicebox[open] > summary::after { transform: rotate(180deg); }
+.th-choicebox > summary:hover { border-color: var(--accent-edge); }
+/* Narrowed to something, so the column says so without being opened. */
+.th-choicebox.th-choicebox-on > summary { border-color: var(--accent); color: var(--accent); }
+
+.th-choices {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* Opaque, and lifted off the rows underneath. */
+  background: var(--bg-raised);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 55%);
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.th-choices-head {
+  display: flex;
+  gap: 10px;
+  padding: 2px 4px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
+}
+.th-choice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 5px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.th-choice:hover { background: var(--bg-input); }
+.th-choice input { flex: 0 0 auto; margin: 0; }
+
+/* A lower and an upper limit, side by side and equally wide -- and, for a
+   date column, what the two of them are measured in. Two bare numbers over a
+   column of dates is not a question anybody can answer. */
+.th-range-pair { display: flex; align-items: center; gap: 5px; max-width: 260px; width: 100%; }
+.th-range-pair .th-range { flex: 1 1 0; min-width: 0; }
+.th-range-pair .th-unit { flex: 0 0 auto; width: auto; min-width: 74px; }
+
+/* What a run passed over. Sits under the log it belongs to, and goes when it
+   is acted on. */
+.skipped-note { margin-top: 12px; border-left: 3px solid var(--accent); }
+.skipped-list { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--text-dim); }
+.skipped-list li { margin-bottom: 3px; }
+.reqprogress .hint { white-space: nowrap; }
+
+.reqgroup { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+/* All and "Only specified" sit above the ticks they govern, as on the site,
+   and are separated from them so the group reads as a heading and a list
+   rather than one run of boxes where the first two mean something different. */
+.reqgroup-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.reqgroup-head .check { font-weight: 600; }
+.reqchecks { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.reqchecks .check { font-size: 12.5px; }
+
+.filter-note { color: var(--warn); }
 
 .setting { display: flex; flex-direction: column; gap: 5px; }
-.setting > label { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
-.setting-help { margin: 0; font-size: 11.5px; }
+.setting > label,
+.setting-head > label { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.setting-help { margin: 0; font-size: 11.5px; line-height: 1.45; }
 .saved-tag { font-weight: 500; }
 
 /* A size, entered as a number and a unit. */
@@ -1246,6 +1759,14 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .meta-form-field select,
 .meta-form-field textarea { width: 100%; }
 
+/* The field a validator refused, so the message has something to point at. */
+.meta-form-field.meta-form-bad {
+  outline: 1px solid var(--bad);
+  outline-offset: 6px;
+  border-radius: 4px;
+}
+.meta-form-error { color: var(--bad); }
+
 .meta-tracks { display: flex; flex-direction: column; gap: 6px; }
 .meta-track { display: flex; align-items: center; gap: 10px; }
 .meta-track-no {
@@ -1255,18 +1776,19 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
   font-variant-numeric: tabular-nums;
 }
 .meta-track input { flex: 1 1 auto; min-width: 0; }
-.meta-track-artists {
-  flex: 0 0 190px;
+/* The artists of a track are editable now, so this is a field rather than a
+   caption. It keeps the quieter type, because the title is the thing being
+   read down the column and the credits are the exception you correct. */
+.meta-track input.meta-track-artists {
+  flex: 0 1 260px;
   color: var(--text-dim);
   font-size: 11.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
+.meta-track input.meta-track-artists:focus { color: var(--text); }
 
 @media (max-width: 720px) {
   .meta-track { flex-wrap: wrap; }
-  .meta-track-no, .meta-track-artists { flex-basis: auto; }
+  .meta-track-no, .meta-track input.meta-track-artists { flex-basis: auto; }
 }
 
 /* Editing metadata as a form rather than in vim. */
@@ -1324,10 +1846,23 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 
 /* One tag per tracker on a Found row. They wrap rather than stretching the
    column, so three trackers do not squeeze the release title. */
-.found-trackers { display: flex; flex-wrap: wrap; gap: 5px; }
+/* The tags lay themselves out; the cell does not.
+   `display: flex` on a <td> takes it out of the row's own height calculation,
+   so the cell stopped at the height of its tags while the row went on -- and
+   the cell's bottom border drew there, as a short bright line under the tags
+   with the real row line below it. It also made the whole group one flex item
+   pinned to the left of a centred column. Both go away by leaving the cell a
+   cell and letting the wrapper inside it do the arranging. */
+.found-trackers > span,
+.found-sources > span {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
 /* Both ways a release can have got here, side by side rather than run
    together: it used to be two rows, so the gap is the whole point. */
-.found-sources { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Reading the queue you have, as opposed to the Settings rules that decide
@@ -1340,10 +1875,6 @@ a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 /* What the rules kept out. Deliberately quiet -- it is a footnote to the
    queue, not a second queue -- but never invisible, because a rule that
    silently shortens a list is indistinguishable from an empty scan. */
-.held-note { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
-.held-block { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border); }
-.held-block .table { opacity: 0.72; }
-.held-block .table:hover { opacity: 1; }
 .section-head-plain {
   margin: 0 0 12px;
   font-size: 13px;
@@ -1542,3 +2073,180 @@ a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 /* Revealed text is the value itself, so it is set in the face used for
    anything compared character by character. */
 .secret-field input[type="text"] { font-family: var(--mono); font-size: 12px; }
+
+
+/* ---------- upload targets, in the order they run ---------- */
+/* Two trackers is two posts, one after the other, and which of them goes first
+   decides who owns the group the second one adds to -- so the order is a real
+   decision and this is a real list. You drag it into the order you want, which
+   is what everyone tries first. It replaces a pair of chevrons per chip, which
+   was four more buttons on a row that already had too many and read as
+   punctuation rather than as controls. */
+.upload-targets { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.upload-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.upload-target:hover { color: var(--text); }
+.upload-target.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text, #1b1200);
+}
+.upload-target.draggable { cursor: grab; }
+.upload-target.dragging { opacity: 0.45; cursor: grabbing; }
+
+/* Where it would land. A line rather than a gap: a gap opening up shifts every
+   chip after it, and the row jumps about while you are aiming at it. */
+.upload-target.drop-before { box-shadow: -3px 0 0 0 var(--text); }
+.target-end.drop-before { box-shadow: -3px 0 0 0 var(--text); }
+.target-end { display: inline-block; width: 4px; align-self: stretch; border-radius: 2px; }
+
+/* Which position it holds, inside the chip rather than beside it. */
+.target-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.22);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* ---------- the upload queue ---------- */
+.upload-queue { border-left: 3px solid var(--accent); margin-bottom: 14px; }
+.queue-list { margin: 10px 0 0; padding-left: 22px; font-size: 13px; color: var(--text-dim); }
+.queue-list li { margin-bottom: 4px; }
+.queue-list .linkbtn { margin-left: 10px; font-size: 12px; }
+
+/* ---------- a download that came back below FLAC ---------- */
+.dl-quality { margin-top: 6px; font-size: 12px; display: flex; align-items: center; gap: 4px; }
+.danger-link { color: var(--bad); }
+
+/* ---------- a note you have read ---------- */
+.note-dismiss { margin-left: auto; padding: 2px 9px; font-size: 15px; line-height: 1; }
+
+/* ---------- browse ---------- */
+/* Every list in Browse can be sent to a scan, so every heading has room for
+   the button that does it. */
+.browse-head { margin-top: 18px; justify-content: flex-start; }
+.browse-head .section-title { margin: 0; margin-right: auto; }
+
+/* ---------- a tracker verdict you can follow ---------- */
+/* "OPS is missing this" is a claim about a page that exists. It used to be
+   text you had to retype into the tracker's own search. */
+a.tag-link { text-decoration: none; }
+a.tag-link:hover { filter: brightness(1.15); text-decoration: underline; }
+
+/* ---------- row actions inside a table ---------- */
+/* The Result column carries a sentence, and it was the last column in a table
+   that gave every other one whatever it asked for -- so the request name took
+   the width and the result wrapped onto a second line under it. */
+.table td.req-result, .table th.req-result { min-width: 220px; }
+.table td.req-name { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+
+.table td.row-actions { white-space: nowrap; text-align: right; }
+/* Every control in the cell, not just the buttons. The gap was written as
+   `button + button`, and "Open" is an anchor styled as a button -- so it sat
+   flush against Rename while Rename and Delete were spaced. */
+.table td.row-actions > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+
+/* ---------- spectrals ---------- */
+/* One surface, not a box inside a box.
+
+   Each track was drawn as its own dark rectangle inside the panel's dark
+   rectangle, with a sliver of a third colour trapped between them and a
+   hairline gap down the middle of every pair. Three edges where the release
+   has one. The pair now spans the panel exactly -- no padding beside it, no
+   gap between the full and the zoom, no rounding on either -- so a track reads
+   as one image and the panel is the only frame. */
+.step:has(.spectrals) {
+  padding-right: 0;
+  padding-top: 0;
+  /* The panel's own outline is the only one there should be, and it is drawn
+     by the flow card around it. A second rule a pixel outside the images is
+     the sliver of background that made every track a box in a box. */
+  border: 0;
+  overflow: hidden;
+}
+.spectrals { margin: 0; }
+/* The caption above each track is what separates them; padding here as well
+   put a band of panel colour between images that are meant to read as one
+   column of spectrograms. */
+.spectral-row { padding: 0; background: transparent; border: 0; }
+.spectral-row:last-child { padding-bottom: 0; }
+.spectral-num { padding: 8px 0 4px; margin: 0; }
+.spectral-pair { gap: 0; background: transparent; border: 0; }
+.spectral-full { width: 86.15%; }
+.spectral-zoom { width: 13.85%; margin-left: 0; }
+.spectral-full, .spectral-zoom { display: block; line-height: 0; border: 0; border-radius: 0; }
+.spectral-pair img { border: 0; border-radius: 0; }
+
+
+/* ---------- upload history ---------- */
+/* An upload cannot be run again to find out what it did, so what it did is
+   kept: what it was posted as, which tracker took it, and everything it
+   printed on the way. Folded away by default -- the list is for finding one,
+   the disclosure is for reading it. */
+.upload-row > summary { cursor: pointer; }
+.upload-detail { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.upload-desc {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.upload-log { max-height: 320px; overflow: auto; }
+.upload-log .joblog-line.warning { color: var(--warn); }
+.upload-log .joblog-line.error { color: var(--bad); }
+
+/* ---------- a channel with no artwork ---------- */
+/* Deezer gives most of its channels a colour and no picture, which left two
+   thirds of the grid as plain rectangles you had to read the caption under to
+   tell apart. The initial is drawn on the colour instead: it is not artwork,
+   but it is something to aim at. */
+.card-art.card-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: rgb(255 255 255 / 0.82);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+}
+
+
+/* ---------- an answer on its way ---------- */
+/* Answering is not instant: the pipeline picks the answer up on its own
+   schedule and may take a while before it publishes the next question. Nothing
+   said so, so Save looked like it had done nothing and a second press was met
+   with "that question has already been answered". */
+.flow-card.answering .step { opacity: 0.6; }
+.answering-note { color: var(--accent); }

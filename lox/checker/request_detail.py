@@ -10,8 +10,17 @@ This normalises all of that into one dict. Nothing is dropped on the way: any
 key the tracker sent that is not one of the known ones is carried through under
 ``extra``, so a field appearing on one site and not the other still reaches the
 page instead of vanishing here.
+
+And it is kept. Opening a request took the better part of a minute -- the
+tracker is simply slow to answer -- for a record that does not change: the terms
+a request will accept are set when it is posted. So the rendered detail is
+written to the store, opening one is instant afterwards, and a check that has
+already fetched the raw payload caches the detail on the way past for free. The
+page says how old the copy is and offers to fetch it again, because the vote
+count and the comments are the parts that do move.
 """
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,8 +29,12 @@ from lox.checker.deezer_requests import format_bounty
 from lox.checker.gateway import TrackerGateway, plain
 from lox.checker.html_clean import looks_like_html, sanitize
 from lox.checker.missing import _release_type_name
+from lox.checker.store import CheckerStore
 
-__all__ = ["request_detail"]
+__all__ = ["cache_detail", "render_detail", "request_detail"]
+
+#: Where rendered request details are kept, keyed ``TRACKER:ID``.
+DETAILS = "request_details"
 
 # Fields read explicitly below. Anything else the tracker sends is passed on
 # under "extra" rather than being silently discarded.
@@ -168,21 +181,88 @@ def _artist_name(raw: dict) -> str:
     return ""
 
 
-async def request_detail(gateway: TrackerGateway, tracker: str, request_id: int) -> dict[str, Any]:
-    """Fetch one request and lay it out for display.
+def cache_detail(
+    store: CheckerStore | None,
+    gateway: TrackerGateway,
+    tracker: str,
+    request_id: int,
+    raw: Any,
+) -> dict[str, Any] | None:
+    """Render a raw request payload and keep it, if there is a store to keep it in.
+
+    Called from the request checker, which has already paid for the payload:
+    caching it there is what makes opening the request afterwards instant and
+    free rather than another minute of waiting.
+
+    Args:
+        store: Where to keep it, or None to render without keeping.
+        gateway: The gateway, for the tracker's base URL.
+        tracker: Tracker code.
+        request_id: The request's ID.
+        raw: The payload the tracker returned.
+
+    Returns:
+        The rendered detail, or None if it could not be rendered.
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    try:
+        detail = render_detail(gateway, tracker, int(request_id), raw)
+    except Exception:  # noqa: BLE001 - caching is never worth failing a check over
+        return None
+    if store is not None:
+        store.put(DETAILS, f"{tracker}:{request_id}", detail, flush=True)
+    return detail
+
+
+async def request_detail(
+    gateway: TrackerGateway,
+    tracker: str,
+    request_id: int,
+    store: CheckerStore | None = None,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Return one request, laid out for display, from the store or the tracker.
+
+    The stored copy is used unless it is missing or the caller asked for a
+    fresh one. A request's terms do not change, and the tracker takes the
+    better part of a minute to say so.
+
+    When the tracker has to be asked, it is an interactive call: it still costs
+    a unit of budget and still obeys the circuit breaker, but it does not join
+    the back of the queue behind a running batch. It used to, and opening a
+    request while a hundred-request check ran meant waiting for the hundred.
 
     Args:
         gateway: The tracker gateway, which spends the call against the budget.
         tracker: Tracker code.
         request_id: The request's ID on that tracker.
+        store: Where details are cached.
+        refresh: Ask the tracker even if there is a stored copy.
 
     Returns:
         Every field the tracker returned: the header, the terms it will accept,
         the vote and bounty state, who filled it if anyone, the description and
         the full comment thread -- descriptions and comments rendered from
-        BBCode -- plus anything unrecognised under ``extra``.
+        BBCode -- plus anything unrecognised under ``extra``. ``cached_at``
+        says when the copy was taken, and ``cached`` whether this call spent
+        anything to produce it.
     """
-    raw = await gateway.get_request(tracker, int(request_id))
+    key = f"{tracker}:{request_id}"
+    if store is not None and not refresh:
+        kept = store.get(DETAILS, key)
+        if kept:
+            return {**kept, "cached": True, "cached_at": kept.get("checked_at")}
+
+    raw = await gateway.get_request(tracker, int(request_id), interactive=True)
+    detail = render_detail(gateway, tracker, int(request_id), raw)
+    if store is not None:
+        store.put(DETAILS, key, detail, flush=True)
+    return {**detail, "cached": False, "cached_at": time.time()}
+
+
+def render_detail(gateway: TrackerGateway, tracker: str, request_id: int, raw: Any) -> dict[str, Any]:
+    """Lay one raw request payload out for display. See :func:`request_detail`."""
     raw = raw if isinstance(raw, dict) else {}
     base_url = gateway.api(tracker).base_url.rstrip("/")
 

@@ -19,18 +19,26 @@ from urllib.parse import quote
 import msgspec
 from aiohttp import web
 
+import lox.trackers
 from lox import cfg, debug, settings
-from lox.checker import queue_rules
-from lox.checker.deezer_requests import DeezerRequestChecker
+from lox.checker import deezer_requests, queue_rules, recheck
+from lox.checker.autorecheck import QueueRecheck
+from lox.checker.deezer_requests import DeezerRequestChecker, age_of
 from lox.checker.gateway import TrackerGateway
-from lox.checker.missing import Candidate, MissingScanner
+from lox.checker.missing import (
+    Candidate,
+    MissingScanner,
+    default_max_date,
+    default_min_date,
+    effective_filters,
+)
 from lox.checker.request_detail import request_detail
 from lox.checker.request_filters import schema as filter_schema
 from lox.checker.store import CheckerStore
 from lox.checker.watchlists import WatchlistManager
 from lox.config.validations import ensure_dir
 from lox.config.validations import problems as config_problems
-from lox.deezer.download import Downloader
+from lox.deezer.download import Downloader, DownloadError
 from lox.deezer.explore import Explorer
 from lox.deezer.gw import DeezerGW, DeezerGWError
 from lox.flow import FlowRegistry
@@ -245,17 +253,43 @@ async def setup_services(app: web.Application) -> None:
     app["request_checker"] = DeezerRequestChecker(gw, gateway, store)
     app["watchlists"] = WatchlistManager(gw, store)
     app["notifier"] = DiscordNotifier()
-    app["jobs"] = JobRegistry()
-    app["flows"] = FlowRegistry()
+    jobs = JobRegistry()
+    flows = FlowRegistry()
+    app["jobs"] = jobs
+    app["flows"] = flows
     # Beside settings.toml, so accounts live on the same mounted volume as
     # everything else the UI writes.
     app["accounts"] = AccountStore(os.path.dirname(settings.path))
 
+    def busy() -> bool:
+        """True while the operator has something of their own running.
+
+        The queue confirmation yields to every one of these. Sharing a tracker
+        budget with a scan somebody is watching is how a background task earns
+        a reputation for breaking things.
+        """
+        return (
+            any(j.status == "running" for j in jobs.jobs.values())
+            or any(f.state in ("running", "waiting") for f in flows.flows.values())
+            or any(d.status in ("queued", "running") for d in app["downloader"].jobs.values())
+        )
+
+    app["queue_recheck"] = QueueRecheck(app["scanner"], gateway, store, busy)
+    app["queue_recheck"].start()
+
 
 async def teardown_services(app: web.Application) -> None:
     """Close service objects when the server stops."""
+    recheck_task: QueueRecheck | None = app.get("queue_recheck")
+    if recheck_task:
+        await recheck_task.stop()
     downloader: Downloader = app["downloader"]
     await downloader.stop()
+    # Anything written but not yet flushed -- a saved search, the tail of a
+    # scan -- reaches disk before the process goes. The store batches writes,
+    # so without this a shutdown is the one moment it can lose them.
+    with contextlib.suppress(OSError):
+        app["store"].flush()
     gw: DeezerGW = app["gw"]
     await gw.close()
 
@@ -293,6 +327,13 @@ async def api_status(request: web.Request) -> web.Response:
                 "format": downloader.preferred_format,
             },
             "notifications": {"enabled": request.app["notifier"].enabled},
+            # What the queue holds. Counted here so the number beside Queue on
+            # the rail is right whatever page you are on -- it used to be set
+            # by the queue drawing itself, so it only moved when you opened it.
+            "queue": {"size": queue_size(request.app["store"])},
+            # Whether stale queue rows are being confirmed in the background,
+            # and what the last pass did.
+            "queue_recheck": request.app["queue_recheck"].status(),
             # The two upload switches worth flipping without leaving the page
             # you flip them for. Polled, so changing one on the settings page
             # moves the toggle here and vice versa -- there is one setting, not
@@ -491,10 +532,9 @@ async def api_config(request: web.Request) -> web.Response:
             "checker": {
                 "tracker_budget": checker.tracker_budget,
                 "tracker_budget_window": checker.tracker_budget_window,
-                "min_tracks": checker.min_tracks,
-                "min_date": checker.min_date,
-                "max_date": checker.max_date,
                 "min_confidence": checker.min_confidence,
+                "album_recheck_after_days": getattr(checker, "album_recheck_after_days", 365),
+                **_scan_filters(),
             },
             "arl_set": bool(request.app["gw"].arl),
             "discogs_set": bool(cfg.metadata.discogs_token),
@@ -706,16 +746,194 @@ async def api_album(request: web.Request) -> web.Response:
 #: this bounds the sample the page can show beside it.
 HELD_SAMPLE = 200
 
+#: Why a release is not in the queue, in the order the page should say it.
+#: The key is matched against the reason the rule produced; ``fix`` is what the
+#: user can actually do about it, and None means nothing -- which is worth
+#: saying rather than implying a setting exists.
+#: Each entry is (key, the phrase to look for in a held reason, what to call
+#: the group on screen, what would fix it).
+#:
+#: The labels are noun phrases rather than verb phrases, because the page puts
+#: a count in front of them: "1 are already on every tracker" is what a plural
+#: verb does to a group of one.
+HELD_KINDS: tuple[tuple[str, str, str, str | None], ...] = (
+    ("nothing_to_do", "already on every tracker",
+     "already on every tracker that was checked", None),
+    ("unproven", "not checked yet",
+     "not yet checked against Deezer", "recheck"),
+    ("lossy", "not all FLAC",
+     "with no lossless source on Deezer, and no open request that accepts lossy", None),
+    ("unavailable", "tracks can be downloaded",
+     "that cannot be downloaded in full from Deezer", None),
+    ("unreleased", "not released yet",
+     "not released yet", None),
+)
 
-@routes.get("/api/found")
-async def api_found(request: web.Request) -> web.Response:
-    """Everything a check has matched to a Deezer release. No tracker calls.
 
-    Scans and request checks both end up knowing "this release exists on Deezer
-    and is not on that tracker", and both threw it away as soon as you left the
-    tab. Kept here so the work already paid for is somewhere you can act on.
+def _held_groups(held: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Count the held rows by what is keeping them out.
+
+    Args:
+        held: Rows the rules excluded, each carrying ``held_reason``.
+
+    Returns:
+        One entry per non-empty group, plus whatever is left over, which is the
+        only group the settings page can change.
     """
-    store: CheckerStore = request.app["store"]
+    counts: dict[str, int] = {}
+    for row in held:
+        reason = row.get("held_reason") or ""
+        for key, needle, _label, _fix in HELD_KINDS:
+            if needle in reason:
+                counts[key] = counts.get(key, 0) + 1
+                break
+        else:
+            counts["rules"] = counts.get("rules", 0) + 1
+
+    groups = [
+        {"key": key, "label": label, "count": counts[key], "fix": fix}
+        for key, _needle, label, fix in HELD_KINDS
+        if counts.get(key)
+    ]
+    if counts.get("rules"):
+        groups.append({"key": "rules", "label": "your queue rules",
+                       "count": counts["rules"], "fix": "settings"})
+    return groups
+
+
+HISTORY_LIMIT = 2000
+"""How many checked requests one page of history returns. The count is always
+the real one; this caps what travels."""
+
+#: Suffix to multiplier, for turning "1.49 GB" back into a number to compare.
+_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4, "PB": 1024**5}
+
+
+def _reached_a_tracker(entry: dict[str, Any]) -> bool:
+    """Whether a scan record got as far as asking a tracker about it.
+
+    Args:
+        entry: A stored album record.
+
+    Returns:
+        True when some tracker gave a verdict -- has it, or does not.
+    """
+    return bool(entry.get("found_on") or entry.get("missing_from"))
+
+
+def _bounty_bytes(bounty: Any) -> float:
+    """A stored bounty as a number, for filtering and sorting.
+
+    Bounties are kept as the string the tracker showed -- "1.49 GB" -- because
+    that is what goes on screen. Comparing those as text puts 900 MB above 1 TB.
+
+    Args:
+        bounty: The stored bounty, e.g. ``"25.00 GB"``.
+
+    Returns:
+        Bytes, or 0.0 when there is nothing to read.
+    """
+    if isinstance(bounty, (int, float)):
+        return float(bounty)
+    parts = str(bounty or "").strip().split()
+    if len(parts) != 2:
+        return 0.0
+    try:
+        return float(parts[0]) * _UNITS.get(parts[1].upper(), 0)
+    except ValueError:
+        return 0.0
+
+
+def _as_year(value: Any) -> float:
+    """A stored year as a number, or 0 when it is missing or not one."""
+    try:
+        return float(str(value)[:4])
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _request_verdict(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Which trackers a request check found the release on, and which not.
+
+    The checker searches the tracker for the release before offering it as a
+    fill, and used to record the answer only as ``already_on_tracker``. The
+    queue speaks in ``found_on`` and ``missing_from``, so a request confirmed
+    absent from OPS looked to it exactly like a release nobody had checked --
+    and was held out with "not checked against any tracker yet".
+
+    Records written since carry both. This derives them for the ones written
+    before, so a hundred already-checked requests do not have to be paid for
+    again to reach the queue.
+
+    Args:
+        entry: A stored request record.
+
+    Returns:
+        ``(found_on, missing_from)``.
+    """
+    found = [str(t).upper() for t in entry.get("found_on") or ()]
+    missing = [str(t).upper() for t in entry.get("missing_from") or ()]
+    if found or missing:
+        return found, missing
+
+    tracker = str(entry.get("tracker") or "").upper()
+    on_tracker = entry.get("already_on_tracker")
+    if not tracker or on_tracker is None:
+        return [], []
+    return ([tracker], []) if on_tracker else ([], [tracker])
+
+
+def _tracker_links(entry: dict[str, Any], artist: str, title: str) -> dict[str, str]:
+    """Where each tracker verdict on a row actually leads.
+
+    "OPS has it" and "RED is missing it" are both facts with an address, and
+    both were dead text. A tracker that has the release links to the group it
+    matched; one that does not links to a search for the release on that
+    tracker, which is where you would go to check by hand anyway.
+
+    Args:
+        entry: A stored album or request record.
+        artist: Billed artist, for the search terms.
+        title: Release title, for the search terms.
+
+    Returns:
+        Tracker code to URL, for every code the record mentions.
+    """
+    groups = entry.get("group_ids") or {}
+    terms = " ".join(part for part in (artist, title) if part).strip()
+    links: dict[str, str] = {}
+    for code in entry.get("found_on") or ():
+        code = str(code).upper()
+        links[code] = lox.trackers.group_url(code, groups.get(code)) or lox.trackers.search_url(code, terms)
+    for code in entry.get("missing_from") or ():
+        code = str(code).upper()
+        # Nothing to link to on a tracker that does not have it, so the link is
+        # the next best question: what this artist already has there. Gazelle
+        # resolves an artist page by name, and falls back to a search when the
+        # release has no billed artist to ask about.
+        links.setdefault(
+            code,
+            lox.trackers.artist_url(code, artist) or lox.trackers.search_url(code, terms),
+        )
+    return {code: url for code, url in links.items() if url}
+
+
+
+def _queue_rows(store: CheckerStore) -> list[dict[str, Any]]:
+    """Every release a check has matched, merged and newest-checked first.
+
+    Lifted out of the route so the status poll can count the queue without
+    rendering it. The rail's number came from the queue page drawing itself, so
+    it only moved when that tab was open -- a scan running in another tab found
+    eleven releases and the "1 Queue" beside it went on saying whatever it said
+    when you last looked.
+
+    Args:
+        store: The checker store.
+
+    Returns:
+        Queue rows, before any queue rule is applied.
+    """
     # Keyed by Deezer album id, because a release found by a scan and matched
     # to a request is ONE release. It used to be two rows -- identical title,
     # identical tracker tags, one saying "scan" and one saying "request" --
@@ -733,6 +951,8 @@ async def api_found(request: web.Request) -> web.Response:
         # that checked OPS between them know about both.
         for key in ("missing_from", "found_on"):
             existing[key] = sorted({*existing.get(key, ()), *row.get(key, ())})
+        existing["tracker_links"] = {**(row.get("tracker_links") or {}),
+                                     **(existing.get("tracker_links") or {})}
         # A release that fills a request is a request row, whichever arrived
         # first: the request is the more useful thing to say about it, and it
         # carries the link and the bounty.
@@ -742,17 +962,51 @@ async def api_found(request: web.Request) -> web.Response:
                     existing[key] = row[key]
             existing["kind"] = "request"
         existing["sources"] = sorted({*existing.get("sources", ()), *row.get("sources", ())})
+        # Deezer facts are the same release's facts whichever check found them,
+        # so whichever row actually looked wins over the one that did not.
+        for key in ("all_flac", "flac_count", "deezer_tracks"):
+            if existing.get(key) is None and row.get(key) is not None:
+                existing[key] = row[key]
+        for key in ("deezer_unavailable", "release_date", "blocked"):
+            if not existing.get(key) and row.get(key):
+                existing[key] = row[key]
+        # A request's terms only ever come from the request row.
+        for key in ("request_formats", "request_encodings"):
+            if row.get(key):
+                existing[key] = row[key]
         existing["title"] = existing.get("title") or row.get("title") or ""
         existing["artist"] = existing.get("artist") or row.get("artist") or ""
-        # The newest check is the one the "last checked" column should quote.
+        existing["year"] = existing.get("year") or row.get("year") or ""
+        existing["year"] = existing.get("year") or row.get("year") or ""
+        # The newest check is the one the "last checked" column should quote,
+        # and the oldest sighting is the one "added" should: a release a scan
+        # found in June and a request check matched today has been waiting
+        # since June.
         if (row.get("checked_at") or 0) > (existing.get("checked_at") or 0):
             existing["checked_at"] = row.get("checked_at")
+        if row.get("added_at") and (
+            not existing.get("added_at") or row["added_at"] < existing["added_at"]
+        ):
+            existing["added_at"] = row["added_at"]
 
     for album_id, entry in (store.load("albums") or {}).items():
         # Whether "missing from nothing" is worth showing is a queue rule now,
         # not a fact of this loop. Deciding it here made the setting that turns
         # that floor off unable to do anything.
         if entry.get("uploaded_at") or album_id in dismissed:
+            continue
+        # The album collection is two things wearing one name: releases that
+        # were checked against a tracker, and a note-to-self for every album
+        # the scanner gave up on so it does not try again. The second kind has
+        # no title, no artist and no verdict -- an album Deezer answered
+        # DATA_ERROR for is not a release anybody can act on -- and it was
+        # being listed here anyway, as a row with an em dash where the name
+        # goes and "not checked against any tracker yet" as the explanation.
+        #
+        # Two thirds of one real queue was that. Those records belong to the
+        # scan, which reports them; a release reaches this page when a tracker
+        # has actually answered about it.
+        if not _reached_a_tracker(entry):
             continue
         merge(
             album_id,
@@ -763,10 +1017,23 @@ async def api_found(request: web.Request) -> web.Response:
                 "sources": ["scan"],
                 "title": entry.get("title") or "",
                 "artist": entry.get("artist") or "",
+                "year": str(entry.get("year") or "")[:4] or str(entry.get("release_date") or "")[:4],
                 "missing_from": entry.get("missing_from") or [],
                 "found_on": entry.get("found_on") or [],
+                "tracker_links": _tracker_links(entry, entry.get("artist") or "", entry.get("title") or ""),
                 "checked_at": entry.get("checked_at"),
+                "added_at": entry.get("first_seen") or entry.get("checked_at"),
                 "url": f"https://www.deezer.com/album/{album_id}",
+                # What Deezer can actually supply. None means nobody looked,
+                # which the queue treats as unproven rather than as fine.
+                "all_flac": entry.get("all_flac"),
+                "flac_count": entry.get("flac_count"),
+                "deezer_tracks": entry.get("deezer_tracks"),
+                # What Deezer will not supply, and why. Named rather than
+                # counted, so the page can say which tracks are missing.
+                "deezer_unavailable": entry.get("deezer_unavailable") or [],
+                "release_date": entry.get("release_date") or "",
+                "blocked": entry.get("blocked") or "",
             },
         )
 
@@ -781,6 +1048,7 @@ async def api_found(request: web.Request) -> web.Response:
         if entry.get("uploaded_at") or str(entry.get("deezer_id")) in dismissed or request_id in dismissed:
             continue
         album_id = str(entry.get("deezer_id"))
+        found_on, missing_from = _request_verdict(entry)
         merge(
             album_id,
             {
@@ -793,20 +1061,61 @@ async def api_found(request: web.Request) -> web.Response:
                 "sources": ["request"],
                 "title": entry.get("album") or entry.get("deezer_title") or "",
                 "artist": entry.get("artist") or entry.get("deezer_artist") or "",
+                "year": str(entry.get("year") or "")[:4] or str(entry.get("release_date") or "")[:4],
                 "tracker": entry.get("tracker") or "",
                 "bounty": entry.get("bounty") or "",
                 # Which trackers have it and which do not, so the row says what
                 # the last check actually found rather than only that it exists.
-                "found_on": entry.get("found_on") or [],
-                "missing_from": entry.get("missing_from") or [],
+                "found_on": found_on,
+                "missing_from": missing_from,
+                "tracker_links": _tracker_links(
+                    {**entry, "found_on": found_on, "missing_from": missing_from},
+                    entry.get("artist") or entry.get("deezer_artist") or "",
+                    entry.get("album") or entry.get("deezer_title") or "",
+                ),
                 "confidence": entry.get("confidence"),
                 "request_url": entry.get("request_url") or "",
                 "checked_at": entry.get("checked_at"),
+                "added_at": entry.get("first_seen") or entry.get("checked_at"),
                 "url": entry.get("deezer_url") or "",
+                "all_flac": entry.get("all_flac"),
+                "deezer_tracks": entry.get("deezer_tracks"),
+                # What this request will accept. A release that is not all
+                # FLAC is only queueable when one of these says so.
+                "request_formats": entry.get("request_formats") or [],
+                "request_encodings": entry.get("request_encodings") or [],
+                "deezer_unavailable": entry.get("deezer_unavailable") or [],
+                "release_date": entry.get("release_date") or "",
+                "blocked": entry.get("blocked") or "",
             },
         )
 
-    rows = sorted(by_album.values(), key=lambda r: r.get("checked_at") or 0, reverse=True)
+    return sorted(by_album.values(), key=lambda r: r.get("checked_at") or 0, reverse=True)
+
+
+def queue_size(store: CheckerStore) -> int:
+    """How many releases the queue would show right now.
+
+    Args:
+        store: The checker store.
+
+    Returns:
+        The number of rows the queue rules admit.
+    """
+    return len(queue_rules.partition(_queue_rows(store), queue_rules.rules_from(cfg.checker))[0])
+
+
+@routes.get("/api/found")
+async def api_found(request: web.Request) -> web.Response:
+    """Everything a check has matched to a Deezer release. No tracker calls.
+
+    Scans and request checks both end up knowing "this release exists on Deezer
+    and is not on that tracker", and both threw it away as soon as you left the
+    tab. Kept here so the work already paid for is somewhere you can act on.
+    """
+    store: CheckerStore = request.app["store"]
+    dismissed = store.load("dismissed") or {}
+    rows = _queue_rows(store)
 
     # The rules are applied here rather than when the check ran, so widening
     # them brings rows straight back instead of needing the tracker calls
@@ -815,6 +1124,17 @@ async def api_found(request: web.Request) -> web.Response:
     # found nothing.
     rules = queue_rules.rules_from(cfg.checker)
     shown, held = queue_rules.partition(rows, rules)
+
+    # A row excluded for something that will never change -- every tracker has
+    # it, Deezer cannot supply it, it is not out yet -- is not waiting for
+    # anything. Keeping it on the page produced a list of things nobody could
+    # act on, which a re-check could not clear either: re-checking confirmed
+    # the same answer and put the row straight back.
+    #
+    # Only what can still move stays: releases nobody has checked against
+    # Deezer, and releases a queue rule is holding, which the rule can release.
+    settled = [row for row in held if queue_rules.is_settled(row["held_reason"])]
+    held = [row for row in held if not queue_rules.is_settled(row["held_reason"])]
     # Every album a scan ever looked at is a held row once the floor is on, so
     # the count is the honest number and the list is a sample of it. Sending
     # ten thousand rows to explain why they are not on screen would be its own
@@ -825,10 +1145,243 @@ async def api_found(request: web.Request) -> web.Response:
             "held": held[:HELD_SAMPLE],
             "held_count": len(held),
             "held_shown": min(len(held), HELD_SAMPLE),
+            # Counted but not listed: the page says how many were dropped for
+            # good so the number is not simply missing.
+            "settled_count": len(settled),
+            "settled_groups": _held_groups(settled),
+            # Split out, because "held back by your queue rules" is the wrong
+            # thing to tell someone whose rows are held because nobody has
+            # checked what Deezer can supply. One is a setting they chose; the
+            # other is work waiting to be done, and they read very differently.
+            # Grouped by what is actually keeping each one out, because only
+            # one of these groups is a setting. Calling all of them "your queue
+            # rules" sent people to Settings to widen a rule that had nothing
+            # to do with it -- and for most of them there is no setting at all.
+            "held_groups": _held_groups(held),
             "rule": rules.describe(),
             "blacklisted": sum(1 for d in dismissed.values() if d.get("blacklist")),
         }
     )
+
+
+UPLOADS = "uploads"
+"""Where finished uploads are kept, so there is something to look back at."""
+
+UPLOAD_HISTORY_LIMIT = 500
+"""How many finished uploads to keep. Each one holds its own log."""
+
+
+def _record_upload(
+    store: CheckerStore,
+    flow: Any,
+    folder: str,
+    trackers: list[str],
+    album_id: str,
+    result: dict[str, Any],
+) -> None:
+    """File what an upload did, including everything it printed while doing it.
+
+    An upload is the one thing in here that cannot be repeated to find out what
+    happened: the torrent is posted, the flow is dropped when the page is
+    closed, and the log with it. Afterwards there was nowhere to see what a
+    release had been posted as, which tracker took it, what the description
+    said, or why one of the two refused.
+
+    Args:
+        store: Where to keep it.
+        flow: The flow that ran it, for its own record of what it printed.
+        folder: The release folder.
+        trackers: The trackers it was asked to go to.
+        album_id: The Deezer release, when the upload came from one.
+        result: What run_uploads reported.
+    """
+    outcomes = result.get("outcomes") or []
+    entry = {
+        "id": getattr(flow, "id", ""),
+        "release": os.path.basename(folder.rstrip("/\\")),
+        "folder": folder,
+        "album_id": album_id,
+        "asked": list(trackers),
+        "succeeded": list(result.get("succeeded") or []),
+        "dry_run": bool(result.get("dry_run")),
+        "started": getattr(flow, "created", None),
+        "finished": time.time(),
+        "state": getattr(flow, "state", ""),
+        "error": getattr(flow, "error", None),
+        "outcomes": [
+            {
+                "tracker": o.get("tracker", ""),
+                "ok": bool(o.get("ok")),
+                "error": o.get("error") or "",
+                "folder": o.get("folder") or "",
+                "url": o.get("url") or "",
+                # Which request this post filled, and where it is. A filled
+                # request is the other half of what an upload did, and the
+                # history recorded only the torrent -- so the one page kept
+                # BECAUSE an upload cannot be run again could not say whether
+                # the request it was queued for had been answered.
+                #
+                # The address is stored rather than built when the page is
+                # drawn: this is a permanent record, and a tracker that is
+                # later removed from the config would take its own links with
+                # it.
+                "request_id": o.get("request_id") or None,
+                "request_url": lox.trackers.request_url(
+                    o.get("tracker", ""), o.get("request_id")
+                ),
+            }
+            for o in outcomes
+        ],
+        # What it would have posted, per torrent -- the fields and the
+        # descriptions, which is the part nobody can reconstruct afterwards.
+        "posts": result.get("posts") or [],
+        "fields": result.get("fields") or {},
+        "descriptions": result.get("descriptions") or {},
+        "log": [
+            {"at": e.get("at"), "level": e.get("level", "info"), "message": e.get("message", "")}
+            for e in (getattr(flow, "events", None) or [])
+        ],
+    }
+    key = entry["id"] or f"{entry['finished']:.0f}"
+    store.put(UPLOADS, key, entry, flush=True)
+
+    # Bounded: each of these carries its own log, and a year of uploads should
+    # not become the largest file in the state directory.
+    kept = store.load(UPLOADS) or {}
+    if len(kept) > UPLOAD_HISTORY_LIMIT:
+        oldest = sorted(kept.items(), key=lambda kv: kv[1].get("finished") or 0)
+        for old_key, _ in oldest[: len(kept) - UPLOAD_HISTORY_LIMIT]:
+            store.delete(UPLOADS, old_key, flush=False)
+        store.flush(UPLOADS)
+
+
+def _forget_download(downloader: Downloader, folder: str, album_id: str = "") -> None:
+    """Drop the finished download a release was uploaded from.
+
+    An upload leaves the release seeding from the per-tracker link directories
+    and the download itself deleted, so the job that fetched it is a row about
+    a folder that is not there any more -- sitting on the Downloading list with
+    a Delete button for a path that no longer exists.
+
+    Matched on the album first and the folder second. Paths are the fragile
+    half of this: the downloader strips a trailing dot from a title when it
+    names the folder, the pipeline renames the folder partway through the
+    upload, and either is enough for a path comparison to miss and leave the
+    row behind. The album id is the same number at both ends.
+
+    Only finished jobs: one still running is still about something.
+
+    Args:
+        downloader: The download registry.
+        folder: The release folder that was uploaded.
+        album_id: The Deezer release, when the upload came from one.
+    """
+    target = os.path.abspath(folder)
+    folder_gone = not os.path.isdir(target)
+    for job_id, job in list(downloader.jobs.items()):
+        if job.status in ("queued", "running"):
+            continue
+        if album_id and str(job.album_id) == str(album_id):
+            del downloader.jobs[job_id]
+            continue
+        # By path only where the path really has gone, which is what says the
+        # row is about nothing. A folder still on disk is still worth a row.
+        if folder_gone and job.folder and os.path.abspath(job.folder) == target:
+            del downloader.jobs[job_id]
+
+
+def _linked_requests(store: CheckerStore, album_id: str, folder: str) -> list[dict[str, Any]]:
+    """Every open request this release has already been matched to.
+
+    Matched by Deezer id where the upload came from a queue row, and otherwise
+    by folder name against the stored title -- an upload started by hand from
+    the Uploading tab carries no id, and it is still the same release. Without
+    the fallback, uploading a queued release by pressing Upload instead of
+    "Download & upload" filled nothing and said nothing, for a pairing that was
+    already on record.
+
+    Args:
+        store: The checker store.
+        album_id: The Deezer release, when the upload came from one.
+        folder: The release folder, for the name fallback.
+
+    Returns:
+        One entry per open linked request, tracker and id included.
+    """
+    basename = os.path.basename(str(folder or "").rstrip("/\\")).lower()
+    found: list[dict[str, Any]] = []
+    for key, entry in (store.load("requests") or {}).items():
+        # A request already answered is not one to fill again.
+        if entry.get("uploaded_at") or entry.get("filled"):
+            continue
+        if not entry.get("deezer_id"):
+            continue
+
+        if album_id and str(entry.get("deezer_id")) == str(album_id):
+            pass
+        elif not album_id and basename:
+            title = str(entry.get("album") or entry.get("deezer_title") or "").strip().lower()
+            artist = str(entry.get("artist") or entry.get("deezer_artist") or "").strip().lower()
+            # Both have to be long enough to mean something: a one-letter
+            # artist matches almost any folder, and filling the wrong request
+            # is not undoable.
+            if len(title) < 3 or len(artist) < 3 or title not in basename or artist not in basename:
+                continue
+        else:
+            continue
+
+        tracker, _sep, request_id = str(key).partition(":")
+        found.append({
+            "tracker": tracker,
+            "request_id": request_id,
+            "request_url": entry.get("request_url") or entry.get("url") or "",
+            # Which release it matched, for an upload started by hand: the
+            # folder is all that identified it, and this is how that becomes
+            # a Deezer id again.
+            "deezer_id": str(entry.get("deezer_id") or ""),
+        })
+    return found
+
+
+def _upload_context(store: CheckerStore, album_id: str, folder: str = "") -> dict[str, Any]:
+    """What an upload is for, beyond the folder it is reading.
+
+    Args:
+        store: The checker store.
+        album_id: The Deezer release, when the upload came from one.
+        folder: The release folder, for uploads started by hand.
+
+    Returns:
+        Where lox fetched the release, the first linked request for the card to
+        name, and every linked request keyed by tracker for the pipeline to
+        fill. Empty when none of that is known.
+    """
+    linked = _linked_requests(store, album_id, folder)
+
+    # Where it came from. Known from the release itself when the upload came
+    # from a queue row, and otherwise from whatever a linked request matched --
+    # both are the same Deezer id. The lossy-approval report asks the operator
+    # to name the source, and lox is the one that downloaded it.
+    release = str(album_id or "")
+    if not release and linked:
+        release = str(linked[0].get("deezer_id") or "")
+    context: dict[str, Any] = {}
+    if release.isdigit():
+        context["deezer_url"] = f"https://www.deezer.com/album/{release}"
+
+    if not linked:
+        return context
+    first = linked[0]
+    context.update({
+        "request_url": first["request_url"],
+        "request_tracker": first["tracker"],
+        "request_id": first["request_id"],
+        # Per tracker, because a request lives on one: the pipeline asks this
+        # per tracker as it works through them.
+        "linked_requests": {r["tracker"]: r["request_id"] for r in linked},
+        "request_urls": {r["tracker"]: r["request_url"] for r in linked if r["request_url"]},
+    })
+    return context
 
 
 def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: list[str]) -> None:
@@ -840,10 +1393,17 @@ def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: li
     """
     stamp = {"uploaded_at": time.time(), "uploaded_to": trackers}
     if album_id:
-        for name in ("albums", "requests"):
-            entry = store.get(name, album_id)
-            if entry is not None:
-                store.put(name, album_id, {**entry, **stamp}, flush=False)
+        entry = store.get("albums", album_id)
+        if entry is not None:
+            store.put("albums", album_id, {**entry, **stamp}, flush=False)
+        # A request is keyed by tracker and request id, never by the release it
+        # would fill -- so looking it up by album id found nothing, the row was
+        # never stamped, and a release uploaded from the queue stayed on the
+        # queue. There can be more than one: two trackers can each have an open
+        # request for the same record.
+        for key, request in list((store.load("requests") or {}).items()):
+            if str(request.get("deezer_id") or "") == str(album_id):
+                store.put("requests", key, {**request, **stamp}, flush=False)
         store.flush()
         return
 
@@ -864,6 +1424,70 @@ def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: li
     store.flush()
 
 
+def _release_facts(store: CheckerStore) -> dict[str, dict[str, Any]]:
+    """What is known about every release, by Deezer id.
+
+    The blacklist recorded a name and a date, so the list of releases you had
+    refused could not say where any of them came from or which tracker wanted
+    one -- which is most of what you need to decide whether refusing it was
+    right. Both collections are read, because a release can be filed in either
+    or both: a scan found it, a request check matched it, one release.
+
+    Args:
+        store: The checker store.
+
+    Returns:
+        Deezer id to the facts worth keeping about it.
+    """
+    facts: dict[str, dict[str, Any]] = {}
+
+    def merge(album_id: str, row: dict[str, Any]) -> None:
+        into = facts.setdefault(album_id, {})
+        for key, value in row.items():
+            if value in (None, "", [], {}):
+                continue
+            if key in ("found_on", "missing_from", "sources"):
+                into[key] = sorted({*into.get(key, ()), *value})
+            else:
+                into.setdefault(key, value)
+
+    for album_id, entry in (store.load("albums") or {}).items():
+        merge(str(album_id), {
+            "title": entry.get("title") or "",
+            "artist": entry.get("artist") or "",
+            "year": str(entry.get("year") or "")[:4] or str(entry.get("release_date") or "")[:4],
+            "sources": ["scan"],
+            "source": entry.get("source") or "",
+            "found_on": entry.get("found_on") or [],
+            "missing_from": entry.get("missing_from") or [],
+            "deezer_tracks": entry.get("deezer_tracks"),
+            "group_ids": entry.get("group_ids") or {},
+        })
+
+    for key, entry in (store.load("requests") or {}).items():
+        deezer_id = str(entry.get("deezer_id") or "")
+        if not deezer_id:
+            continue
+        tracker, _sep, request_id = str(key).partition(":")
+        merge(deezer_id, {
+            "title": entry.get("album") or entry.get("deezer_title") or "",
+            "artist": entry.get("artist") or entry.get("deezer_artist") or "",
+            "year": str(entry.get("year") or "")[:4],
+            "sources": ["request"],
+            "found_on": entry.get("found_on") or [],
+            "missing_from": entry.get("missing_from") or [],
+            "deezer_tracks": entry.get("deezer_tracks"),
+            "request_url": entry.get("request_url") or "",
+            # Named "tracker" because that is what the source tag reads to say
+            # "fills an OPS request" rather than "fills a request".
+            "tracker": tracker,
+            "request_id": request_id,
+            "bounty": entry.get("bounty") or "",
+        })
+
+    return facts
+
+
 @routes.post("/api/found/dismiss")
 async def api_found_dismiss(request: web.Request) -> web.Response:
     """Take a row off the Found list. No tracker calls.
@@ -880,16 +1504,92 @@ async def api_found_dismiss(request: web.Request) -> web.Response:
     blacklist = bool(body.get("blacklist"))
 
     store: CheckerStore = request.app["store"]
+
+    # A row on this page is a RELEASE, identified by its Deezer album id, and
+    # what is known about it can live in either collection or both -- a scan
+    # found it, a request check matched it, one row. The requests collection is
+    # keyed "OPS:80755" though, so deleting by album id deleted the scan half
+    # and left the request half behind: the release came straight back as a row
+    # with one source and a different reason, and removing it again did the
+    # same thing. This maps the release back to whatever is filed under it.
+    request_keys: dict[str, list[str]] = {}
+    for request_key, entry in (store.load("requests") or {}).items():
+        deezer_id = str(entry.get("deezer_id") or "")
+        if deezer_id:
+            request_keys.setdefault(deezer_id, []).append(request_key)
+
+    # What each release is called, so the blacklist can be read back later.
+    # It used to record the id and nothing else, and the album record it came
+    # from is deleted in the same breath -- so the list of things you had
+    # refused was a column of Deezer ids.
+    # Everything worth reading back, not just the name. Blacklisting leaves
+    # the album record alone, so this is a snapshot rather than the only copy
+    # -- but "Remove" on a release that is already blacklisted would take the
+    # record with it, and the entry should still be able to say what it was.
+    named = _release_facts(store)
+
     for key in keys:
         if blacklist:
-            store.put("dismissed", key, {"blacklist": True, "at": time.time()}, flush=False)
+            store.put(
+                "dismissed",
+                key,
+                {"blacklist": True, "at": time.time(), **named.get(key, {})},
+                flush=False,
+            )
         else:
             # Forgotten rather than remembered as unwanted: dropping the check
             # result is what lets the next scan surface it again.
             store.delete("albums", key, flush=False)
+            # Both spellings: the id as given, in case the caller had the
+            # request's own key, and every request that matched this release.
             store.delete("requests", key, flush=False)
+            for request_key in request_keys.get(key, ()):
+                store.delete("requests", request_key, flush=False)
     store.flush()
     return json_response({"dismissed": len(keys), "blacklisted": blacklist})
+
+
+@routes.get("/api/blacklist")
+async def api_blacklist(request: web.Request) -> web.Response:
+    """Every release that has been refused, newest first. No tracker calls.
+
+    Saying "never show me this again" used to be a one-way door: the entry went
+    into a file nothing could read back, and the only way out was to clear the
+    whole blacklist at once. This is the list, with names, so one can be let
+    back in without letting all of them back in.
+    """
+    store: CheckerStore = request.app["store"]
+    # The live record wins where there is one: a release refused a month ago
+    # and checked since should show what the check found, not what was true
+    # when it was refused. The entry's own copy is the fallback.
+    live = _release_facts(store)
+    rows = []
+    for key, entry in (store.load("dismissed") or {}).items():
+        if not entry.get("blacklist"):
+            continue
+        known = {**{k: v for k, v in entry.items() if k not in ("blacklist", "at")},
+                 **live.get(str(key), {})}
+        rows.append({
+            "id": str(key),
+            "album_id": str(key),
+            "title": known.get("title") or "",
+            "artist": known.get("artist") or "",
+            "year": known.get("year") or "",
+            "sources": known.get("sources") or [],
+            "source": known.get("source") or "",
+            "tracker": known.get("tracker") or "",
+            "found_on": known.get("found_on") or [],
+            "missing_from": known.get("missing_from") or [],
+            "deezer_tracks": known.get("deezer_tracks"),
+            "tracker_links": _tracker_links(known, known.get("artist") or "", known.get("title") or ""),
+            "request_url": known.get("request_url") or "",
+            "request_id": known.get("request_id") or "",
+            "bounty": known.get("bounty") or "",
+            "at": entry.get("at") or entry.get("checked_at"),
+            "url": f"https://www.deezer.com/album/{key}" if str(key).isdigit() else "",
+        })
+    rows.sort(key=lambda r: r.get("at") or 0, reverse=True)
+    return json_response({"blacklisted": rows, "total": len(rows)})
 
 
 @routes.post("/api/found/restore")
@@ -1051,13 +1751,65 @@ async def api_watchlists(request: web.Request) -> web.Response:
 
 @routes.post("/api/watchlists")
 async def api_watchlist_create(request: web.Request) -> web.Response:
-    """Save a new Deezer search."""
+    """Save Deezer links as re-runnable searches. Deezer only, no budget spent.
+
+    Takes the links and nothing else. What each one is, what it is called and
+    how big it is are all things Deezer knows, so they are asked for rather
+    than typed: naming a search, choosing its kind from a dropdown and finding
+    an id were three questions about the link already on the clipboard.
+
+    Every link is reported on individually, so one bad line in a pasted list
+    does not throw away the good ones with it.
+    """
     body = await request.json()
-    kind = body.get("kind")
-    if kind not in ("new_releases", "chart", "search", "artist", "playlist", "module"):
-        return error("kind must be one of new_releases, chart, search, artist, playlist, module")
+    links = [str(u).strip() for u in (body.get("urls") or ([body["url"]] if body.get("url") else []))]
+    links = [u for u in links if u]
+    if not links:
+        return error("url or urls is required")
+
     manager: WatchlistManager = request.app["watchlists"]
-    watch = manager.create(body.get("name", ""), kind, body.get("target", "0"), int(body.get("limit", 50)))
+    saved, failed = [], []
+    for link in links:
+        try:
+            watch, already = await manager.save_link(link)
+        except DeezerGWError as e:
+            failed.append({"url": link, "error": str(e)})
+            continue
+        saved.append({**watch.as_dict(), "already_saved": already})
+    return json_response({"saved": saved, "failed": failed})
+
+
+@routes.post("/api/watchlists/sources")
+async def api_watchlist_sources(request: web.Request) -> web.Response:
+    """The scan sources behind a set of saved searches. No tracker budget spent.
+
+    Registered before the ``{watch_id}`` routes below so "sources" is read as
+    the word rather than as somebody's saved search.
+
+    An empty ``ids`` means all of them, which is what "Scan all" asks for.
+    """
+    body = await request.json()
+    manager: WatchlistManager = request.app["watchlists"]
+    ids = [str(i) for i in (body.get("ids") or [])] or [w.id for w in manager.saved()]
+    sources, problems = await manager.scan_sources(ids)
+    return json_response({"sources": sources, "problems": problems})
+
+
+@routes.patch("/api/watchlists/{watch_id}")
+async def api_watchlist_rename(request: web.Request) -> web.Response:
+    """Rename a saved search.
+
+    Deezer's name for a channel module is whatever it was called that week, and
+    a playlist carries whatever its owner typed. Being stuck with either is the
+    reason this exists.
+    """
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return error("name is required")
+    watch = request.app["watchlists"].rename(request.match_info["watch_id"], name)
+    if not watch:
+        return error("no such watchlist", status=404)
     return json_response(watch.as_dict())
 
 
@@ -1065,19 +1817,6 @@ async def api_watchlist_create(request: web.Request) -> web.Response:
 async def api_watchlist_delete(request: web.Request) -> web.Response:
     """Delete a saved search."""
     return json_response({"deleted": request.app["watchlists"].delete(request.match_info["watch_id"])})
-
-
-@routes.post("/api/watchlists/{watch_id}/run")
-async def api_watchlist_run(request: web.Request) -> web.Response:
-    """Run a saved search. Deezer only, no tracker budget spent."""
-    manager: WatchlistManager = request.app["watchlists"]
-    try:
-        albums = await manager.run(request.match_info["watch_id"])
-    except KeyError:
-        return error("no such watchlist", status=404)
-    except DeezerGWError as e:
-        return error(str(e), status=502)
-    return json_response({"results": albums})
 
 
 # ----------------------------------------------------------------------
@@ -1101,14 +1840,28 @@ async def api_download(request: web.Request) -> web.Response:
     if problem:
         return error(f"{problem} Fix it under Settings → Paths, or check the volume mount.")
 
+    # "Fetch it anyway": take whatever quality Deezer will serve for these
+    # albums, whatever metadata.deezer.format_fallback says. The setting is how
+    # you stop lox quietly fetching MP3 for everything; it should not also be
+    # what stops you fetching the one release you have decided you want.
+    allow_lossy = bool(body.get("allow_lossy"))
+
     queued, failed = [], []
     for album_id in album_ids:
         try:
-            job = await downloader.enqueue(album_id)
+            job = await downloader.enqueue(album_id, allow_lossy=allow_lossy)
             queued.append(job.as_dict())
         except Exception as e:  # noqa: BLE001 - reported per album
             failed.append({"album_id": str(album_id), "error": str(e)})
-    return json_response({"queued": queued, "failed": failed})
+    return json_response(
+        {"queued": queued, "failed": failed, "confirm_lower_quality": _confirm_lower_quality()}
+    )
+
+
+def _confirm_lower_quality() -> bool:
+    """Whether a download below the preferred quality should stop and ask."""
+    deezer = getattr(cfg.metadata, "deezer", None)
+    return bool(getattr(deezer, "confirm_lower_quality", True))
 
 
 @routes.get("/api/downloads")
@@ -1116,7 +1869,84 @@ async def api_downloads(request: web.Request) -> web.Response:
     """List every download job, newest first."""
     downloader: Downloader = request.app["downloader"]
     jobs = sorted(downloader.jobs.values(), key=lambda j: j.started or 0, reverse=True)
-    return json_response({"jobs": [j.as_dict() for j in jobs]})
+    return json_response(
+        {"jobs": [j.as_dict() for j in jobs], "confirm_lower_quality": _confirm_lower_quality()}
+    )
+
+
+@routes.post("/api/downloads/{job_id}/quality")
+async def api_download_quality(request: web.Request) -> web.Response:
+    """Answer the "this came back below FLAC" question for one download.
+
+    Two answers, and both of them are final for that job: keep the files, or
+    throw the folder away. Nothing decides this on the operator's behalf --
+    a lossy release is sometimes exactly what was wanted, and sometimes the
+    thing that would have been rejected on upload.
+    """
+    body = await request.json()
+    keep = bool(body.get("keep"))
+    downloader: Downloader = request.app["downloader"]
+    job = downloader.jobs.get(request.match_info["job_id"])
+    if job is None:
+        return error("no such download", status=404)
+
+    job.decision = "kept" if keep else "discarded"
+    if keep:
+        return json_response({"decision": job.decision, "folder": job.folder})
+
+    # Stop it first if it is still going: deleting the folder underneath a
+    # running download would leave it writing tracks into nothing.
+    downloader.cancel(job.id)
+    removed = False
+    if job.folder:
+        try:
+            folder = resolve_release_path(request.app, job.folder)
+        except ValueError as e:
+            return error(str(e))
+        removed = await asyncio.to_thread(_remove_tree, folder)
+    return json_response({"decision": job.decision, "deleted": removed})
+
+
+def _remove_tree(folder: str) -> bool:
+    """Delete a release folder, reporting whether it was there to delete."""
+    if not os.path.isdir(folder):
+        return False
+    shutil.rmtree(folder)
+    return True
+
+
+@routes.post("/api/downloads/{job_id}/retry")
+async def api_download_retry(request: web.Request) -> web.Response:
+    """Fetch a failed download again, from scratch.
+
+    A download that fails partway leaves a folder with a hole in it and a row
+    that can only be deleted. Plenty of them fail for reasons that do not last
+    -- one track timing out, the gateway briefly refusing -- and the only way
+    to try again was to find the release and start it by hand.
+
+    The half-finished folder goes first: resuming into it would leave whatever
+    the failed run wrote alongside whatever this one does, which is how a
+    release ends up with nine good tracks and one truncated one.
+    """
+    downloader: Downloader = request.app["downloader"]
+    job = downloader.jobs.get(request.match_info["job_id"])
+    if job is None:
+        return error("no such download", status=404)
+    if job.status in ("queued", "running"):
+        return error("that download has not finished", status=409)
+
+    if job.folder:
+        try:
+            await asyncio.to_thread(_remove_tree, resolve_release_path(request.app, job.folder))
+        except (ValueError, OSError) as e:
+            debug.log("retry: could not remove %s (%s)", job.folder, e, level=30)
+
+    downloader.jobs.pop(job.id, None)
+    try:
+        fresh = await downloader.enqueue(job.album_id, allow_lossy=job.decision == "kept")
+    except DownloadError as e:
+        return error(str(e))
+    return json_response({"job_id": fresh.id, "album_id": job.album_id})
 
 
 @routes.post("/api/downloads/{job_id}/cancel")
@@ -1139,18 +1969,25 @@ async def api_downloads_clear(request: web.Request) -> web.Response:
 
 @routes.post("/api/missing/collect")
 async def api_missing_collect(request: web.Request) -> web.Response:
-    """Expand playlists and modules into filtered candidates. No tracker calls."""
+    """Expand Deezer links into filtered candidates. No tracker calls."""
     body = await request.json()
     sources = [s for s in (body.get("sources") or []) if s.strip()]
     if not sources:
         return error("sources is required")
-    skip_known = bool(body.get("skip_known", True))
+    # Picked by hand from Search or Browse rather than swept up by a scan, so
+    # the scan's own narrowing does not apply: somebody who ticked a release
+    # and pressed Check trackers has already decided it is worth the calls.
+    manual = bool(body.get("manual"))
 
     scanner: MissingScanner = request.app["scanner"]
     jobs: JobRegistry = request.app["jobs"]
 
     async def run(job) -> None:
-        candidates = await scanner.collect(sources, progress=job.emit, skip_known=skip_known)
+        # Whether an album already answered is looked up again is the recheck
+        # window's business, and nothing else's. There used to be a tickbox
+        # here saying the same thing in fewer words, which meant one decision
+        # had two controls and they could disagree.
+        candidates = await scanner.collect(sources, progress=job.emit, manual=manual)
         job.results.extend(c.as_dict() for c in candidates)
 
     job = jobs.spawn("missing_collect", f"Collecting from {len(sources)} source(s)", run)
@@ -1218,8 +2055,11 @@ async def api_requests_list(request: web.Request) -> web.Response:
         # tracker budget is what actually limits it. 500 was exactly 20 pages,
         # which silently capped anyone who asked for more.
         limit = max(1, min(25_000, int(request.query.get("limit", 25))))
+        # The browser reads one page per call so it can show progress and be
+        # stopped; this is which page it is asking for.
+        start_page = max(1, int(request.query.get("start_page") or 1))
     except ValueError:
-        return error("limit must be a number")
+        return error("limit and start_page must be numbers")
 
     def flag(name: str) -> bool:
         return request.query.get(name, "") in ("1", "true", "yes", "on")
@@ -1247,6 +2087,8 @@ async def api_requests_list(request: web.Request) -> web.Response:
             strict_encodings=flag("strict_encoding"),
             bounty_min=request.query.get("bounty_min", ""),
             bounty_max=request.query.get("bounty_max", ""),
+            categories=labels("category"),
+            start_page=start_page,
         )
     except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
         return error(str(e), status=502)
@@ -1272,10 +2114,229 @@ async def api_request_detail(request: web.Request) -> web.Response:
         return error("id must be a number")
 
     gateway: TrackerGateway = request.app["gateway"]
+    store: CheckerStore = request.app["store"]
+    # A request's terms are set when it is posted and the tracker takes the
+    # better part of a minute to read them back, so the stored copy is the
+    # answer unless the reader asks for a fresh one.
+    refresh = request.query.get("refresh") == "1"
     try:
-        return json_response(await request_detail(gateway, tracker, request_id))
+        return json_response(await request_detail(gateway, tracker, request_id, store, refresh))
     except Exception as e:  # noqa: BLE001 - budget and transport errors both surface here
         return error(str(e), status=502)
+
+
+@routes.get("/api/scan/history")
+async def api_scan_history(request: web.Request) -> web.Response:
+    """Every album a scan has looked up, and what it found. No tracker calls.
+
+    A scan skips what is in here, so this is also the answer to "why did that
+    scan do so little": the work was already paid for. Selecting rows and
+    re-checking is how you ask again before the recheck window is up.
+    """
+    store: CheckerStore = request.app["store"]
+    now = time.time()
+
+    rows = []
+    for album_id, entry in (store.load("albums") or {}).items():
+        status = str(entry.get("status") or "")
+        rows.append({
+            "id": str(album_id),
+            "album_id": str(album_id),
+            "title": entry.get("title") or "",
+            "artist": entry.get("artist") or "",
+            "status": status,
+            "outcome": _scan_outcome(entry),
+            "reason": entry.get("reason") or entry.get("error") or "",
+            "source": entry.get("source") or "",
+            "found_on": entry.get("found_on") or [],
+            "missing_from": entry.get("missing_from") or [],
+            "tracker_links": _tracker_links(entry, entry.get("artist") or "", entry.get("title") or ""),
+            "all_flac": entry.get("all_flac"),
+            "deezer_tracks": entry.get("deezer_tracks"),
+            "release_date": entry.get("release_date") or "",
+            "added_at": entry.get("first_seen") or entry.get("checked_at"),
+            "checked_at": entry.get("checked_at"),
+            "checked_days_ago": recheck.age_days(entry, now),
+            # A release that has been uploaded is the most settled answer there
+            # is, and the history was the one page that would not say so: the
+            # stamp was written and only ever read to keep the row out of the
+            # queue, so the lookup history went on showing "missing from RED"
+            # for something posted to RED an hour earlier.
+            "uploaded_at": entry.get("uploaded_at"),
+            "uploaded_to": entry.get("uploaded_to") or [],
+            "url": f"https://www.deezer.com/album/{album_id}",
+        })
+
+    rows.sort(key=lambda r: r.get("checked_at") or 0, reverse=True)
+    return json_response({
+        "albums": rows[:HISTORY_LIMIT],
+        "total": len(rows),
+        "shown": min(len(rows), HISTORY_LIMIT),
+        "recheck_after_days": int(getattr(cfg.checker, "album_recheck_after_days", 365) or 0),
+        "filters": _scan_filters(),
+    })
+
+
+def _scan_filters() -> dict[str, Any]:
+    """The scan filters as the page needs them: what is set, and what is meant.
+
+    Both dates default to something relative to today, so a blank one is not
+    "no limit" -- it is a value the page has to be told, or it cannot show what
+    a scan is about to do.
+    """
+    effective = effective_filters()
+    return {
+        "min_tracks": cfg.checker.min_tracks,
+        "min_date": cfg.checker.min_date or "",
+        "max_date": cfg.checker.max_date or "",
+        "min_date_default": default_min_date(),
+        "max_date_default": default_max_date(),
+        "min_date_effective": effective["min_date"],
+        "max_date_effective": effective["max_date"],
+    }
+
+
+#: What a stored album status means, in one phrase. The status itself carries
+#: whichever trackers were configured -- "missing_ops_red" -- which is precise
+#: and unreadable.
+def _scan_outcome(entry: dict[str, Any]) -> str:
+    """One phrase for what a scan concluded about an album.
+
+    Args:
+        entry: The stored album record.
+
+    Returns:
+        Something a column can group by.
+    """
+    status = str(entry.get("status") or "")
+    if status.startswith("missing_"):
+        return "Missing from a tracker"
+    if status.startswith("exists_"):
+        return "Already on every tracker"
+    if status == "skipped_filter":
+        return "Ruled out by a scan filter"
+    if status == "skipped_no_flac":
+        return "No lossless source"
+    if status == "skipped_unreleased":
+        return "Not released yet"
+    if status.startswith("skipped_"):
+        return "Nothing usable on Deezer"
+    if status:
+        return "Lookup failed"
+    return "Unknown"
+
+
+@routes.get("/api/requests/history")
+async def api_requests_history(request: web.Request) -> web.Response:
+    """Every request that has been checked, and what came of it. No tracker calls.
+
+    The answers were already being stored -- they are what stops a second run
+    paying for the same lookups -- but there was nowhere to read them. So a
+    request checked last week was invisible: you could not see what it said, or
+    that it had been checked at all, only that a new run went quiet about it.
+
+    Filtering happens here rather than in the browser because the collection is
+    every request ever checked and most of it is not what you are looking at.
+    """
+    store: CheckerStore = request.app["store"]
+
+    def number(name: str, default: float | None = None) -> float | None:
+        raw = request.query.get(name, "")
+        try:
+            return float(raw) if raw != "" else default
+        except ValueError:
+            return default
+
+    want_status = {s for s in request.query.getall("status", []) if s}
+    want_tracker = request.query.get("tracker", "")
+    text = request.query.get("q", "").strip().lower()
+    min_bounty = number("min_bounty")
+    min_year, max_year = number("min_year"), number("max_year")
+    checked_within = number("checked_within")   # days
+    checked_before = number("checked_before")   # days
+    now = time.time()
+
+    rows = []
+    for key, entry in (store.load("requests") or {}).items():
+        # Keys are "TRACKER:ID". A key written before that convention has no
+        # colon, and partition would hand back the whole thing as the tracker
+        # and an empty id -- a row claiming to be tracker "r1" with no request
+        # behind it, which cannot be re-run and reads as corruption.
+        raw_key = str(key)
+        tracker, sep, request_id = raw_key.partition(":")
+        if not sep:
+            tracker, request_id = "", raw_key
+        age = recheck.age_days(entry, now)
+        row = {
+            "key": raw_key,
+            "id": request_id,
+            "tracker": tracker,
+            "status": entry.get("status") or "",
+            "reason": entry.get("reason") or "",
+            "uploaded_at": entry.get("uploaded_at"),
+            "uploaded_to": entry.get("uploaded_to") or [],
+            "artist": entry.get("artist") or entry.get("deezer_artist") or "",
+            "album": entry.get("album") or entry.get("deezer_title") or "",
+            "year": entry.get("year") or "",
+            "bounty": entry.get("bounty") or "",
+            "bounty_bytes": _bounty_bytes(entry.get("bounty")),
+            # When the request was posted on the tracker, and how long ago
+            # that was. A request open for two years and one opened yesterday
+            # are different propositions, and the page had no way to tell them
+            # apart -- it only ever said when *we* last looked at it.
+            "created": entry.get("created") or "",
+            "created_age": age_of(entry.get("created")),
+            "request_url": entry.get("request_url") or "",
+            "deezer_id": entry.get("deezer_id") or "",
+            "deezer_url": entry.get("deezer_url") or "",
+            "confidence": entry.get("confidence"),
+            "filled": bool(entry.get("filled")),
+            "already_on_tracker": entry.get("already_on_tracker"),
+            "tracker_group_url": entry.get("tracker_group_url") or "",
+            "found_on": _request_verdict(entry)[0],
+            "missing_from": _request_verdict(entry)[1],
+            "all_flac": entry.get("all_flac"),
+            "checked_at": entry.get("checked_at"),
+            "checked_days_ago": age,
+        }
+        row["tracker_links"] = _tracker_links(entry, row["artist"], row["album"])
+        if want_status and row["status"] not in want_status:
+            continue
+        if want_tracker and row["tracker"] != want_tracker:
+            continue
+        if text and text not in f"{row['artist']} {row['album']} {row['id']}".lower():
+            continue
+        if min_bounty is not None and row["bounty_bytes"] < min_bounty:
+            continue
+        # A row with no year does not match a year filter either way. Letting
+        # it through read as year 0, which is below every "from" and under
+        # every "to", so undated rows turned up in every year search.
+        if min_year is not None or max_year is not None:
+            year = _as_year(row["year"])
+            if not year:
+                continue
+            if min_year is not None and year < min_year:
+                continue
+            if max_year is not None and year > max_year:
+                continue
+        # "checked in the last N days" and "not checked for N days" are the two
+        # ways anyone asks about this, so both are offered rather than one
+        # range control that has to be reasoned about.
+        if checked_within is not None and (age is None or age > checked_within):
+            continue
+        if checked_before is not None and (age is None or age < checked_before):
+            continue
+        rows.append(row)
+
+    rows.sort(key=lambda r: r.get("checked_at") or 0, reverse=True)
+    window = int(getattr(cfg.checker, "request_recheck_after_days", 30) or 0)
+    return json_response({
+        "requests": rows[:HISTORY_LIMIT],
+        "total": len(rows),
+        "shown": min(len(rows), HISTORY_LIMIT),
+        "statuses": sorted({r["status"] for r in rows if r["status"]}),
+        "recheck_after_days": window,
+    })
 
 
 @routes.get("/api/requests/filters")
@@ -1289,7 +2350,10 @@ async def api_requests_filters(request: web.Request) -> web.Response:
     tracker = request.query.get("tracker", "")
     if not tracker:
         return error("tracker is required")
-    return json_response(filter_schema(tracker))
+    return json_response(filter_schema(
+        tracker,
+        recheck_after_days=int(getattr(cfg.checker, "request_recheck_after_days", 30) or 0),
+    ))
 
 
 @routes.post("/api/requests/check")
@@ -1310,8 +2374,12 @@ async def api_requests_check(request: web.Request) -> web.Response:
     notifier: DiscordNotifier = request.app["notifier"]
     jobs: JobRegistry = request.app["jobs"]
 
+    # "Run them anyway" -- the button offered next to the list of requests that
+    # were skipped because they already had an answer.
+    recheck_all = bool(body.get("recheck"))
+
     async def run(job) -> None:
-        matches = await checker.check_many(tracker, request_ids, progress=job.emit)
+        matches = await checker.check_many(tracker, request_ids, progress=job.emit, force=recheck_all)
         if cfg.notifications.notify_fillable and notifier.enabled:
             for match in matches:
                 if match.fillable:
@@ -1346,6 +2414,55 @@ async def api_spectral_image(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(path)
 
 
+@routes.post("/api/requests/reject")
+async def api_request_reject(request: web.Request) -> web.Response:
+    """Say that a release does not fill a request.
+
+    The matcher is confident about a wrong match and stays confident, so
+    removing the row from the queue lasted until the next check put it back.
+    This records the pairing as refused: the release leaves the queue, the
+    request goes back to having no match, and the next check will not offer it
+    again -- while the request itself stays open for something that does fill
+    it.
+
+    Kept rather than forgotten, because a refused match is the only evidence
+    there is of the matcher being wrong, and the lookup history shows it.
+    """
+    body = await request.json()
+    tracker = str(body.get("tracker") or "").strip().upper()
+    request_id = str(body.get("request_id") or "").strip()
+    if not tracker or not request_id:
+        return error("tracker and request_id are required")
+
+    store: CheckerStore = request.app["store"]
+    key = f"{tracker}:{request_id}"
+    entry = store.get("requests", key)
+    if entry is None:
+        return error("no such request", status=404)
+
+    deezer_id = str(body.get("deezer_id") or entry.get("deezer_id") or "")
+    if not deezer_id:
+        return error("that request has no match to reject")
+
+    named = " — ".join(part for part in (entry.get("deezer_artist"), entry.get("deezer_title")) if part)
+    deezer_requests.reject_match(store, tracker, request_id, deezer_id, named)
+
+    # The request keeps its place in the history; it just has no match any
+    # more, which is what "skipped" means everywhere else on that page.
+    store.put("requests", key, {
+        **entry,
+        "status": "skipped",
+        "reason": "you said this release does not fill this request",
+        "rejected": True,
+        "rejected_deezer_id": deezer_id,
+        "rejected_title": named,
+        "deezer_id": None,
+        "found_on": [],
+        "missing_from": [],
+    }, flush=True)
+    return json_response({"rejected": deezer_id, "request": key})
+
+
 @routes.post("/api/folders/delete")
 async def api_folder_delete(request: web.Request) -> web.Response:
     """Delete a release folder.
@@ -1369,6 +2486,10 @@ async def api_folder_delete(request: web.Request) -> web.Response:
     except OSError as e:
         return error(f"could not delete {path}: {e}", status=500)
 
+    # The download that fetched it is now a row about a folder that is not
+    # there, with a Delete button for a path that has gone. Dropping it is the
+    # same tidy-up an upload already does.
+    _forget_download(request.app["downloader"], path)
     debug.log("deleted release folder %s", path, level=20)
     return json_response({"deleted": path})
 
@@ -1445,20 +2566,43 @@ async def api_upload(request: web.Request) -> web.Response:
     store: CheckerStore = request.app["store"]
     album_id = str(body.get("album_id") or "")
 
+    downloader: Downloader = request.app["downloader"]
+
+    context = _upload_context(store, album_id, folder)
+
     async def run(f):
-        result = await run_uploads(f, folder, trackers, source=source, auto_rename=auto_rename)
+        result = await run_uploads(
+            f, folder, trackers, source=source, auto_rename=auto_rename,
+            linked_requests=context.get("linked_requests") or {},
+            # Where lox fetched it. The lossy-approval report asks the operator
+            # to say what the source was, and lox is the one that downloaded
+            # it -- so the box starts filled in rather than empty.
+            download_url=context.get("deezer_url") or "",
+        )
+        # Where the release actually ended up. The pipeline renames the folder
+        # partway through, so the path this started with is not the one on disk
+        # when it finishes -- and both of these went looking for the old name,
+        # found nothing, and quietly did nothing.
+        final = result.get("source_folder") or folder
         # A release that has been uploaded is not one that is missing any more.
         # Leaving it on the Found list meant every successful upload made that
         # list slightly less true than it was before.
         if result.get("succeeded") and not cfg.upload.dry_run:
-            _mark_uploaded(store, album_id, folder, result["succeeded"])
+            _mark_uploaded(store, album_id, final, result["succeeded"])
+            _forget_download(downloader, final, album_id)
+        _record_upload(store, f, final, trackers, album_id, result)
         return result
 
     label = f"{os.path.basename(folder)} to {', '.join(trackers)}"
+    # What this upload is for, in place before the run starts. An upload that
+    # fills a request is the one case where posting the wrong release cannot be
+    # undone, and the card had the folder name and nothing else -- the request
+    # it was answering was three tabs away.
     flow = flows.start(
         "upload",
         f"{'Dry run of ' if cfg.upload.dry_run else 'Uploading '}{label}",
         run,
+        context=context,
     )
     return json_response(
         {"flow_id": flow.id, "trackers": trackers, "linking": cfg.linking.enabled, "dry_run": cfg.upload.dry_run}
@@ -1468,6 +2612,22 @@ async def api_upload(request: web.Request) -> web.Response:
 # ----------------------------------------------------------------------
 # Flows
 # ----------------------------------------------------------------------
+
+
+@routes.get("/api/uploads/history")
+async def api_upload_history(request: web.Request) -> web.Response:
+    """Every upload this install has run, newest first. No tracker calls."""
+    store: CheckerStore = request.app["store"]
+    rows = list((store.load(UPLOADS) or {}).values())
+    rows.sort(key=lambda r: r.get("finished") or 0, reverse=True)
+    return json_response({"uploads": rows, "total": len(rows)})
+
+
+@routes.post("/api/uploads/history/clear")
+async def api_upload_history_clear(request: web.Request) -> web.Response:
+    """Forget the upload history. Nothing already posted is affected."""
+    store: CheckerStore = request.app["store"]
+    return json_response({"cleared": store.clear(UPLOADS)})
 
 
 @routes.get("/api/flows")
@@ -1505,6 +2665,15 @@ async def api_flow_cancel(request: web.Request) -> web.Response:
     if not flow:
         return error("no such flow", status=404)
     return json_response({"cancelled": flow.cancel()})
+
+
+@routes.post("/api/flows/{flow_id}/dismiss")
+async def api_flow_dismiss(request: web.Request) -> web.Response:
+    """Forget one finished flow, so its card leaves the page."""
+    gone = request.app["flows"].dismiss(request.match_info["flow_id"])
+    if not gone:
+        return error("that run is not finished", status=409)
+    return json_response({"dismissed": True})
 
 
 @routes.post("/api/flows/clear")

@@ -24,7 +24,7 @@ import msgspec
 
 from lox import cfg, debug
 from lox.errors import RequestError
-from lox.trackers import get_class, tracker_list
+from lox.trackers import base_url, get_class, tracker_list
 from lox.trackers.base import RetryableError
 
 # Everything a tracker call can plausibly fail with. Anything else is a bug and
@@ -65,6 +65,9 @@ class TrackerStatus(msgspec.Struct):
         now = time.time()
         return {
             "code": self.code,
+            # Where the tracker lives, so the UI can turn "OPS is missing this"
+            # into a link to OPS rather than a label you have to act on by hand.
+            "url": base_url(self.code),
             "configured": self.configured,
             "budget": self.budget,
             "window": self.window,
@@ -264,12 +267,33 @@ class TrackerGateway:
         status = self.status(code)
         return status.available and status.remaining >= needed
 
-    async def _call(self, code: str, coro_factory) -> Any:
+    def _guard(self, code: str, state: "_TrackerState") -> None:
+        """Raise if this tracker cannot be called at all right now.
+
+        Args:
+            code: Tracker code.
+            state: Its budget and breaker state.
+
+        Raises:
+            TrackerBudgetExceeded: If the window's budget is spent.
+            TrackerUnavailable: If the circuit breaker is open.
+        """
+        if state.cooldown_until and state.cooldown_until > time.time():
+            wait = int(state.cooldown_until - time.time())
+            raise TrackerUnavailable(f"{code} is cooling down for another {wait}s ({state.last_error})")
+        if state.remaining <= 0:
+            raise TrackerBudgetExceeded(
+                f"{code} budget of {state.budget} requests per {state.window}s is spent; try again later"
+            )
+
+    async def _call(self, code: str, coro_factory, *, interactive: bool = False) -> Any:
         """Spend one unit of budget on a tracker call.
 
         Args:
             code: Tracker code.
             coro_factory: Zero-arg callable returning the coroutine to await.
+            interactive: True for a single call someone is waiting on, which
+                skips the queue rather than joining the back of it.
 
         Returns:
             Whatever the coroutine returns.
@@ -279,14 +303,32 @@ class TrackerGateway:
             TrackerUnavailable: If the circuit breaker is open.
         """
         state = self._states[code]
+
+        # A person clicked something and is watching a spinner.
+        #
+        # The lock below is held across the pacing sleep AND the HTTP call, and
+        # asyncio hands it out in order, so opening one request's details while
+        # a hundred-request check was running meant waiting for the hundred:
+        # two or three seconds each, and the panel just sat there. The budget
+        # and the breaker still apply -- this cannot be used to get around
+        # either -- but one call does not need to queue behind automated work
+        # to be polite, and pacing exists to protect the tracker from our
+        # batches, not from a person clicking a row.
+        if interactive:
+            self._guard(code, state)
+            try:
+                result = await coro_factory()
+            except TRACKER_ERRORS as e:
+                state.record_failure(str(e))
+                debug.log("tracker %s interactive call failed: %s", code, e, level=logging.WARNING)
+                raise
+            state.record_success()
+            debug.event("tracker.call", tracker=code, remaining=state.remaining,
+                        budget=state.budget, interactive=True)
+            return result
+
         async with state.lock:
-            if state.cooldown_until and state.cooldown_until > time.time():
-                wait = int(state.cooldown_until - time.time())
-                raise TrackerUnavailable(f"{code} is cooling down for another {wait}s ({state.last_error})")
-            if state.remaining <= 0:
-                raise TrackerBudgetExceeded(
-                    f"{code} budget of {state.budget} requests per {state.window}s is spent; try again later"
-                )
+            self._guard(code, state)
             if state.last_call:
                 elapsed = time.time() - state.last_call
                 if elapsed < self.delay:
@@ -302,7 +344,9 @@ class TrackerGateway:
             debug.event("tracker.call", tracker=code, remaining=state.remaining, budget=state.budget)
             return result
 
-    async def call_action(self, code: str, action: str, params: dict[str, Any] | None = None) -> dict:
+    async def call_action(
+        self, code: str, action: str, params: dict[str, Any] | None = None, *, interactive: bool = False
+    ) -> dict:
         """Run an arbitrary Gazelle ajax action against the budget.
 
         Args:
@@ -314,7 +358,7 @@ class TrackerGateway:
             The tracker's response object.
         """
         api = self.api(code)
-        return await self._call(code, lambda: api.request(action, params or {}))
+        return await self._call(code, lambda: api.request(action, params or {}), interactive=interactive)
 
     async def browse(self, code: str, searchstr: str) -> list[dict]:
         """Run a ``browse`` search on a tracker.
@@ -339,10 +383,20 @@ class TrackerGateway:
         api = self.api(code)
         return await self._call(code, lambda: api.torrentgroup(group_id))
 
-    async def get_request(self, code: str, request_id: int) -> dict:
-        """Fetch one request from a tracker."""
+    async def get_request(self, code: str, request_id: int, *, interactive: bool = False) -> dict:
+        """Fetch one request from a tracker.
+
+        Args:
+            code: Tracker code.
+            request_id: The request's id on that tracker.
+            interactive: True when someone is waiting on this one call, so it
+                skips the queue instead of joining the back of it.
+
+        Returns:
+            The request payload.
+        """
         api = self.api(code)
-        return await self._call(code, lambda: api.get_request(request_id))
+        return await self._call(code, lambda: api.get_request(request_id), interactive=interactive)
 
     async def artist_id(self, code: str, artist_name: str) -> int | None:
         """Look up a tracker's internal artist ID, or None if not found."""

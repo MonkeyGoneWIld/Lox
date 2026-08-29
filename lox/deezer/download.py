@@ -63,6 +63,8 @@ class TrackDownload(msgspec.Struct):
     size: int = 0
     path: str | None = None
     error: str | None = None
+    #: What Deezer actually served, which is not always what was asked for.
+    fmt: str = ""
 
 
 class DownloadJob(msgspec.Struct):
@@ -79,9 +81,38 @@ class DownloadJob(msgspec.Struct):
     error: str | None = None
     started: float | None = None
     finished: float | None = None
+    #: Take whatever quality Deezer will serve, whatever the config says.
+    #: Set per download, because "I want this one anyway" is a decision about
+    #: one release rather than a setting to go and change and change back.
+    allow_lossy: bool = False
+    #: What the operator said about a download that came back below FLAC:
+    #: "" while nobody has been asked, then "kept" or "discarded".
+    decision: str = ""
     # Highest percentage reported so far, so the bar is monotonic even if a
     # size correction would otherwise pull it back.
     _floor: float = 0.0
+
+    @property
+    def formats(self) -> list[str]:
+        """Every stream quality this job was actually served, best first."""
+        order = {name: i for i, name in enumerate(("FLAC", "MP3_320", "MP3_128"))}
+        seen = {t.fmt for t in self.tracks if t.fmt}
+        return sorted(seen, key=lambda f: order.get(f, 99))
+
+    @property
+    def quality(self) -> str:
+        """The worst quality served, which is what the release actually is."""
+        served = self.formats
+        return served[-1] if served else ""
+
+    @property
+    def lossy(self) -> bool:
+        """True once any track has come back as something other than FLAC.
+
+        Reported the moment the first one lands rather than at the end, so the
+        question can be asked while there is still a download to stop.
+        """
+        return any(t.fmt and t.fmt != "FLAC" for t in self.tracks)
 
     @property
     def done_count(self) -> int:
@@ -133,6 +164,14 @@ class DownloadJob(msgspec.Struct):
             "total": len(self.tracks),
             "started": self.started,
             "finished": self.finished,
+            # What came back, and whether anybody has been asked about it. A
+            # release Deezer would only serve as MP3 used to land in the
+            # download folder looking exactly like a FLAC one.
+            "formats": self.formats,
+            "quality": self.quality,
+            "lossy": self.lossy,
+            "decision": self.decision,
+            "allow_lossy": self.allow_lossy,
             "tracks": [
                 {
                     "title": t.title,
@@ -174,6 +213,14 @@ class Downloader:
         # the worker carrying it.
         self._running: dict[str, asyncio.Task] = {}
         self._stopping = False
+        # Every track download in the process, not every track download in one
+        # album. The same number sized both the pool of album workers AND each
+        # album's own track semaphore, so five albums at once meant five times
+        # five streams open to Deezer -- which timed out, one track at a time,
+        # for releases that downloaded perfectly on their own. Created lazily:
+        # a semaphore binds to the running loop, and this is built before there
+        # is one.
+        self._streams: asyncio.Semaphore | None = None
 
     @property
     def download_dir(self) -> str:
@@ -182,13 +229,28 @@ class Downloader:
         configured = getattr(deezer_cfg, "download_dir", None) if deezer_cfg else None
         return configured or cfg.directory.download_directory
 
-    def formats(self) -> tuple[str, ...]:
-        """Stream qualities to request, honouring the fallback setting."""
+    def formats(self, allow_lossy: bool = False) -> tuple[str, ...]:
+        """Stream qualities to request, honouring the fallback setting.
+
+        Args:
+            allow_lossy: Take whatever is available for this one download,
+                whatever ``format_fallback`` says. Turning the setting off is
+                how you stop lox quietly fetching MP3 for everything; it should
+                not also be the thing that stops you fetching one release you
+                have decided you want.
+
+        Returns:
+            Qualities to ask for, best first.
+        """
         order = ("FLAC", "MP3_320", "MP3_128")
-        if not self.allow_fallback:
-            return (self.preferred_format,)
         start = order.index(self.preferred_format) if self.preferred_format in order else 0
+        if not self.allow_fallback and not allow_lossy:
+            return (self.preferred_format,)
         return order[start:]
+
+    def formats_for(self, job: "DownloadJob") -> tuple[str, ...]:
+        """Qualities to request for one job."""
+        return self.formats(job.allow_lossy)
 
     def on_update(self, callback: Callable[[DownloadJob], None]) -> None:
         """Register a callback fired whenever a job changes state."""
@@ -199,6 +261,12 @@ class Downloader:
         for listener in self._listeners:
             with contextlib.suppress(Exception):
                 listener(job)
+
+    def _stream_slots(self) -> asyncio.Semaphore:
+        """The cap on simultaneous track downloads, shared by every album."""
+        if self._streams is None:
+            self._streams = asyncio.Semaphore(max(1, self.concurrency))
+        return self._streams
 
     async def start(self) -> None:
         """Spin up the worker pool if it is not already running."""
@@ -218,11 +286,13 @@ class Downloader:
         self._workers = []
         self._stopping = False
 
-    async def enqueue(self, album_id: str | int) -> DownloadJob:
+    async def enqueue(self, album_id: str | int, allow_lossy: bool = False) -> DownloadJob:
         """Queue an album for download.
 
         Args:
             album_id: Deezer album ID.
+            allow_lossy: Accept a lower quality than the preferred one for this
+                download alone, regardless of ``format_fallback``.
 
         Returns:
             The created job, already visible in :attr:`jobs`.
@@ -241,6 +311,7 @@ class Downloader:
             title=meta.get("title") or f"Album {album_id}",
             artist=(meta.get("artist") or {}).get("name") or "Unknown Artist",
             cover=meta.get("cover_xl") or meta.get("cover_big") or meta.get("cover"),
+            allow_lossy=bool(allow_lossy),
         )
         self.jobs[job.id] = job
         await self.start()
@@ -329,7 +400,21 @@ class Downloader:
         self._notify(job)
 
         try:
-            songs = await self.gw.album_tracks(job.album_id)
+            # The public record first, for the id Deezer files this album
+            # under. It hands out alias ids -- /album/1048152982 answers with
+            # 1048214502 -- and the private gateway serves an alias a tracklist
+            # whose tracks cannot be streamed. Every track then failed, while
+            # the same release downloaded perfectly from its own page, which is
+            # where the canonical id came from. This call was already being
+            # made, four lines further down; making it first costs nothing and
+            # is the difference between nine tracks and none.
+            meta = await self.gw.album(job.album_id)
+            album_id = str(meta.get("id") or job.album_id)
+            if album_id != str(job.album_id):
+                debug.log("download: album %s is an alias for %s", job.album_id, album_id,
+                          level=logging.INFO)
+
+            songs = await self.gw.album_tracks(album_id)
             if not songs:
                 raise DownloadError("Album returned no tracks")
 
@@ -339,14 +424,15 @@ class Downloader:
             by_id = {str(t.get("SNG_ID")): t for t in detailed}
             songs = [by_id.get(str(s.get("SNG_ID") or s.get("id")), s) for s in songs]
 
-            meta = await self.gw.album(job.album_id)
             job.folder = self._prepare_folder(meta)
             job.tracks = [self._make_track(song, i) for i, song in enumerate(songs, 1)]
             self._notify(job)
 
             await self._fetch_cover(job, meta)
 
-            semaphore = asyncio.Semaphore(self.concurrency)
+            # Shared, so the total in flight is the setting rather than the
+            # setting squared.
+            semaphore = self._stream_slots()
             await asyncio.gather(
                 *(
                     self._download_track(job, song, track, meta, semaphore)
@@ -357,9 +443,18 @@ class Downloader:
             failures = [t for t in job.tracks if t.status != "done"]
             if failures:
                 job.status = "failed"
+                # Naming one reason, because "1 of 1 track(s) failed" says only
+                # that something went wrong and leaves the log with nothing to
+                # go on. The rest are on the tracks themselves.
+                reasons = [t.error for t in failures if t.error]
                 job.error = f"{len(failures)} of {len(job.tracks)} track(s) failed"
+                if reasons:
+                    job.error += f" -- {reasons[0]}"
+                    if len(set(reasons)) > 1:
+                        job.error += f" (and {len(set(reasons)) - 1} other reason(s))"
             else:
                 job.status = "done"
+                self._settle_folder(job)
         except Exception as e:  # noqa: BLE001 - surfaced to the UI via job.error
             job.status = "failed"
             job.error = str(e)
@@ -371,6 +466,34 @@ class Downloader:
                 level=logging.INFO,
             )
             self._notify(job)
+
+    def _settle_folder(self, job: DownloadJob) -> None:
+        """Rename the folder to match the quality actually downloaded.
+
+        The folder is created before a single stream URL has been resolved, so
+        it can only be named for what was asked for -- and it was named
+        ``[WEB FLAC]`` unconditionally. A release Deezer served as MP3 then sat
+        in a folder claiming to be lossless, which is the one mistake in this
+        pipeline a tracker will not forgive.
+        """
+        quality = job.quality
+        if not job.folder or not quality or quality == "FLAC":
+            return
+        label = "MP3" if quality.startswith("MP3") else quality
+        head, tail = os.path.split(job.folder)
+        renamed = tail.replace("[WEB FLAC]", f"[WEB {label}]")
+        if renamed == tail:
+            return
+        target = os.path.join(head, renamed)
+        try:
+            os.rename(job.folder, target)
+        except OSError as e:
+            debug.log("download: could not rename %s -> %s (%s)", job.folder, target, e, level=30)
+            return
+        for track in job.tracks:
+            if track.path and track.path.startswith(job.folder):
+                track.path = os.path.join(target, os.path.relpath(track.path, job.folder))
+        job.folder = target
 
     @staticmethod
     def _make_track(song: dict, index: int) -> TrackDownload:
@@ -418,7 +541,8 @@ class Downloader:
             track.status = "running"
             self._notify(job)
             try:
-                url, fmt = await self.gw.stream_url(song, self.formats())
+                url, fmt = await self.gw.stream_url(song, self.formats_for(job))
+                track.fmt = fmt
                 extension = _EXTENSIONS.get(fmt, ".flac")
                 filename = f"{track.number:02d}. {sanitize(track.title, 'Track')}{extension}"
                 path = os.path.join(job.folder or self.download_dir, filename)
@@ -429,9 +553,14 @@ class Downloader:
 
                 track.path = path
                 track.status = "done"
-            except (DeezerGWError, DownloadError, aiohttp.ClientError, OSError) as e:
+            # TimeoutError was not in here, and asyncio raises it plainly
+            # rather than as a ClientError: a slow track took the whole album
+            # down with it instead of failing on its own.
+            except (DeezerGWError, DownloadError, aiohttp.ClientError, OSError, TimeoutError) as e:
                 track.status = "failed"
-                track.error = str(e)
+                track.error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                debug.log("download: album=%s track=%s failed: %s",
+                          job.album_id, track.title, track.error, level=logging.WARNING)
             finally:
                 self._notify(job)
 

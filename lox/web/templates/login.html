@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lox — sign in</title>
-  <link rel="icon" href="{{ static_root_url }}/images/favicon.ico">
+  <link rel="icon" href="{{ static_root_url }}/images/favicon.ico?v={{ asset_version }}" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ static_root_url }}/images/favicon-32x32.png?v={{ asset_version }}">
   <link rel="stylesheet" href="{{ static_root_url }}/css/fonts.css?v={{ asset_version }}">
   <link rel="stylesheet" href="{{ static_root_url }}/css/app.css?v={{ asset_version }}">
 </head>
 <body class="login-body">
   <main class="login-card">
-    <img src="{{ static_root_url }}/images/logo.png" alt="" class="login-logo">
+    <img src="{{ static_root_url }}/images/logo.png?v={{ asset_version }}" alt="" class="login-logo">
     <h1>Lox</h1>
     <p class="hint" id="blurb">
       This interface can spend your tracker API budget, read your Deezer session and start uploads.

@@ -193,6 +193,12 @@ class DeezerSettings(BaseStruct):
     preferred_format: Literal["FLAC", "MP3_320", "MP3_128"] = "FLAC"
     # Accept a lower quality when the preferred one is not available to the account.
     format_fallback: bool = True
+    # Ask before keeping a download that came back below the preferred quality.
+    # The fallback above decides whether lox will take MP3 at all; this decides
+    # whether it does so silently. Off, a lossy release lands in the download
+    # folder looking exactly like a FLAC one, and the first thing that notices
+    # is a tracker rejecting the upload.
+    confirm_lower_quality: bool = True
     concurrent_downloads: Annotated[int, msgspec.Meta(ge=1, le=8)] = 2
 
     def __post_init__(self):
@@ -285,7 +291,11 @@ class UploadFormatting(BaseStruct):
     various_artist_threshold: int = 4
     blacklisted_substitution: str = "_"
     guests_in_track_title: bool = False
-    various_artist_word: str = "Various"
+    # What a release billed to more artists than the threshold is called.
+    # "Various" was the default and it is not what either tracker calls it:
+    # both list a compilation under "Various Artists", so a folder named
+    # "Various - ..." is a rename away from the name it should have had.
+    various_artist_word: str = "Various Artists"
     strip_useless_versions: bool = True
     add_edition_title_to_album_tag: bool = True
 
@@ -403,8 +413,19 @@ class Checker(BaseStruct):
     failure_threshold: Annotated[int, msgspec.Meta(ge=1)] = 3
     cooldown_seconds: Annotated[int, msgspec.Meta(ge=0)] = 300
 
-    # Album filters, applied before any tracker is contacted.
-    min_tracks: Annotated[int, msgspec.Meta(ge=0)] = 0
+    # Album filters, applied before any tracker is contacted, and only to a
+    # scan -- an album picked by hand from Search or Browse is not swept up by
+    # them.
+    #
+    # Five, because the thing a sweep of a channel module is mostly made of is
+    # singles and two-track promos, and each one costs the same tracker calls
+    # as an album. Zero checked everything and was a budget rather than a
+    # filter.
+    min_tracks: Annotated[int, msgspec.Meta(ge=0)] = 5
+    # Blank means the rolling default -- 1 January of last year, and two days
+    # out -- rather than no limit. Both are relative to today, so neither can
+    # be written down once and stay right; see
+    # lox.checker.missing.default_min_date. A date set by hand wins and stays.
     min_date: str | None = None
     max_date: str | None = None
 
@@ -420,6 +441,30 @@ class Checker(BaseStruct):
     # An open request is a reason to upload whatever the rule above says, so
     # this is an "or" around it rather than a filter on top of it.
     queue_requests_too: bool = True
+
+    # How long a request check is trusted for, in days. A request that has been
+    # looked up already is not looked up again inside this window: what Deezer
+    # has and what the request wants barely move, and re-asking is one tracker
+    # call and one Deezer search per request for an answer we already had.
+    # 0 means never re-check a request that has an answer.
+    request_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 30
+
+    # The same for albums a scan has looked up, and the ceiling over every
+    # reason a scan has for asking again. Only one album answer is kept at all
+    # -- present on every tracker -- and a year is how long that stays worth
+    # trusting before it is worth confirming. 0 means an answer never goes
+    # stale.
+    album_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 365
+
+    # How old a queue row may get before lox confirms it still belongs there.
+    #
+    # A queue row is a claim about someone else's tracker -- "nobody has
+    # uploaded this yet" -- and it decays: somebody else uploads it, or a
+    # request gets filled, and the row sits there for months looking like work.
+    # Rows older than this are re-checked in the background, one at a time, and
+    # only while nothing else is running, so it never competes with a scan or
+    # an upload you started. 0 turns it off.
+    queue_recheck_after_days: Annotated[int, msgspec.Meta(ge=0)] = 30
 
     # Where scan state is kept. Defaults to <download_directory>/.lox-checker.
     state_dir: str | None = None
@@ -442,6 +487,14 @@ class Linking(BaseStruct):
     """
 
     enabled: bool = False
+    # Delete the download once every tracker that took the release is seeding
+    # from its own linked copy.
+    #
+    # Without this the release stays in the download folder for ever, on the
+    # Uploading list, offering to upload something already uploaded. It is only
+    # ever safe with linking on -- with it off the tracker is seeding from that
+    # very folder -- and it never runs on a dry run or on a run nothing took.
+    remove_source_after_upload: bool = True
     # Root of the torrent client's upload/seeding area.
     link_dir: str | None = None
     method: Literal["hardlink", "symlink", "copy"] = "hardlink"

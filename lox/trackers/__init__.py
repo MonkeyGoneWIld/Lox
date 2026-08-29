@@ -1,3 +1,4 @@
+from typing import Any
 from urllib import parse
 
 import asyncclick as click
@@ -8,6 +9,48 @@ from lox.trackers import dic, ops, red
 # hard coded as it needs to reflect the imports anyway.
 tracker_classes = {"RED": red.RedApi, "OPS": ops.OpsApi, "DIC": dic.DICApi}
 tracker_url_code_map = {"redacted.sh": "RED", "orpheus.network": "OPS", "dicmusic.com": "DIC"}
+
+#: Where each tracker lives, without having to build an API client to ask.
+#:
+#: The UI needs these to turn "OPS is missing this" into a link to OPS, and it
+#: needs them for trackers there are no credentials for as well -- a browse link
+#: is not an API call. Building a client just to read base_url off it would
+#: raise for exactly the trackers that most need the link.
+tracker_base_urls: dict[str, str] = {
+    "RED": "https://redacted.sh",
+    "OPS": "https://orpheus.network",
+    "DIC": "https://dicmusic.com",
+}
+
+
+def base_url(site_code: str) -> str:
+    """The tracker's site root, or "" for a code lox does not know."""
+    return tracker_base_urls.get(str(site_code).upper(), "")
+
+
+def group_url(site_code: str, group_id: Any) -> str:
+    """A link to one torrent group on a tracker, or "" if either is unknown."""
+    root = base_url(site_code)
+    return f"{root}/torrents.php?id={group_id}" if root and group_id else ""
+
+
+def search_url(site_code: str, terms: str) -> str:
+    """A link to a tracker's torrent search for some terms."""
+    root = base_url(site_code)
+    return f"{root}/torrents.php?searchstr={parse.quote_plus(terms)}" if root and terms else root
+
+
+def request_url(site_code: str, request_id: Any) -> str:
+    """A link to one request on a tracker, or "" if either is unknown."""
+    root = base_url(site_code)
+    return f"{root}/requests.php?action=view&id={request_id}" if root and request_id else ""
+
+
+def artist_url(site_code: str, name: str) -> str:
+    """A link to a tracker's artist page. Gazelle resolves these by name."""
+    root = base_url(site_code)
+    return f"{root}/artist.php?artistname={parse.quote_plus(name)}" if root and name else ""
+
 
 # Which trackers actually have credentials. Mutated in place rather than
 # rebound so anything holding a reference keeps seeing the current list; the

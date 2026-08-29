@@ -130,6 +130,11 @@ class Flow:
         self.events: list[dict[str, Any]] = []
         self.result: dict[str, Any] | None = None
         self.task: asyncio.Task | None = None
+        #: What this run is about, beyond its label. An upload that fills a
+        #: request carries the request here, so the card can link to the thing
+        #: being filled rather than leaving the operator to find it -- the one
+        #: page where getting the wrong release is not undoable.
+        self.context: dict[str, Any] = {}
 
     # -- driver side ---------------------------------------------------
 
@@ -304,6 +309,7 @@ class Flow:
             "error": self.error,
             "created": self.created,
             "finished": self.finished,
+            "context": self.context,
         }
 
 
@@ -314,18 +320,29 @@ class FlowRegistry:
         """Initialize an empty registry."""
         self.flows: dict[str, Flow] = {}
 
-    def start(self, kind: str, label: str, driver: Callable[[Flow], Awaitable[Any]]) -> Flow:
+    def start(
+        self,
+        kind: str,
+        label: str,
+        driver: Callable[[Flow], Awaitable[Any]],
+        context: dict[str, Any] | None = None,
+    ) -> Flow:
         """Run a driver coroutine as a flow.
 
         Args:
             kind: Family.
             label: Description.
             driver: Coroutine taking the flow.
+            context: What the run is about, set before the driver starts. It
+                has to be in place first: the driver adds to it as it goes --
+                which request it filled, and on which tracker -- and a caller
+                assigning it afterwards would wipe that.
 
         Returns:
             The registered flow, already running.
         """
         flow = Flow(kind, label)
+        flow.context = dict(context or {})
         self.flows[flow.id] = flow
 
         async def run() -> None:
@@ -369,6 +386,26 @@ class FlowRegistry:
         flows = [f for f in self.flows.values() if kind is None or f.kind == kind]
         flows.sort(key=lambda f: f.created, reverse=True)
         return [f.as_dict() for f in flows]
+
+    def dismiss(self, flow_id: str) -> bool:
+        """Drop one finished flow.
+
+        A finished upload card stayed on the page until the browser was
+        reloaded, so the tab that says what is uploading kept showing what
+        already had. Only finished ones go: a run still working is dismissed by
+        cancelling it, which is a different decision and says so.
+
+        Args:
+            flow_id: The flow to forget.
+
+        Returns:
+            True when it was there and finished.
+        """
+        flow = self.flows.get(flow_id)
+        if flow is None or flow.state not in ("done", "failed", "cancelled"):
+            return False
+        del self.flows[flow_id]
+        return True
 
     def clear_finished(self) -> int:
         """Drop finished flows. Returns how many went."""

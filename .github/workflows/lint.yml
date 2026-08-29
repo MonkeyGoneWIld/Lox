@@ -37,6 +37,18 @@ jobs:
         # the wrong one answers a different question and says nothing about it.
         run: node tests/test_request_paste.js
 
+      - name: Every screen, tab and page has an address
+        # Runs the real router out of the shipped app.js against a stand-in for
+        # location and history. A string match can say a route exists; only
+        # this says where it goes, and that Back walks the way it came.
+        run: node tests/test_routing.js
+
+      - name: What a request check queued is listed while it runs
+        run: node tests/test_queued_panel.js
+
+      - name: The queue remembers what you ticked
+        run: node tests/test_queue_selection.js
+
       - name: Check for builtins shadowed in annotations
         # Ruff and compileall both miss this: a method named `list` makes a
         # later `-> list[X]` annotation resolve to the method, which only fails
@@ -86,6 +98,82 @@ jobs:
       - name: Request collection and filters
         run: uv run python tests/test_requests.py
 
+      - name: Deezer must be able to supply a release before it counts as one
+        # The streamable half of the availability check read a key the gw-light
+        # song records do not have, so the default won on every track of every
+        # album and a pre-release with four of eleven tracks playable was
+        # reported as "11/11 FLAC, all streamable" and queued.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5021"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+        run: |
+          mkdir -p /tmp/lox/downloads
+          uv run python tests/test_availability.py
+
+      - name: The queue lists releases, not the scanner's notes to itself
+        # Two thirds of one real queue was scan bookkeeping: albums Deezer
+        # refused, listed as nameless rows under a heading blaming the queue
+        # rules, which had nothing to do with any of them.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5020"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+          LOX_STATE_DIR: /tmp/lox/held-state
+          LOX_SETTINGS_DIR: /tmp/lox/held-config
+        run: |
+          mkdir -p /tmp/lox/downloads /tmp/lox/held-state /tmp/lox/held-config
+          uv run python tests/test_held_rows.py
+
+      - name: A request already answered is not paid for twice
+        # check_many asked should_skip, which compares against the album
+        # scanner's final statuses. A request's status is never one of those,
+        # so nothing was ever skipped and every run started from nothing.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5019"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+          LOX_STATE_DIR: /tmp/lox/recheck-state
+          LOX_SETTINGS_DIR: /tmp/lox/recheck-config
+        run: |
+          mkdir -p /tmp/lox/downloads /tmp/lox/recheck-state /tmp/lox/recheck-config
+          uv run python tests/test_recheck.py
+
+      - name: Nothing reaches the queue that Deezer cannot supply
+        # A release that is not all FLAC is not an upload unless a request
+        # says lossy will do. Only the request path ever checked, so albums
+        # checked from Search or Browse joined the queue unproven.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5018"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+        run: |
+          mkdir -p /tmp/lox/downloads
+          uv run python tests/test_flac_gate.py
+
+      - name: HTTPS roots, and a tracker failure that says what went wrong
+        # aiohttp builds its default SSL context at import, so lox has to add
+        # certifi's roots before that happens or a machine with a stale
+        # certificate store cannot reach a tracker at all -- and used to say so
+        # with an empty error message.
+        env:
+          LOX_HOST: 127.0.0.1
+          LOX_PORT: "5016"
+          LOX_AUTH_TOKEN: 0123456789abcdef0123456789abcdef
+          LOX_DOWNLOAD_DIR: /tmp/lox/downloads
+          LOX_TORRENTS_DIR: /tmp/lox/torrents
+        run: |
+          mkdir -p /tmp/lox/downloads
+          uv run python tests/test_network_trust.py
+
       - name: Upload prompts, folder rename and integrity
         # The upload's questions have to reach the browser rather than answer
         # themselves. Includes a source scan, so a call site no test reaches is
@@ -119,10 +207,33 @@ jobs:
       - name: Dry run shows everything and writes nothing
         run: uv run python tests/test_dry_run.py
 
+      - name: A request search matches the tracker's own form
+        # Compared against URLs captured off the live RED and OPS search forms.
+        # The two sites number the same seven categories differently.
+        run: uv run python tests/test_request_parity.py
+
+      - name: What a scan looks at, and what it stops looking at
+        # The filters were fixed dates that went stale, they applied to albums
+        # picked by hand, and one lookup settled an album for ever whatever
+        # the answer had been.
+        run: uv run python tests/test_scan_filters.py
+
+      - name: A saved search is a link, and several are one scan
+        # Saving one took a name you invented, a kind from a dropdown and an id
+        # dug out of a URL -- three answers about something Deezer already
+        # knows. Runs the real classes against a stand-in for Deezer.
+        run: uv run python tests/test_saved_searches.py
+
       - name: What reaches the queue
         # The rules are applied when the queue is read, so narrowing hides rows
         # and widening brings the same rows back with no tracker call.
         run: uv run python tests/test_queue_rules.py
+
+      - name: Re-checking a queue row must not delete it
+        run: uv run python tests/test_queue_recheck.py
+
+      - name: Refusing a request match has to stick
+        run: uv run python tests/test_reject_match.py
 
       - name: A saved setting reaches the running process
         # The page could report a value nothing was using: the gateway copies
@@ -144,6 +255,29 @@ jobs:
         # The tracker refuses to be framed, so this code renders the request
         # itself -- which puts it between someone else's BBCode and the page.
         run: uv run python tests/test_request_detail.py
+
+      - name: Whether a tracker already has a release, answered correctly
+        # A release the tracker had was reported missing, because a title with
+        # a subtitle was searched for by its subtitle; and one it did not have
+        # was reported present, because a character-set similarity cannot see
+        # the difference between Vol. 4 and Vol. 2.
+        run: uv run python tests/test_matching_quality.py
+
+      - name: One release, prepared once, posted to every tracker picked
+        # Uploading to two trackers ran the whole pipeline twice: the second
+        # pass regenerated the spectrals, looked the metadata up again,
+        # retagged, renamed and asked about downconversions -- every question a
+        # second time about a release that had not changed. Also pins the
+        # request verdict the queue reads, and the request detail cache.
+        run: uv run python tests/test_multi_tracker.py
+
+      - name: Browse leads somewhere, and a download says what it is
+        # The channel list asked the gateway with the argument in the body;
+        # page.get reads it out of the query string, so every channel request
+        # failed and the genre fallback it dropped to could not be opened
+        # either. New releases had one region-dependent source. And a lossy
+        # download landed in a folder named [WEB FLAC].
+        run: uv run python tests/test_browse_and_quality.py
 
       - name: Start with a broken download directory
         # Sets its own LOX_* environment, deliberately pointing at a path that

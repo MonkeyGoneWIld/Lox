@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import platform
 import re
@@ -73,6 +74,8 @@ from lox.uploader.upload import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from lox.tagger.tagfile import TagFile
     from lox.trackers.base import BaseGazelleApi
 
@@ -267,10 +270,26 @@ async def upload(
     skip_mqa: bool = False,
     skip_log_check: bool = False,
     skip_integrity_check: bool = False,
+    also_upload_to: list[str] | None = None,
+    link_for: "Callable[[str, str], Awaitable[str]] | None" = None,
+    on_uploaded: "Callable[[str, str | None], None] | None" = None,
+    on_tracker: "Callable[[str], None] | None" = None,
+    link_derived: "Callable[[str, str], Awaitable[str]] | None" = None,
+    linked_requests: dict[str, str] | None = None,
+    on_request: "Callable[[str, int], None] | None" = None,
+    download_url: str | None = None,
 ) -> None:
     """Upload an album folder to Gazelle Site.
 
     Offer the choice to upload to another tracker after completion.
+
+    Everything before the tracker loop happens once for the release: the
+    spectrals, the metadata lookup, the retagging, the folder and file renames.
+    Only what is genuinely per-tracker is inside the loop -- whether that
+    tracker already has the group, whether it has an open request, and the post
+    itself. Driving this function once per tracker instead runs the whole
+    pipeline again from the top, which is every one of those questions asked a
+    second time about a release that has not changed since the first.
 
     Args:
         gazelle_site: The tracker API instance.
@@ -292,6 +311,21 @@ async def upload(
         skip_mqa: Skip MQA check.
         skip_log_check: Skip log checking.
         skip_integrity_check: Skip integrity check.
+        also_upload_to: The trackers to upload to, in order, starting with
+            ``gazelle_site``'s own. Given, the loop works through them without
+            asking; omitted, it asks after each one as it always has.
+        link_for: Called with ``(tracker, path)`` before each tracker's upload,
+            returning the path that tracker should seed from. This is how a
+            per-tracker hardlinked folder is made without re-running the
+            pipeline: the release is prepared once and linked per tracker.
+        on_uploaded: Called with ``(tracker, url)`` once a tracker has taken
+            the torrent, so a caller driving several can report which of them
+            it actually reached rather than inferring it.
+        on_tracker: Called with the tracker code as each one starts, so the
+            questions that follow can say which tracker they are about.
+        link_derived: Called with ``(tracker, path)`` for a downconversion or
+            transcode, returning where that tracker should seed it from. The
+            derived folder itself is made once for the release.
     """
     path = os.path.abspath(path)
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
@@ -402,7 +436,9 @@ async def upload(
         spectral_urls = None
     else:
         if lossy_master:
-            lossy_comment = await generate_lossy_approval_comment(source_url, list(track_data.keys()))
+            lossy_comment = await generate_lossy_approval_comment(
+                source_url, list(track_data.keys()), download_url=download_url
+            )
             click.echo()
 
         spectrals_path = get_spectrals_path(path)
@@ -411,7 +447,8 @@ async def upload(
         await last_min_dupe_check(gazelle_site, searchstrs)
 
     # Shallow copy to avoid errors on multiple uploads in one session.
-    remaining_gazelle_sites = list(lox.trackers.tracker_list)
+    driven = also_upload_to is not None
+    remaining_gazelle_sites = list(also_upload_to) if driven else list(lox.trackers.tracker_list)
     tracker = gazelle_site.site_code
     torrent_id = None
     cover_url = None
@@ -420,6 +457,12 @@ async def upload(
     searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
 
     seedbox_uploader = UploadManager()
+    # Answered once for the release and reused for every tracker after the
+    # first. None means nobody has been asked yet.
+    downconversion_choice: list[dict[str, Any]] | None = None
+    # And made once too, by task name, so the second tracker hardlinks the
+    # transcode rather than encoding the same tracks again.
+    derived: dict[str, Any] = {}
 
     try:
         while True:
@@ -436,30 +479,50 @@ async def upload(
                         format=rls_data["format"],
                     )
                     spectrals_after = False
-                click.secho("\nWould you like to upload to another tracker? ", fg="magenta", nl=False)
-                tracker = await lox.trackers.choose_tracker(remaining_gazelle_sites)
+                if driven:
+                    # The trackers were picked before the run started, so there
+                    # is nothing to ask: take the next one.
+                    tracker = remaining_gazelle_sites[0] if remaining_gazelle_sites else None
+                else:
+                    click.secho("\nWould you like to upload to another tracker? ", fg="magenta", nl=False)
+                    tracker = await lox.trackers.choose_tracker(remaining_gazelle_sites)
                 if not tracker:
                     click.secho("\nDone with this release.", fg="green")
                     break
                 gazelle_site = lox.trackers.get_class(tracker)()
 
-                click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
+                click.secho(f"\nNow uploading to {tracker} ({gazelle_site.base_url})", fg="cyan", bold=True)
+                click.secho(
+                    "The release is already prepared: only this tracker's own questions are left.",
+                    fg="cyan",
+                )
                 searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
                 group_id = await check_existing_group(gazelle_site, searchstrs)
 
-            remaining_gazelle_sites.remove(tracker)
+            if tracker in remaining_gazelle_sites:
+                remaining_gazelle_sites.remove(tracker)
+
+            if on_tracker is not None:
+                on_tracker(tracker)
+
+            # Each tracker seeds from its own folder when linking is on. The
+            # release itself was prepared once, above; this only places it.
+            upload_path = path
+            if link_for is not None:
+                upload_path = await link_for(tracker, path)
 
             # Handle cover image for this tracker
             if group_id:
                 if not remove_downloaded_cover_image:
-                    await download_cover_if_nonexistent(path, metadata["cover"])
+                    await download_cover_if_nonexistent(upload_path, metadata["cover"])
                 # Don't need cover URL for existing groups
                 cover_url = None
             else:
                 # For new groups, we need a cover URL
                 # If we already uploaded it for a previous tracker, reuse that URL
                 if not stored_cover_url:
-                    cover_path, is_downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
+                    cover_path, is_downloaded = await download_cover_if_nonexistent(
+                        upload_path, metadata["cover"])
                     stored_cover_url = await upload_cover(cover_path)
                     if is_downloaded and remove_downloaded_cover_image and cover_path:
                         click.secho("Removing downloaded Cover Image File", fg="yellow")
@@ -467,14 +530,29 @@ async def upload(
                 cover_url = stored_cover_url
 
             if not scene and cfg.image.auto_compress_cover:
-                compress_pictures(path)
+                compress_pictures(upload_path)
 
             if not request_id and cfg.upload.requests.check_requests:
-                request_id = await check_requests(gazelle_site, searchstrs)
+                request_id = await check_requests(
+                    gazelle_site,
+                    searchstrs,
+                    # What a request check already matched this release to on
+                    # THIS tracker. A request lives on one tracker, so the
+                    # answer is per-tracker rather than per-release.
+                    linked_request_id=(linked_requests or {}).get(tracker),
+                )
+            if request_id and on_request is not None:
+                # Said out loud to whoever is watching. A filled request is a
+                # page that now points at this upload, and the card had no way
+                # to say which one -- the operator was told the release went up
+                # and left to find out for themselves whether the request they
+                # queued it for had been answered.
+                with contextlib.suppress(TypeError, ValueError):
+                    on_request(tracker, int(request_id))
 
             torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
                 gazelle_site,
-                path,
+                upload_path,
                 group_id,
                 metadata,
                 cover_url,
@@ -489,6 +567,9 @@ async def upload(
                 seedbox_uploader,
                 source=source,
             )
+
+            if on_uploaded is not None:
+                on_uploaded(tracker, url)
 
             request_id = None
 
@@ -508,7 +589,20 @@ async def upload(
             # Straight to the formats. The gate in front of them asked whether
             # you wanted to be asked, and "no" was the same answer as picking
             # "do not convert" on the question it was guarding.
-            selected_tasks = await prompt_downconversion_choice(rls_data, track_data)
+            #
+            # Asked once for the release, not once per tracker. Which formats
+            # this release should also exist in is a fact about the release;
+            # asking again for the second tracker is asking the same question
+            # about the same files and getting the same answer.
+            if downconversion_choice is None:
+                downconversion_choice = await prompt_downconversion_choice(rls_data, track_data)
+            elif downconversion_choice:
+                click.secho(
+                    f"Converting to {', '.join(t['name'] for t in downconversion_choice)} for {tracker}, "
+                    "as chosen for the first tracker.",
+                    fg="cyan",
+                )
+            selected_tasks = downconversion_choice
             if selected_tasks:
                 display_names = [task["name"] for task in selected_tasks]
                 click.secho(
@@ -516,6 +610,8 @@ async def upload(
                 )
                 await execute_downconversion_tasks(
                     selected_tasks,
+                    # Produced from the prepared release, not from this
+                    # tracker's link, so there is one of each to link.
                     path,
                     gazelle_site,
                     group_id,
@@ -532,10 +628,14 @@ async def upload(
                     seedbox_uploader,
                     source,
                     url,
+                    produced=derived,
+                    place=(lambda p, tracker=tracker: link_derived(tracker, p))
+                    if link_derived is not None
+                    else None,
                 )
 
             tracker = None
-            if not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload:
+            if not remaining_gazelle_sites or (not driven and not cfg.upload.multi_tracker_upload):
                 click.secho("\nDone uploading this release.", fg="green")
                 break
 
@@ -851,8 +951,16 @@ async def execute_downconversion_tasks(
     seedbox_uploader: UploadManager,
     source: str | None,
     base_url: str,
+    produced: dict[str, str] | None = None,
+    place: "Callable[[str], Awaitable[str]] | None" = None,
 ) -> None:
     """Execute the selected downconversion tasks.
+
+    A transcode is a fact about the release, not about the tracker, so it is
+    made once and then placed for each tracker the same way the lossless folder
+    is: one hardlink, no second encode. Producing it per tracker meant encoding
+    the same thirteen tracks to V0 twice, writing two copies of the result, and
+    taking twice as long to do it.
 
     Args:
         selected_tasks: List of downconversion task dicts.
@@ -872,9 +980,25 @@ async def execute_downconversion_tasks(
         seedbox_uploader: Seedbox upload manager.
         source: Media source.
         base_url: Base URL for the original upload.
+        produced: Folders already made for this release, by task name. Shared
+            across trackers so the second one links rather than re-encodes.
+        place: Called with a produced folder, returning the path this tracker
+            should upload and seed from.
     """
 
     base_path = path
+    produced = {} if produced is None else produced
+
+    async def make(name: str, build: "Callable[[], Awaitable[Any]]") -> Any:
+        """Build a derived folder once, and hand back what was built.
+
+        Returns:
+            Whatever ``build`` returned the first time it ran, so a caller that
+            needs the sample rate as well as the path still gets both.
+        """
+        if name not in produced:
+            produced[name] = await build()
+        return produced[name]
 
     override_lossy_comment = (
         f"Transcode of {base_url}\n[hide=Lossy comment of original torrent]{lossy_comment}[/hide]\n"
@@ -886,11 +1010,16 @@ async def execute_downconversion_tasks(
         click.secho(f"\nProcessing: {task['name']}", fg="cyan", bold=True)
 
         if task["action"] == "downconvert":
-            # Execute downconversion
-            sample_rate, new_path = await convert_folder(
-                base_path, bit_depth=task["target_bitdepth"], sample_rate=task["target_sample_rate"]
+            # Made once for the release; the second tracker links it.
+            sample_rate, new_path = await make(
+                task["name"],
+                lambda task=task: convert_folder(
+                    base_path, bit_depth=task["target_bitdepth"], sample_rate=task["target_sample_rate"]
+                ),
             )
             await asyncio.sleep(0.1)
+            if place is not None:
+                new_path = await place(new_path)
 
             # Update metadata for this conversion
             conversion_metadata = metadata.copy()
@@ -929,9 +1058,13 @@ async def execute_downconversion_tasks(
             # Call transcode function
             click.secho(f"  Target encoding: {task['encoding']}", fg="white")
 
-            # Execute transcoding
-            transcoded_path = await transcode_folder(base_path, task["encoding"])
+            # Made once for the release; the second tracker links it.
+            transcoded_path = await make(
+                task["name"], lambda task=task: transcode_folder(base_path, task["encoding"])
+            )
             await asyncio.sleep(0.1)
+            if place is not None:
+                transcoded_path = await place(transcoded_path)
 
             # Update metadata for this transcode
             transcode_metadata = metadata.copy()

@@ -101,7 +101,7 @@ async def _prompt_for_recent_upload_results(
     # Now prompt for user action
     while True:
         prompt_text = (
-            "\nWould you like to upload to an existing group?\n"
+            f"\nWould you like to upload to an existing group on {gazelle_site.site_code}?\n"
             f"{'Pick from recent uploads found, p' if recent_uploads else 'P'}aste a URL"
             f" or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}"
         )
@@ -305,7 +305,10 @@ async def _prompt_for_group_id(
     while True:
         group_id = await click.prompt(
             click.style(
-                "\nWould you like to upload to an existing group?\n"
+                # Named, because uploading to two trackers asks this once per
+                # tracker and the two questions were word for word identical --
+                # so the second one read as the first one asked again.
+                f"\nWould you like to upload to an existing group on {gazelle_site.site_code}?\n"
                 f"Paste a URL{', pick from groups found ' if results is not None else ''}"
                 f"or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}",
                 fg="magenta",

@@ -17,6 +17,8 @@ What they cover:
   * no card paints the colour of a form field, which reads as a sunken well
   * a section heading is the control that filters to it, not a button beside it
   * the queue's filter narrows what the buttons act on, and says what it hid
+  * every screen has an address, and so does every place inside one
+  * the scan tab reads top to bottom, and a saved search is just a link
 """
 
 import os
@@ -299,35 +301,90 @@ def main() -> int:
 
     # --- the queue filters what you can see, and says when it does ----
     # Two different things sit on this page and must not be confused: the
-    # Settings rules decide what belongs in the queue and persist; this narrows
-    # what is drawn and forgets itself. The dangerous overlap is the buttons --
-    # "Download selected" acting on a row scrolled out of existence by a filter
-    # would be indefensible, so the selection is scoped to the filtered rows.
+    # Settings rules decide what belongs in the queue and persist; the column
+    # filters narrow what is drawn and forget themselves. The dangerous
+    # overlap is the buttons -- "Download selected" acting on a row a filter
+    # scrolled out of existence would be indefensible, so the selection is
+    # scoped to the rows the table is showing.
+    #
+    # The queue was filtered twice for a while: a bar above the table with a
+    # search box and two dropdowns, and then the table's own column filters.
+    # Two controls for one job, and the bar could not say which column it
+    # narrowed.
     for control in ("found-search", "found-tracker", "found-source", "found-filter-clear"):
-        check(f"the queue has a {control}", f'id="{control}"' in shell, "")
-    check("the selection follows the filter, not the whole queue",
-          "filteredFound().filter((f) => state.selectedFound.has(f.id))" in js, "")
-    check("and the count is of what is on screen",
-          "of ${rows.length} selected" in js, "")
-    check("select-all ticks the rows you can see",
-          "selectAllBox(rows.map((f) => f.id)" in js, "")
+        check(f"the queue has no separate {control}", f'id="{control}"' not in shell, "")
+    # Every list is one component now: sortable headers, a filter in the
+    # column it filters, and a selection derived from the rows rather than
+    # from the checkboxes.
+    check("there is one table, not one per list", "function dataTable" in js, "")
+    check("its columns sort", "th-sort" in js and "view.dir = -view.dir" in js, "")
+    check("each filter sits in the column it filters", "th-filter" in js, "")
+    check("shift extends a selection from the last box clicked",
+          "e.shiftKey && view.lastIndex !== null" in js, "")
 
-    # A rule that hides rows without saying so is indistinguishable from a
-    # scan that found nothing, which is how this page loses someone's trust.
-    check("held-back rows are counted on the page", 'id="found-held"' in shell, "")
-    check("with a way to look at them", 'id="found-held-toggle"' in shell, "")
-    check("each carrying the reason it was held", "held_reason" in js, "")
-    check("and the rule itself said in words", "state.foundRule" in js, "")
-    check("the filter is not persisted, because it is not a setting",
-          "foundFilter: { text: '', tracker: '', source: '' }" in js.replace('"', "'"), "")
+    # Counting the checkboxes meant a row with no id added `undefined` to the
+    # set, so "17 selected" was one more than the list held and clearing left
+    # that one behind.
+    check("counts come from the rows, never the checkboxes",
+          "function countSelected" in js, "")
+
+    # Every header cell has the same two rows whether or not the column has a
+    # filter, and the column's class dresses the data cell only -- applied to
+    # the header too it put `display: flex` on the trackers column, which laid
+    # its label and filter side by side while the rest stacked them, and the
+    # header row stepped up and down across the table.
+    check("every header cell has a label row and a filter row",
+          "th-label" in js and "th-filter-slot" in js, "")
+    check("the filter slot is there even with no filter in it",
+          "min-height" in rule(css, ".datatable thead th > .th-filter-slot"), "")
+    check("and the column's own class still does not reach the header",
+          "still dresses the DATA cell alone" in js, "")
+
+    # A column is a label, the filter that narrows it and the values -- one
+    # stack on one centre line. They were all left-aligned against cells of
+    # very different widths, so a short label sat at the far left of a wide
+    # column with its filter box under it and its values off to one side.
+    check("a column's label, filter and values share a centre line",
+          "justify-content: center" in rule(css, ".datatable thead th > .th-label")
+          and "justify-content: center" in rule(css, ".datatable thead th > .th-filter-slot")
+          and "text-align: center" in rule(css, ".datatable td"), "")
+    check("except the name column, which is read down rather than compared across",
+          "text-align: left" in rule(css, ".datatable td.col-text")
+          and "column.text ? 'col-text' : null" in js, "")
+
+    # A release found in June and re-checked this morning read as found this
+    # morning: only checked_at was stamped, and every write overwrote it.
+    check("the queue says when a release was added, not only when last checked",
+          "label: 'Added'" in js and "f.added_at" in js, "")
+    check("the selection follows what the table is showing, filters included",
+          "tableView('queue').shown" in js, "")
+    check("and the buttons act on that same list",
+          "const foundSelection = () =>" in js and "tableView('queue').shown" in js, "")
+
+    # What did not reach the queue is not the queue's business.
+    #
+    # This was a table you could open, and then a line saying how many had been
+    # kept out and why. Both were the same mistake: everything counted there is
+    # something nobody wanted -- releases every tracker already has, releases
+    # Deezer cannot supply, releases a rule the operator set deliberately
+    # excludes -- and reporting the total made a working queue look like it was
+    # withholding eighty-nine things.
+    check("the queue does not report what it kept out",
+          'id="found-held"' not in shell and 'id="found-held-toggle"' not in shell, "")
+    check("nor list it", "function heldTable" not in js, "")
+    check("and no state left over from either",
+          "foundFilter" not in js and "state.showHeld" not in js and "state.foundRule" not in js, "")
 
     # --- the search results are a list you can work with --------------
     # Taking twenty of thirty covers was twenty clicks, and there was no way to
     # take all of them at all.
-    check("there is a select-all above the covers", "function selectAllVisible" in js, "")
-    check("shown wherever something can be ticked, not only once one is",
-          "function selectAllBar" in js and "grid-tools-host" in js, "")
-    check("it flips to clearing when everything is taken", "Clear all ${count}" in js, "")
+    check("there is a select-all", "function selectAllVisible" in js, "")
+    # It used to be a strip above every grid, on screen whether or not you were
+    # selecting anything. It lives in the bar that only exists while a batch
+    # does, so the controls appear with the thing they control.
+    check("and it lives in the pick bar, not a strip of its own",
+          "grid-tools-host" not in js and "function selectAllBar" not in js, "")
+    check("with no count on the buttons", "Select all ${" not in js, "")
     check("shift-click takes the run between two ticks",
           "e.shiftKey" in js and "function pickClicked" in js, "")
     check("which needs the click event, not change -- change carries no shift key",
@@ -347,7 +404,8 @@ def main() -> int:
     bulk = js[js.index("async function bulkCheck"):]
     end_marker = chr(10) + "  }" + chr(10)
     bulk = bulk[: bulk.index(end_marker)]
-    check("pressing Check trackers checks the trackers", "await missingScan()" in bulk, "")
+    check("pressing Check trackers checks the trackers",
+          "await missingScan({ manual: true })" in bulk, "")
     check("on what you picked, not on whatever was left in the box",
           "box.value = urls.join" in bulk, "")
 
@@ -358,6 +416,616 @@ def main() -> int:
           "groups.set(code" in js and "request_ids: ids" in js, "")
     check("a pasted row is filled in from what the check found",
           "function fillPastedRequestRow" in js, "")
+
+    # --- the pick control is a ring, not a form checkbox --------------
+    # The browser's own checkbox is a filled white square with a blue tick. On
+    # top of album art it reads as a piece of chrome that landed there.
+    pick = rule(css, ".card-pick input")
+    check("the pick control is drawn by us, not the browser",
+          "appearance: none" in pick, pick.strip()[:60])
+    check("and it is a circle", "border-radius: 50%" in pick, "")
+    check("with the art showing through the middle",
+          "background: transparent" in pick, "")
+    check("and its own contrast, because the art behind it can be any colour",
+          "box-shadow" in pick, "")
+
+    checked = rule(css, ".card-pick input:checked")
+    check("taken, it fills with the one signal colour",
+          "background-color: var(--accent)" in checked, checked.strip()[:70])
+    # The trap this hit: `background: var(--accent)` is a shorthand carrying a
+    # var(), which cannot be resolved at parse time. The background-image in
+    # the same rule then collapses the rest of it, and the circle renders with
+    # its tick and no fill at all.
+    check("set as a longhand, or the background-image below it wipes the fill",
+          "background: var(--accent)" not in checked, "")
+    check("and carries a tick", "background-image" in checked, "")
+
+    # --- a click joins the batch once there is one --------------------
+    check("what a click means depends on whether a batch is open",
+          "const selecting = () => state.picked.size > 0" in js, "")
+    check("a card click selects while one is", "if (isAlbum && albumId && selecting())" in js, "")
+    check("and shift still takes the run from the card body",
+          "pickClicked(id, item, !state.picked.has(id), e.shiftKey)" in js, "")
+    check("with nothing picked it still opens the release",
+          "else if (albumId) goAlbum(albumId);" in js, "")
+    # Which is going to its page, so it goes through the address. Calling the
+    # drawing function straight left the release on screen under an address
+    # that still named the list behind it.
+    check("and going there is an address, not a redraw",
+          "const goAlbum = (id) => go(albumHref(id));" in js, "")
+
+    # --- the artist page is a discography, so it gets a select-all ----
+    check("the artist page needs no select-all of its own either",
+          "grid-tools-host" not in js, "")
+
+    # --- the circle is the state, not a second opinion about it -------
+    # Picking from the card body left the circle empty on a picked card,
+    # because only the checkbox path set it. Pressing that circle then argued
+    # with the state behind it.
+    toggle = js[js.index("function togglePick("):]
+    toggle = toggle[: toggle.index(chr(10) + "  }" + chr(10))]
+    check("one function sets the set, the outline and the circle together",
+          "state.picked" in toggle and "classList.toggle('picked'" in toggle
+          and "box.checked = on" in toggle, "")
+    check("and it finds the cards itself rather than being handed one",
+          "document.querySelectorAll(`.card[data-album=" in toggle, "")
+    check("ids are strings on both sides of the set",
+          "state.picked.has(String(albumId))" in js, "")
+
+    # --- what a batch changes about the whole page --------------------
+    check("the page says when a batch is open",
+          "classList.toggle('picking', count > 0)" in js, "")
+    check("and the per-card download and upload buttons go while it is",
+          "display: none" in rule(css, "body.picking .card-actions"), "")
+    check("guarded in the handler too, not only in the stylesheet",
+          js.count("if (selecting()) return;") >= 2, str(js.count("if (selecting()) return;")))
+
+    # --- a batch belongs to the list it came from ---------------------
+    tabs = js[js.index("$$('#explore-tabs button')"):]
+    tabs = tabs[: tabs.index("loadExplore();")]
+    check("changing a Browse tab drops the batch", "clearPicks();" in tabs, "")
+
+    # --- select-all wherever releases can be picked -------------------
+    explore = js[js.index("async function loadExplore"):]
+    explore = explore[: explore.index(chr(10) + "  }" + chr(10))]
+    check("Browse needs no select-all of its own now", "grid-tools-host" not in explore, "")
+
+    # The tip was noise: shift-click is worth knowing once, not on every grid.
+    check("no shift-click tip rides along with the button",
+          "Shift-click to take a run" not in js, "")
+
+    # --- the bar carries the whole batch, in two halves ---------------
+    bar = js[js.index("function renderPickBar()"):]
+    bar = bar[: bar.index(chr(10) + "  }" + chr(10))]
+    for label in ("Download", "Download & upload", "Check trackers", "Select all", "Clear all"):
+        check(f"the bar has {label!r}", f"'{label}'" in bar, "")
+    check("acting on the batch and changing it sit at opposite ends",
+          "bar-gap" in bar and "flex: 1 1 auto" in rule(css, ".bar-gap"), "")
+    check("select all goes once everything on screen is taken",
+          "onScreen && !allTaken" in bar, "")
+    check("and the bar is emptied when it closes, not just hidden",
+          "bar.replaceChildren();" in bar, "")
+
+    # --- a shift-click is a range, not a text drag --------------------
+    check("cards do not take a text selection",
+          "user-select: none" in rule(css, ".card"), rule(css, ".card").strip()[:70])
+
+    # --- every card showing a release agrees about it -----------------
+    check("all copies of a release are marked, not the first one found",
+          "document.querySelectorAll(`.card[data-album=" in js, "")
+
+    # --- leaving the list drops the batch -----------------------------
+    view = js[js.index("function setView(view) {"):]
+    view = view[: view.index(chr(10) + "  }" + chr(10))]
+    check("changing view drops the batch", "clearPicks();" in view, "")
+    check("only when the view actually changes", "state.view !== view" in view, "")
+    # These two are addresses now, so the batch is dropped where the address is
+    # read rather than in the click handler that no longer exists.
+    check("changing the search type drops it",
+          "clearPicks();" in js[js.index("function syncSearchControls"):][:600], "")
+    check("and so does a genre filter",
+          "clearPicks();" in js[js.index("function showBrowse"):][:900], "")
+
+    # --- the request form is the tracker's form -----------------------
+    # It was four columns of scrolling boxes, which turned fifteen release
+    # types into a 132px list you had to scroll to reach "Unknown".
+    check("the search form is rows, not scrolling columns",
+          "function formRow" in js and "max-height: 132px" not in css, "")
+    check("with a label beside its controls, not above them",
+          "grid-template-columns:" in rule(css, ".reqrow")
+          and "1fr" in rule(css, ".reqrow"), rule(css, ".reqrow").strip()[:60])
+
+    # A text box was stretching the width of the panel because the global
+    # "inputs fill their field" rule outscores a plain `.reqfield
+    # input[type=search]` -- four :not() attribute selectors against one class
+    # and one attribute. The narrow rule has to carry the same weight or it
+    # loses however far down the file it sits.
+    widths = rule(css, '.reqfield input:not([type="checkbox"]):not([type="radio"])'
+                       ':not([type="button"]):not([type="submit"])')
+    check("a search box is as wide as what you type in it, not as wide as the page",
+          "width: 420px" in widths, widths.strip()[:60])
+    check("and a number box is narrower still",
+          "width: 110px" in rule(css, '.reqfield input.reqsmall:not([type="checkbox"])'
+                                      ':not([type="radio"]):not([type="button"])'
+                                      ':not([type="submit"])'), "")
+
+    # Every group ran into the next one, so fifteen release types and six
+    # formats read as one undifferentiated field of ticks. Whitespace alone was
+    # not enough to say where one setting ended and the next began, so each row
+    # is a band with a rule under it.
+    reqrow = rule(css, ".reqrow")
+    check("each setting is separated from the next by more than air",
+          "border-bottom" in reqrow and "padding" in reqrow, reqrow.strip()[:70])
+    check("except the last, which would be a border around nothing",
+          "border-bottom: 0" in rule(css, ".reqrow:last-child"), "")
+    check("a group of ticks gets more room than a one-line row",
+          "padding: 16px 0" in rule(css, ".reqrow:has(.reqgroup)"), "")
+    check("and a group's All is set off from the ticks it governs",
+          "border-bottom" in rule(css, ".reqgroup-head"), "")
+
+    # --- the form opens on a real search, not on every box ticked ---------
+    check("the page ticks what the tracker says to tick",
+          "item.checked || []" in js, "")
+    check("rather than everything", "checked: item.default" not in js, "")
+    check("and a group's All reflects whether that is all of them",
+          "options.every((name) => on.has(name))" in js, "")
+
+    # --- a search can be watched and stopped ------------------------------
+    # It used to be one request for every page at once: ask for forty and the
+    # only options were to wait for forty tracker calls or reload the page,
+    # having paid for them either way.
+    check("pages are fetched one at a time", "start_page" in js, "")
+    check("with a bar that moves as they land", "function requestsProgress" in js, "")
+    check("and a Cancel that stops before the next page is paid for",
+          "requestsAbort" in js and "abort()" in js, "")
+    check("the Cancel button exists in the page", 'id="requests-cancel"' in shell, "")
+    check("and the bar with it", 'id="requests-progress"' in shell, "")
+
+    # --- the buttons say what they do -------------------------------------
+    # "Search requests" and "Search and check" meant nothing from outside the
+    # code: one read the tracker, the other looked each result up on Deezer,
+    # and neither name said so. The one that does the whole job is the default,
+    # and neither carries a note explaining it -- a button that needs one is
+    # named wrong.
+    check("the default button does the whole job",
+          'class="primary" id="requests-fetch-check"' in shell, "")
+    check("named for what the user came to do",
+          "Fetch and Deezer Lookup" in shell, "")
+    check("with the list-only one beside it", "Fetch Requests" in shell, "")
+    check("and the old jargon gone",
+          "Search requests" not in shell and "Search and check" not in shell, "")
+    check("the box that decided WHETHER to look things up is gone",
+          'id="requests-autocheck"' not in shell, "")
+
+    # It was indistinguishable from the button beside it, and ticking it turned
+    # "show me the list" into a run that spent budget on every row. It decides
+    # when the lookups happen now, never whether.
+    check("and is replaced by one that decides when",
+          'id="requests-pipeline"' in shell, "")
+    check("named for what it actually does",
+          "Look up on Deezer as requests arrive" in shell, "")
+    check("a list-only run never looks anything up, ticked or not",
+          "thenCheck && ticked('requests-pipeline')" in js, "")
+    check("each page's requests go off as that page lands",
+          "lookUpLater(fresh)" in js, "")
+    check("chained rather than parallel, so two jobs cannot race the budget",
+          "chain = chain" in js, "")
+    check("and Cancel stops the lookup it started, not just the pages",
+          "state.checkCancelButton?.click()" in js, "")
+
+    # --- how much of the search this is -----------------------------------
+    # It was a toast: the one number that decides whether to read more pages,
+    # shown for four seconds and then taken away.
+    check("the coverage line is part of the page, not a notification",
+          'id="requests-summary"' in shell, "")
+    check("and stays until the next search replaces it",
+          "function requestsSummary" in js, "")
+    check("a partial read is marked as one",
+          "border-left" in rule(css, ".requests-summary.partial"),
+          rule(css, ".requests-summary.partial").strip()[:60])
+    check("with more pages one click away", "Read more pages" in js, "")
+
+    # It outlived the results it described: paste ten ids and the line still
+    # said "showing 25 of about 42,925", about a list no longer on screen.
+    check("and it goes when the results stop being a page search",
+          "requestsSummary({ shown: null });" in js
+          and "did not come from a page search" in js, "")
+    check("or when a different tracker is picked",
+          js.count("requestsSummary({ shown: null })") >= 4, str(js.count("requestsSummary({ shown: null })")))
+    check("and so is the note under the file picker",
+          "starts checking as soon as you pick it" not in shell, "")
+
+    # --- already checked --------------------------------------------------
+    # Answers were being stored -- they are what stops a second run paying for
+    # the same lookups -- but nothing showed them.
+    check("Requests has a tab for what has already been checked",
+          'data-reqtab="history"' in shell, "")
+    check("on the same table as the queue", "name: 'history'" in js, "")
+    check("with its filters in the columns too",
+          "function renderHistoryRows" in js and "renderHistoryFilters" not in js, "")
+    check("a way to run them again", "function historyRerun" in js, "")
+    check("and the re-run asks for a real re-run rather than being skipped",
+          "recheck: true" in js, "")
+    check("what a run skipped is shown rather than silently dropped",
+          "function showSkipped" in js, "")
+    check("with the offer to do them anyway", "Check them anyway" in js, "")
+
+    # The window is a setting, offered where it is used.
+    check("how long an answer is trusted is set on the page that uses it",
+          "requests-recheck" in js, "")
+
+    # Durations were a dropdown of seven guesses -- a day, a week, a month,
+    # three months, a year -- which is fine until someone wants two months or
+    # three years, and then there is nothing to pick.
+    check("a duration is a number and a unit",
+          "function durationControl" in js, "")
+    check("with every unit anyone would reach for",
+          "['days', 1], ['weeks', 7], ['months', 30], ['years', 365]" in js, "")
+    check("stored as days whatever was typed", "function partsToDays" in js, "")
+    check("and read back as the largest unit that fits, so 30 is one month",
+          "function daysToParts" in js, "")
+    check("the recheck window can also be turned off entirely",
+          "never: true" in js, "")
+    check("and the unit agrees with the number", "function pluralise" in js, "")
+
+    # History's own filters are column filters now, and the numeric ones take
+    # a lower and an upper limit -- a dropdown of fixed ages could not say
+    # "between 1990 and 1995" or "at least 3 GB".
+    check("a numeric column filters by range", "column.filter === 'range'" in js, "")
+    check("with a lower and an upper limit",
+          "lowLabel" in js and "highLabel" in js, "")
+    check("either of which may be left open",
+          "low === null && high === null" in js, "")
+    check("year is one of them", "label: 'Year'" in js and "lowLabel: 'from'" in js, "")
+    check("and bounty another, compared as a size",
+          "label: 'Bounty (GB)'" in js and "bounty_bytes" in js, "")
+    check("and the old fixed list of ages is gone",
+          "within:30" not in js and "before:90" not in js and "history-age-dir" not in js, "")
+    check("typing in a filter keeps the caret across the rebuild",
+          "setSelectionRange" in js, "")
+
+    # A request id is only unique within a tracker, so a table of requests
+    # cannot select on the id alone.
+    check("a table can say what identifies a row", "idOf = (row) => row.id" in js, "")
+    check("and the history says tracker and id together",
+          "idOf: (r) => r.key" in js, "")
+
+    # Two different ages, and the table only ever showed one. A request open
+    # for two years and one posted yesterday are not the same proposition.
+    # Called Added, like every other list in the app. Two names for one idea
+    # was one too many, and this was the odd one out.
+    check("the history says when the request was raised",
+          "label: 'Added'" in js and "created_age" in js, "")
+    check("and it can be narrowed like any other date column",
+          "filter: 'days'" in js, "")
+    # And which check it means. "Days since lookup" was days only -- "0d ago"
+    # four minutes after a check, and "94d ago" where three months is the thing
+    # being judged -- beside an Added column that had the units all along.
+    check("as well as when the trackers were last asked",
+          "label: 'Latest tracker check'" in js, "")
+    check("each with the date behind the relative time",
+          "function checkedOn" in js, "")
+    check("and the date is not dropped when a row is due again",
+          "stale ? 'due a re-check' : ''" in js, "")
+
+    # --- every screen has an address --------------------------------------
+    # The app never touched the address bar. Every screen was the same URL, so
+    # Back and Forward did nothing, a reload always landed on Search, and no
+    # page could be linked to.
+    check("views map to paths", "const VIEW_PATHS" in js, "")
+    check("named for the screen, not the internal view",
+          "found: '/queue'" in js and "missing: '/scan'" in js, "")
+    check("a second tab is part of the address too",
+          "'/requests/history'" in js and "'/scan/history'" in js, "")
+    check("and so is an album or an artist",
+          "case '/search'" in js and "/^\\/album\\/(.+)$/" in js
+          and "/^\\/artist\\/(.+)$/" in js, "")
+    check("the address is read on the way in",
+          "go(location.pathname === '/' ? addr('/search') : here()" in js, "")
+    check("Back and Forward move through the app",
+          "addEventListener('popstate'" in js, "")
+    check("the first entry is replaced, so Back leaves rather than repeating",
+          "{ replace: true }" in js, "")
+    check("the query string survives a navigation, or a ?token= link signs out",
+          "const query = new URLSearchParams(location.search);" in js
+          and "ROUTE_KEYS.forEach((key) => query.delete(key));" in js, "")
+    check("and the tab is named after what is on screen",
+          "function setTitle" in js, "")
+
+    # --- and so does everything inside a screen ---------------------------
+    # The gap people hit: the screens had addresses, the places inside them did
+    # not. A search, a Browse tab, a genre, a channel, a request, the excluded
+    # rows and a place in Settings all reported the address of wherever you had
+    # arrived from, so Back skipped the lot and a reload threw it away.
+    check("a search is in the address",
+          "addr('/search', { q: $('#search-input').value.trim(), type: typeParam() })" in js, "")
+    check("with the kind it was narrowed to",
+          "const SEARCH_TYPES = ['all', 'album', 'track', 'artist'];" in js, "")
+    check("and the box is filled from the address, not the other way round",
+          "function syncSearchControls" in js and "box.value = query" in js, "")
+    check("each Browse list has its own address",
+          "const BROWSE_PATHS" in js and "charts: '/browse/charts'" in js, "")
+    check("the genre is in it", "genre: g.id === '0' ? '' : g.id" in js, "")
+    check("a channel is a page, not a state of the grid",
+          "/browse/channel/${encodeURIComponent(c.slug)}" in js, "")
+    check("the tracker whose requests are listed is in the address",
+          "addr('/requests', { tracker: t.code })" in js, "")
+    check("one request has its own address, openable cold",
+          "async function openRequest(tracker, id)" in js, "")
+    check("the queue is one address, now that it is one list",
+          "case '/queue': showQueue();" in js, "")
+    check("and so is a section of the settings page",
+          "function settingsHeading" in js and "`/settings/${name}`" in js, "")
+    check("which is scrolled to on arrival",
+          "function revealSettingsSection" in js and "scrollIntoView" in js, "")
+
+    # --- Back means one thing ---------------------------------------------
+    # The crumbs restored a pane and left history alone, so the address bar
+    # went on naming a page you were no longer looking at and the next Back
+    # stepped forward into it.
+    check("a crumb is a history entry, not a second way of moving",
+          "history.go(index - state.paneStack.length)" in js, "")
+    check("a stacked pane remembers the address it belongs to",
+          "url: leavingUrl," in js, "")
+    check("and coming back to it costs no second fetch",
+          "function restorePane" in js, "")
+    check("nothing is stacked behind a page opened cold",
+          "if (!leavingUrl) return;" in js, "")
+
+    # --- the genre chips came back after a trip to Channels ---------------
+    # Emptying the bar left the "already built" flag set, so returning to
+    # Charts drew no chips at all for the rest of the session.
+    check("emptying the genre bar clears the flag with it",
+          "function clearGenreFilter" in js and "delete container.dataset.loaded;" in js, "")
+
+    # --- what the second tab is called ------------------------------------
+    check("the lookup history has a name that says what it is",
+          "Lookup History" in shell, "")
+    check("rather than an adjective", "Already checked" not in shell, "")
+
+    # --- the running-cost commentary is gone ------------------------------
+    check("the standing 'checking costs one more call' line is gone",
+          "costs one more call on top" not in shell, "")
+    check("and the cost line only speaks when the budget is short",
+          "Costs up to" not in js, "")
+
+    check("every group of ticks can have its own All",
+          "function checkGroup" in js and "'All'" in js, "")
+    check("but a group can be rendered without one",
+          "withAll" in js, "")
+    check("and a group can start ticked or clear",
+          "checked = true" in js or "checked," in js, "")
+
+    # --- the scan tab, in the order the work happens ----------------------
+    # The filters decide what a scan will even look at, and they were at the
+    # bottom -- read after pressing Scan is read too late.
+    panels = [shell.index(f">{h}</h2>") for h in
+              ("Scan filters", "Scan Deezer against your trackers", "Saved searches")]
+    check("the scan filters come before the box that scans",
+          panels == sorted(panels), str(panels))
+
+    # Four short answers -- a count, two dates and an age. They were four
+    # full-width bands with a rule under each, borrowed from the request form,
+    # which spends a screen-wide line on a single number.
+    check("the filters are their own compact grid",
+          'class="scanfilters" id="scan-filters"' in shell, "")
+    check("not the request form's stack of bands",
+          'class="reqform" id="scan-filters"' not in shell, "")
+    check("laid out across the width, wrapping when there is no room",
+          "repeat(auto-fit, minmax(196px, 1fr))" in rule(css, ".scanfilters"),
+          rule(css, ".scanfilters").strip()[:80])
+    check("and a field is its label, its control and its note",
+          "function scanField" in js, "")
+
+    # One decision, one control. The tickbox said the same thing as the
+    # recheck window sitting above it, and the two could disagree.
+    check("the redundant 'skip albums already looked up' tickbox is gone",
+          "missing-skip-known" not in shell and "missing-skip-known" not in js, "")
+    check("so the recheck window is the only thing that decides it",
+          "skip_known" not in js, "")
+
+    # --- a saved search is a link ------------------------------------------
+    # It took a name you invented, a kind from a dropdown of six, and an id you
+    # had to dig out of a URL. All three describe the link already in the box.
+    check("saving is a button on the box that scans",
+          'id="missing-save"' in shell, "")
+    check("rather than a second form asking for a name, a kind and an id",
+          all(x not in shell for x in ("watchlist-form", "watchlist-name",
+                                       "watchlist-kind", "watchlist-target")), "")
+    check("the links are read once, for scanning and for saving alike",
+          "function sourceLines" in js, "")
+    check("and Deezer is what names them",
+          "'/api/watchlists', { method: 'POST', body: { urls } }" in js, "")
+    check("the box says an artist link works too",
+          "an artist" in shell, "")
+
+    # Running them was one at a time, and each run overwrote the box the last
+    # one filled, so "check everything I follow" kept only the last answer.
+    check("several saved searches scan together",
+          'id="watchlist-scan"' in shell and "function scanWatchlists" in js, "")
+    check("or all of them at once",
+          'id="watchlist-scan-all"' in shell and "scanWatchlists([])" in js, "")
+    check("their links land in the box, so what is about to be scanned is on screen",
+          "$('#missing-sources').value = payload.sources.join" in js, "")
+    check("a name Deezer chose can be changed",
+          "function renameField" in js and "method: 'PATCH'" in js, "")
+    # The count is already on the line, in "2 of 3 selected". Saying it twice
+    # made the button change width every time a box was ticked.
+    check("the button does not repeat the count beside it",
+          "`Scan ${n} selected`" not in js, "")
+
+    # --- the filters have somewhere to start from -------------------------
+    check("a date is picked off a calendar, not typed in a format",
+          "type: 'date'" in js, "")
+    check("and the browser is told which scheme to draw it in",
+          "color-scheme: dark" in css and "color-scheme: light" in css, "")
+    check("a blank date shows the rolling default rather than nothing",
+          "_effective" in js and "_default" in js, "")
+    check("with the way back to it once one is set",
+          "filter-reset" in js and "`default is ${fallback}`" in js, "")
+
+    # --- picked by hand is not swept up -----------------------------------
+    # The filters are about what to sweep. Somebody who ticked a release and
+    # pressed Check trackers has already made that decision.
+    check("checking picked releases says they were picked",
+          "await missingScan({ manual: true })" in js, "")
+    check("and the scan button does not",
+          "() => missingScan()" in js, "")
+    check("which the collect call carries",
+          "body: { sources, manual }" in js, "")
+
+    # --- the box does not hand back the last scan -------------------------
+    check("a reload starts with an empty box",
+          "$('#missing-sources').value = '';" in js, "")
+    check("and the browser is asked not to restore it either",
+          'id="missing-sources" rows="3" autocomplete="off"' in shell, "")
+    # A hand-rolled grid of its own, with no way to find a saved search by name
+    # and no way to see which had gone unscanned longest. It is one of the
+    # app's tables now, so it gets the column filters, the sorting and the
+    # shift-click selection every other list here has.
+    check("saved searches are one of the app's tables",
+          "name: 'watchlists'," in js and "function watchlistPick" in js, "")
+    check("with a filter on the name", "label: 'Saved search'," in js, "")
+    check("and on how long since it was scanned",
+          "label: 'Last scanned'," in js, "")
+    check("and no grid of its own left behind", ".watchrow" not in css, "")
+
+    # The page used to decide the order, the labels and the defaults itself,
+    # and got all three wrong for one tracker or the other. The tracker
+    # describes its own form now.
+    check("the page renders the form the tracker describes",
+          "spec.form" in js, "")
+    check("rather than a fixed list of its own",
+          "if (spec.release_types.length)" not in js, "")
+
+    # This sat under the tags box on both trackers and explained the site's
+    # own syntax to someone already looking at the site's own form.
+    check("the tags box does not lecture about punctuation",
+          "dots, not spaces" not in js, "")
+    check("and the All follows the ticks under it, rather than only leading them",
+          "function syncAll" in js, "")
+    check("categories are offered at all", "requests-category" in js, "")
+    check("and sent with the search", "['category', 'requests-category']" in js, "")
+    flat_js = js.replace(chr(34), "'")
+    check("tag match is two radios, as on the form",
+          "type: " + "'" + "radio" in flat_js
+          and "name: " + "'" + "requests-tags-mode" in flat_js, "")
+    check("read back from whichever is picked",
+          "requests-tags-mode" + "'" + "]:checked" in flat_js, "")
+    check("with the old wording gone", "Fetch open requests" not in shell, "")
+
+    # --- uploading is a queue, and the trackers have an order ----------
+    #
+    # Uploading was one folder at a time and only ever the one just pressed,
+    # so a night's worth of releases meant sitting at the page pressing Upload
+    # and waiting. And the row of tracker toggles had two faults: turning off
+    # the last one you had on refilled the list with the FIRST configured
+    # tracker, so pressing OPS with only OPS on gave you RED while pressing
+    # RED with only RED on gave you RED again -- one direction worked and the
+    # other did nothing. The order they ran in was the order they happened to
+    # be declared.
+    check("several folders can be picked at once", 'id="folders-upload"' in shell, "")
+    check("and they upload one after another",
+          "async function runUploadQueue" in js and "state.uploadQueue.shift()" in js, "")
+    check("with the queue on screen while it works", 'id="upload-queue"' in shell, "")
+    check("and everything still waiting can be called off in one go",
+          "function cancelQueuedUploads" in js and "Cancel the other ${waiting}" in js, "")
+    check("turning off the only selected tracker hands over to the next",
+          "codes[(codes.indexOf(code) + 1) % codes.length]" in js, "")
+    check("rather than springing back to the first one in the list",
+          "state.uploadTrackers.add(state.trackers[0].code)" not in js, "")
+    # Dragged into order, which is what everyone tries first. The chevrons
+    # this replaced were two more buttons per chip on a row that already had
+    # too many, and read as punctuation rather than as controls.
+    check("and the trackers are dragged into the order they should run",
+          "function renderUploadTargets" in js
+          and "ondragstart:" in js and "ondrop:" in js, "")
+    check("with somewhere to drop one at the end of the row",
+          "target-end" in js and "target-end" in css, "")
+    check("and no arrows left behind",
+          "order-arrow" not in js and "order-arrow" not in css, "")
+    check("which the upload honours, because it is a list and not a set",
+          "uploadTrackers: []," in js, "")
+
+    # Where a release is missing from beats where uploads go in general: a
+    # release OPS already has should not be offered to OPS.
+    check("an upload goes where the release is actually missing from",
+          "function uploadTargets(item)" in js and "item.missing_from" in js, "")
+    check("and the queue's own buttons use it",
+          "startUpload(job.folder, uploadTargets(item), id)" in js, "")
+
+    # --- a download says what quality it actually came back as ---------
+    check("a lossy download is flagged rather than filed as FLAC",
+          "function askAboutQuality" in js, "")
+    check("with both answers offered", "keep: true" in js and "keep: false" in js, "")
+    check("and asked once per download, not once per poll",
+          "state.qualityAsked" in js, "")
+    check("a release lox will not fetch as FLAC can still be fetched anyway",
+          "allow_lossy: allowLossy" in js, "")
+
+    # --- every list has filters in its columns -------------------------
+    for name, label in (("requests", "the request search"), ("candidates", "the scan results"),
+                        ("folders", "the upload folders"), ("watchlists", "the saved searches")):
+        check(f"{label} is one of the app's tables", f"name: '{name}'," in js, "")
+    check("and the downloads, which are cards, get a filter bar of their own",
+          "function listFilter" in js and ".listfilter" in css, "")
+    check("a date column can be narrowed like any other",
+          "column.filter === 'days'" in js, "")
+    check("and every filter control is the same height, whatever kind it is",
+          "height: 28px" in rule(css, ".th-filter"), rule(css, ".th-filter"))
+
+    # Two bare numbers over a column of dates is not a question anybody can
+    # answer. "In the last six hours" and "older than three months" are both
+    # asked of the same column.
+    check("a date filter says what its two numbers are measured in",
+          "const TIME_UNITS = [['hours'" in js and "th-unit" in js, "")
+    check("and the predicate scales by it", "unitSize(wanted && wanted.unit)" in js, "")
+
+    # `display: flex` on a <td> takes it out of the row's height calculation,
+    # so the cell stopped short of the row and drew its bottom border there --
+    # a bright short line under the tags with the real row line below it. It
+    # also pinned the whole group to the left of a centred column.
+    check("the trackers cell is a cell, not a flex container",
+          "display: flex" not in rule(css, ".found-trackers"), rule(css, ".found-trackers"))
+    check("and the tags inside it centre themselves",
+          "justify-content: center" in rule(css, ".found-trackers > span, .found-sources > span")
+          or "justify-content: center" in rule(css, ".found-trackers > span"), "")
+
+    # replaceChildren is not el(): handed a null it appends the word "null".
+    check("nothing hands a bare conditional to replaceChildren",
+          "function fill(node, ...children)" in js
+          and "fill(bar," in js and "fill(host," in js and "fill(panel," in js, "")
+
+    # --- the settings page lines up across a row -----------------------
+    #
+    # Every setting is a label, a control and a note. As independent flex
+    # columns they agreed only by luck: a two-line label pushed its own box
+    # down while its neighbour stayed put, a long note stretched one cell, and
+    # a checkbox had no control row at all so it sat level with the labels.
+    check("a settings row shares its rows with the settings beside it",
+          "grid-template-rows: subgrid" in css, "")
+    check("which needs every setting to have the same three parts",
+          "const setting = (head, ...control)" in js, "")
+    check("including the ones that carry their own label",
+          "return setting(null, el('label', { class: 'check' }" in js, "")
+    check("and the torrent-client editor, which shares the grid",
+          "el('div', { class: 'setting-control' }, control)" in js, "")
+
+    # --- nothing outside Settings explains the tracker budget ----------
+    #
+    # The budget is a number in the sidebar and a section on the settings page.
+    # Everywhere else it was leaking into hints about work the reader was
+    # trying to do -- "checking each album against a tracker is not [free]" is
+    # not an explanation of the Scan box.
+    # Read against the script with its comments taken out: how the budget works
+    # is worth explaining to whoever maintains this, and worth not explaining
+    # to somebody trying to scan a playlist.
+    spoken_js = re.sub(r"^\s*//.*$", "", js, flags=re.MULTILINE)
+    spoken_shell = re.sub(r"<!--.*?-->", "", shell, flags=re.DOTALL)
+    for phrase in ("tracker budget", "one call each", "not paid for twice",
+                   "Expanding them is free", "protect the budget"):
+        check(f"no screen explains the budget: {phrase!r}",
+              phrase not in spoken_shell and phrase not in spoken_js, "")
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")

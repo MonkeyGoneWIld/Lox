@@ -65,12 +65,26 @@ def main() -> int:
         # has meant the same thing across Pillow versions.
         alpha = image.getchannel("A").histogram()
         share = sum(alpha[9:]) / (image.width * image.height)
-        check(f"{name} actually has a mark on it", 0.05 < share < 0.75, f"{share:.0%} inked")
+        # The upper bound is the point of this: a disc inscribed in a square is
+        # pi/4, about 79%, and a solid tile is 100%. Anything approaching the
+        # latter means the ground came back.
+        check(f"{name} is a mark and not a filled tile", 0.05 < share < 0.90, f"{share:.0%} inked")
 
     # A tab reaches for 16 or 32; the rest are for everything else.
     ico = Image.open(os.path.join(IMAGES, "favicon.ico"))
     sizes = {w for w, _ in ico.ico.sizes()}
     check("the .ico carries the sizes a tab asks for", {16, 32} <= sizes, str(sorted(sizes)))
+
+    # --- and nothing is heavier than it needs to be -------------------
+    # A favicon is fetched on every cold load. The .ico carried 128 and 256
+    # entries no browser reaches into -- they are declared as their own PNG
+    # links -- which made it 143KB instead of 21KB. logo.png is displayed at
+    # 56px at its largest, on the login page.
+    for name, ceiling in (("favicon.ico", 40_000), ("logo.png", 160_000),
+                          ("favicon-16x16.png", 4_000), ("favicon-32x32.png", 8_000)):
+        size = os.path.getsize(os.path.join(IMAGES, name))
+        check(f"{name} is not carrying weight nothing renders",
+              size < ceiling, f"{size:,} bytes")
 
     # --- the home-screen tiles do carry one, deliberately -----------------
     # iOS and Windows do not honour transparency there and would pick a ground
@@ -79,27 +93,32 @@ def main() -> int:
     check("the ios tile is on the app's own ground",
           tile.getpixel((0, 0)) == (23, 21, 15, 255), str(tile.getpixel((0, 0))))
 
-    # --- the scalable one, which is what a modern browser prefers ---------
-    svg = read(os.path.join(IMAGES, "icon.svg"))
-    check("an svg icon is built", svg.startswith("<svg"), svg[:40])
-    check("and it paints no background", "<rect" not in svg and "background" not in svg, "")
-    check("it follows the reader's theme", "prefers-color-scheme" in svg, "")
-    check("with both of the app's accents", "#e8a33d" in svg and "#a8681c" in svg, "")
+    # --- there is no SVG, and that is deliberate -----------------------
+    # The artwork is an illustration, not geometry. A raster wrapped in an
+    # <svg> would scale no better than the PNG and would advertise something
+    # the file cannot do, so the page links PNGs and the .ico instead.
+    check("no SVG is served", not os.path.exists(os.path.join(IMAGES, "icon.svg")), "")
 
     # --- the page asks for it, and asks for a fresh copy ------------------
     app_html = read(os.path.join(TEMPLATES, "app.html"))
-    check("the page links the svg icon", 'type="image/svg+xml"' in app_html, "")
-    check("with the .ico behind it for the rest", "favicon.ico" in app_html, "")
-    for asset in ("icon.svg", "favicon.ico"):
+    check("the page does not claim an SVG it has not got",
+          'type="image/svg+xml"' not in app_html, "")
+    check("it links the .ico", "favicon.ico" in app_html, "")
+    for size in ("16x16", "32x32"):
+        check(f"and the {size} png a tab actually reaches for",
+              f"favicon-{size}.png" in app_html, "")
+    for asset in ("favicon.ico", "favicon-32x32.png", "logo.png"):
         check(f"{asset} is versioned, because a favicon caches hard",
               f"{asset}?v=" in app_html, "")
+    check("and the sign-in page is versioned too -- it is seen first",
+          "favicon.ico?v=" in read(os.path.join(TEMPLATES, "login.html")), "")
 
     # ... and the fingerprint has to actually move when the icon does, or the
     # version on those URLs is decoration.
     web_init = read(os.path.join(REPO, "lox", "web", "__init__.py"))
     start = web_init.index("def _asset_version")
     body = web_init[start:start + 900]
-    for asset in ("images/icon.svg", "images/favicon.ico"):
+    for asset in ("images/favicon.ico", "images/logo.png"):
         check(f"the asset fingerprint covers {asset}", asset in body, "")
 
     # --- nobody else's mark, nobody else's credit -------------------------
@@ -111,7 +130,9 @@ def main() -> int:
           "#FFFFFF" not in layout, "")
 
     # --- the mark is reproducible ----------------------------------------
-    for name in ("marks.py", "build.py"):
+    # Drawn from geometry in the repo rather than an image dropped in, so it
+    # rebuilds at any size and carries nobody else's licence.
+    for name in ("source.png", "build.py"):
         check(f"design/icon/{name} is in the repo",
               os.path.exists(os.path.join(REPO, "design", "icon", name)), "")
 

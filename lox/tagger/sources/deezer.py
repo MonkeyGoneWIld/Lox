@@ -41,6 +41,17 @@ and a songwriting credit is not a reason to be on that list."""
 # of the artists it is filed under.
 _DEMOTED = "guest"
 
+#: What Deezer credits a compilation to. Not an artist -- a word meaning "many
+#: of them", which is why both trackers file these under it rather than under
+#: anybody. Nothing here may be demoted against, promoted onto a track, or
+#: written into a credit list.
+_VARIOUS = frozenset({"various", "various artists", "va", "verschiedene interpreten", "multi-interprètes"})
+
+
+def _is_various(name: str) -> bool:
+    """Whether a credit is the compilation placeholder rather than a person."""
+    return str(name or "").strip().lower() in _VARIOUS
+
 
 class Scraper(DeezerBase, MetadataMixin):
     def parse_release_title(self, soup):
@@ -174,23 +185,74 @@ class Scraper(DeezerBase, MetadataMixin):
         The album's own credits are the answer to who the release is by. Anyone
         else keeps whatever role their tracks gave them, and a bare "main"
         becomes a guest.
+
+        Demotion is never allowed to empty a track, though. On a release like
+        "Ronan - Instrumental Remixes Vol. 4" the album is credited to Ronan
+        and each track is credited to the singer it features, so every name on
+        every track was a stranger to the album credits and every track came
+        out of here with no main artist at all. The trackers require one, so
+        the upload stopped at the metadata form with an error the form had no
+        field to fix, and the release could not be posted at all. A track with
+        nobody left is a track by the artist whose album it is.
+
+        None of which applies to a compilation. Deezer credits one to "Various
+        Artists", which is not somebody the release is by -- it is a word
+        meaning "many of them". Demoting against it made every real performer
+        on every track a stranger, and then filling the hole that left wrote
+        "Various Artists" in as the main artist of all twenty-one tracks. A
+        compilation has no album artist, so there is nothing to demote against
+        and each track keeps the people who are actually on it.
         """
-        album = self._album_artists(soup)
+        def strip(pairs):
+            """Without the compilation placeholder, unless that is all there is."""
+            kept = [(n, r) for n, r in pairs if not _is_various(n)]
+            return kept or list(pairs)
+
+        album = {
+            name: role for name, role in self._album_artists(soup).items() if not _is_various(name)
+        }
         if not album:
-            return artists, tracks
+            # A compilation. Nobody to demote against, so every track keeps the
+            # people actually on it -- but the placeholder is still not a name
+            # and must not reach a tracker as one.
+            for disc in tracks.values():
+                for track in disc.values():
+                    track["artists"] = strip(track["artists"])
+            return strip(artists), tracks
+        album_mains = [name for name, role in album.items() if role == "main"]
 
         def fix(pairs):
             out = []
             for name, role in pairs:
+                # The placeholder is never a credit, wherever it turns up: on a
+                # release with a real album artist it is noise, and it must not
+                # reach a tracker as somebody's name.
+                if _is_various(name):
+                    continue
                 if name.lower() in album:
                     out.append((name, album[name.lower()]))
                 else:
                     out.append((name, _DEMOTED if role == "main" else role))
             return out
 
+        def fix_track(pairs):
+            out = fix(pairs)
+            if any(role == "main" for _name, role in out):
+                return out
+            # Prefer the release's own main artists, restoring their real
+            # capitalisation from the credits where the track carries it.
+            spelling = {name.lower(): name for name, _role in pairs}
+            restored = [(spelling.get(name, name.title()), "main") for name in album_mains]
+            if restored:
+                return restored + [(n, r) for n, r in out if n.lower() not in album_mains]
+            # An album with no main artist of its own -- nothing to promote, so
+            # the track keeps the credits it arrived with rather than losing
+            # them to a rule that has no better answer.
+            return strip(pairs)
+
         for disc in tracks.values():
             for track in disc.values():
-                track["artists"] = fix(track["artists"])
+                track["artists"] = fix_track(track["artists"])
         return fix(artists), tracks
 
     @staticmethod

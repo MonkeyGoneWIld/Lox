@@ -126,10 +126,23 @@ class CheckerStore:
             key: Entry key.
             value: Entry payload.
             flush: Write to disk immediately regardless of the interval.
+
+        Note:
+            ``first_seen`` survives every later write; ``checked_at`` is
+            replaced each time.
         """
         with self._lock:
             collection = self.load(name)
-            collection[str(key)] = {**value, "checked_at": time.time()}
+            now = time.time()
+            # When it was first seen, kept across every later write. Only
+            # checked_at was stamped, and every re-check overwrote it, so a
+            # release found last month and re-checked this morning was
+            # indistinguishable from one found this morning -- the queue could
+            # say when it last looked, never how long the thing had been
+            # sitting there.
+            previous = collection.get(str(key)) or {}
+            first_seen = previous.get("first_seen") or value.get("first_seen") or now
+            collection[str(key)] = {**value, "first_seen": first_seen, "checked_at": now}
             last = self._dirty.get(name)
             if last is None:
                 self._dirty[name] = time.monotonic()
