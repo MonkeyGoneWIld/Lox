@@ -782,6 +782,14 @@ def ui_checks() -> None:
     check("the download is forgotten by album, not only by path",
           'if album_id and str(job.album_id) == str(album_id):' in web_api, "")
 
+    # The history's Trackers column shows what an upload did, and filling a
+    # request is one of the things it does.
+    check("the history's tracker tags name the request that was filled",
+          "`filled #${o.request_id}`" in js and "o.request_url || requestHref(" in js, "")
+    check("and it can be filtered for like any other fact",
+          "function uploadOutcomeFacts(row)" in js
+          and "${o.tracker} filled a request" in js, "")
+
     # A details element does not close when you click past it.
     check("the filter menu closes when you click away",
           "$$('.th-choicebox[open]').forEach" in js and "box.contains(e.target)" in js, "")
@@ -836,6 +844,57 @@ def ui_checks() -> None:
           re.search(r"\.spectral-zoom \{[^}]*margin-left: 0;", spectral) is not None, "")
 
 
+def history_checks() -> None:
+    """What an upload did is kept, including the request it answered.
+
+    The upload history exists because an upload cannot be run again to find out
+    what it did -- and it recorded only the torrent. A release posted to fill a
+    request answered a second page, and the one permanent record of the run
+    could not say whether that had happened or where to look.
+    """
+    import types
+
+    import lox.trackers
+    import lox.web.api as api
+    from lox.checker.store import CheckerStore
+
+    check("a request has an address, like a group and an artist do",
+          lox.trackers.request_url("OPS", 76397).endswith(
+              "/requests.php?action=view&id=76397"),
+          lox.trackers.request_url("OPS", 76397))
+    check("and nothing is invented for a tracker lox does not know",
+          lox.trackers.request_url("ZZZ", 1) == "", "")
+    check("nor for an upload that filled no request",
+          lox.trackers.request_url("OPS", None) == "", "")
+
+    store = CheckerStore(os.path.join(BASE, "state-history"))
+    flow = types.SimpleNamespace(id="abc123", created=1.0, state="done", error=None, events=[])
+    api._record_upload(  # noqa: SLF001 - the thing under test
+        store, flow, "/downloads/X - Y (2026) [WEB FLAC]", ["OPS", "RED"], "111",
+        {
+            "succeeded": ["OPS"],
+            "outcomes": [
+                {"tracker": "OPS", "ok": True, "url": "https://orpheus.network/torrents.php?torrentid=9",
+                 "folder": "/seed/OPS/X", "request_id": 76397},
+                {"tracker": "RED", "ok": False, "error": "did not reach this tracker"},
+            ],
+        },
+    )
+    kept = (store.load(api.UPLOADS) or {})["abc123"]["outcomes"]
+    posted = kept[0]
+    check("the history keeps which request a post filled",
+          posted.get("request_id") == 76397, str(posted.get("request_id")))
+    # Stored rather than built when the page is drawn: this is a permanent
+    # record, and a tracker later removed from the config would otherwise take
+    # its own links with it.
+    check("and where that request is, on the record itself",
+          str(posted.get("request_url", "")).endswith("id=76397"), str(posted.get("request_url")))
+    check("a post that filled nothing claims nothing",
+          kept[1].get("request_id") is None, str(kept[1].get("request_id")))
+    check("and the torrent it posted is still there",
+          posted.get("url", "").endswith("torrentid=9"), str(posted.get("url")))
+
+
 def main() -> int:
     pipeline_checks()
     flow_checks()
@@ -844,6 +903,7 @@ def main() -> int:
     request_verdict_checks()
     detail_cache_checks()
     naming_checks()
+    history_checks()
     ui_checks()
 
     failed = [n for n, ok, _ in results if not ok]

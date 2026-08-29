@@ -6321,15 +6321,46 @@ They will not be listed again, even if a later scan finds them.`)) {
   }
 
   /** What one upload did, per tracker, as links where there are any. */
+  /**
+   * What one upload did, as filterable facts.
+   *
+   * "filled a request" is one of them: it is a thing an upload did, and the
+   * column that shows it has to be narrowable by it like everything else.
+   *
+   * @param {object} row - An upload history row.
+   * @returns {string[]} One phrase per outcome, plus one per request filled.
+   */
+  function uploadOutcomeFacts(row) {
+    const facts = [];
+    (row.outcomes || []).forEach((o) => {
+      facts.push(`${o.tracker} ${o.ok ? 'ok' : 'failed'}`);
+      if (o.request_id) facts.push(`${o.tracker} filled a request`);
+    });
+    return facts;
+  }
+
   function uploadOutcomeTags(row) {
-    const tags = (row.outcomes || []).map((o) => {
-      if (!o.ok) return el('span', { class: 'tag bad', title: o.error || '' }, `${o.tracker} failed`);
+    const tags = [];
+    (row.outcomes || []).forEach((o) => {
+      if (!o.ok) {
+        tags.push(el('span', { class: 'tag bad', title: o.error || '' }, `${o.tracker} failed`));
+        return;
+      }
       // The torrent it posted where there is one, the group it went into
       // otherwise. A tracker name on this page is a thing that now exists on
       // that tracker, so it should open it.
       const href = o.url || trackerLinks({ found_on: [o.tracker], group_ids: row.group_ids || {},
                                            artist: row.artist || '', title: row.release || '' })[o.tracker];
-      return trackerTag(o.tracker, 'ok', o.tracker, href, `Open what was uploaded to ${o.tracker}`);
+      tags.push(trackerTag(o.tracker, 'ok', o.tracker, href, `Open what was uploaded to ${o.tracker}`));
+      // The other half of what the upload did. A release posted to fill a
+      // request answered a second page, and the history named only the
+      // torrent -- so the one record kept BECAUSE an upload cannot be run
+      // again could not say whether the request was filled.
+      if (o.request_id) {
+        tags.push(trackerTag(o.tracker, 'warn', `filled #${o.request_id}`,
+                             o.request_url || requestHref(o.tracker, o.request_id),
+                             `Open the ${o.tracker} request this filled`));
+      }
     });
     if (row.dry_run) tags.push(el('span', { class: 'tag warn' }, 'dry run'));
     return tags.length ? tags : [el('span', { class: 'tag dim' }, '—')];
@@ -6383,8 +6414,8 @@ They will not be listed again, even if a later scan finds them.`)) {
         {
           label: 'Trackers',
           class: 'found-trackers',
-          value: (r) => (r.outcomes || []).map((o) => `${o.tracker} ${o.ok ? 'ok' : 'failed'}`).join(', '),
-          parts: (r) => (r.outcomes || []).map((o) => `${o.tracker} ${o.ok ? 'ok' : 'failed'}`),
+          value: (r) => uploadOutcomeFacts(r).join(', '),
+          parts: uploadOutcomeFacts,
           filter: 'choice',
           cell: (r) => el('span', {}, ...uploadOutcomeTags(r)),
         },

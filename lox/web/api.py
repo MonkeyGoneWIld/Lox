@@ -1215,6 +1215,20 @@ def _record_upload(
                 "error": o.get("error") or "",
                 "folder": o.get("folder") or "",
                 "url": o.get("url") or "",
+                # Which request this post filled, and where it is. A filled
+                # request is the other half of what an upload did, and the
+                # history recorded only the torrent -- so the one page kept
+                # BECAUSE an upload cannot be run again could not say whether
+                # the request it was queued for had been answered.
+                #
+                # The address is stored rather than built when the page is
+                # drawn: this is a permanent record, and a tracker that is
+                # later removed from the config would take its own links with
+                # it.
+                "request_id": o.get("request_id") or None,
+                "request_url": lox.trackers.request_url(
+                    o.get("tracker", ""), o.get("request_id")
+                ),
             }
             for o in outcomes
         ],

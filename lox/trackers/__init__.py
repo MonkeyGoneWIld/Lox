@@ -40,6 +40,12 @@ def search_url(site_code: str, terms: str) -> str:
     return f"{root}/torrents.php?searchstr={parse.quote_plus(terms)}" if root and terms else root
 
 
+def request_url(site_code: str, request_id: Any) -> str:
+    """A link to one request on a tracker, or "" if either is unknown."""
+    root = base_url(site_code)
+    return f"{root}/requests.php?action=view&id={request_id}" if root and request_id else ""
+
+
 def artist_url(site_code: str, name: str) -> str:
     """A link to a tracker's artist page. Gazelle resolves these by name."""
     root = base_url(site_code)
