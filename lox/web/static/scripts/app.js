@@ -102,6 +102,10 @@
     // sort, a filter or any other re-render. It used to live only in the
     // cell, so narrowing the list threw away everything already looked up.
     requestResults: new Map(),
+    //: Why a request was passed over, keyed the same way as its result. The
+    //: row said "not checked", which is true of a request the run deliberately
+    //: skipped and of one it never reached, and is an answer to neither.
+    requestSkipped: new Map(),
     trackers: [],
     seedboxes: [],
     seedboxFields: [],
@@ -4275,6 +4279,15 @@
   const requestResult = (row) => state.requestResults.get(resultKey(row.tracker, row.id)) || null;
 
   /**
+   * Why a run passed over this request, or null if it did not.
+   *
+   * @param {object} row - A request row.
+   * @returns {object|null} The skipped record, with its reason.
+   */
+  const requestSkipReason = (row) =>
+    state.requestSkipped.get(resultKey(row.tracker, row.id)) || null;
+
+  /**
    * The result column as one comparable phrase.
    *
    * Kept out of the cell renderer so the column can be filtered and sorted on
@@ -4284,7 +4297,10 @@
    */
   function requestOutcome(row) {
     const match = requestResult(row);
-    if (!match) return 'not checked';
+    if (!match) {
+      const passed = requestSkipReason(row);
+      return passed ? passed.reason || 'already checked' : 'waiting to be checked';
+    }
     if (match.status === 'filled') return match.reason || 'already filled';
     if (!match.fillable) return match.reason || match.status || 'nothing usable';
     return `${(match.confidence * 100).toFixed(0)}% match`;
@@ -4293,7 +4309,19 @@
   /** The result cell: the outcome, and whatever can be done about it. */
   function requestResultCell(row) {
     const match = requestResult(row);
-    if (!match) return el('span', { class: 'tag dim' }, 'not checked');
+    if (!match) {
+      const passed = requestSkipReason(row);
+      if (!passed) return el('span', { class: 'tag dim' }, 'waiting');
+      // What was already known about it, so the row is not just an excuse:
+      // a request skipped because it was answered three days ago should still
+      // say what that answer was.
+      const was = HISTORY_STATUS[passed.status] || [passed.status || '', ''];
+      return el('span', {},
+        el('span', { class: 'tag dim' }, 'not looked up'),
+        passed.status ? ' ' : null,
+        passed.status ? el('span', { class: `pill ${was[1]}` }, was[0]) : null,
+        el('div', { class: 'hint' }, passed.reason || 'already checked'));
+    }
     if (match.status === 'filled') {
       return el('span', { class: 'tag warn', title: match.reason || '' }, match.reason || 'already filled');
     }
@@ -4746,6 +4774,7 @@ It leaves the queue and will not be matched to this request again. The request s
    * searches that had already finished.
    */
   function clearSkipped() {
+    state.requestSkipped.clear();
     const host = $('#requests-skipped');
     if (host) { host.replaceChildren(); host.hidden = true; }
     // Last run's additions belong to last run. Left up, the panel reads as
@@ -4763,6 +4792,13 @@ It leaves the queue and will not be matched to this request again. The request s
   // anyway.
   function showSkipped(tracker, note) {
     const rows = note.requests || [];
+    // On the rows themselves, not only in the panel above them. The panel says
+    // how many were skipped; the row is where you look to find out what
+    // happened to the one you were watching.
+    rows.forEach((r) => {
+      state.requestSkipped.set(resultKey(r.tracker || tracker, String(r.id)), r);
+    });
+    renderRequestRows();
     const host = $('#requests-skipped');
     if (!host) return;
     const window_ = note.recheck_after_days;

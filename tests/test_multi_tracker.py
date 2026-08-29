@@ -790,6 +790,19 @@ def ui_checks() -> None:
           "function uploadOutcomeFacts(row)" in js
           and "${o.tracker} filled a request" in js, "")
 
+    # "Not checked" was said of a request the run deliberately passed over and
+    # of one it never reached. Those are different facts and only one of them
+    # is an answer -- the same thing the scan's results said, fixed there and
+    # not here, because the two lists keep their skips in different places.
+    check("a request the run passed over says why",
+          "requestSkipped" in js and "const requestSkipReason = (row) =>" in js, "")
+    check("and what was already known about it",
+          "el('span', { class: 'tag dim' }, 'not looked up')," in js, "")
+    check("while one still to be checked says that instead",
+          "el('span', { class: 'tag dim' }, 'waiting')" in js, "")
+    check("with the reasons belonging to the run that produced them",
+          "state.requestSkipped.clear();" in js, "")
+
     # A details element does not close when you click past it.
     check("the filter menu closes when you click away",
           "$$('.th-choicebox[open]').forEach" in js and "box.contains(e.target)" in js, "")
