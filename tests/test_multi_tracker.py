@@ -636,8 +636,25 @@ def ui_checks() -> None:
     check("and a way to disagree on every row",
           "dismissRows([queueRowFor(r)], false)" in js
           and "dismissRows([queueRowFor(r)], true)" in js, "")
-    check("cleared when the next run starts, so it is about that run",
-          "$('#requests-queued')?.replaceChildren()" in js, "")
+    # Drawn from every result that lands, not from one caller finishing. A
+    # search checks each page as it arrives through runCheckJob, which is a
+    # different path from the one a pasted list of ids takes, and only the
+    # second was drawing this -- so the run that most needs the table was the
+    # only run that never got it. Both land in applyRequestResult.
+    applied = js[js.index("function applyRequestResult(match) {"):]
+    applied = applied[:applied.index(chr(10) + "  }")]
+    check("filled in as each match lands, whichever way the check was started",
+          "renderQueued();" in applied, "")
+    # And NOT reset per run: a page-by-page search is a run per page, so
+    # clearing between them would empty the table on every page.
+    check("and not emptied between the pages of one search",
+          "$('#requests-queued')?.replaceChildren()" not in js, "")
+    check("while a refused match leaves it",
+          "state.requestResults.delete(resultKey(" in js, "")
+    # Behaviour, not shape: tests/test_queued_panel.js runs the real functions.
+    check("with the wiring itself exercised rather than read",
+          "test_queued_panel.js" in pathlib.Path(".github/workflows/lint.yml").read_text(
+              encoding="utf-8"), "")
 
     # The blacklist said a name and a date, which is most of the way to being
     # the column of Deezer ids it used to be. Deciding whether refusing a

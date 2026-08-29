@@ -43,6 +43,9 @@ jobs:
         # this says where it goes, and that Back walks the way it came.
         run: node tests/test_routing.js
 
+      - name: What a request check queued is listed while it runs
+        run: node tests/test_queued_panel.js
+
       - name: Check for builtins shadowed in annotations
         # Ruff and compileall both miss this: a method named `list` makes a
         # later `-> list[X]` annotation resolve to the method, which only fails

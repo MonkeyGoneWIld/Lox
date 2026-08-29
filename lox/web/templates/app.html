@@ -297,8 +297,10 @@
              ones worth a second pair of eyes before anything is uploaded. -->
         <div class="panel" id="requests-queued-panel" hidden>
           <h2>Added to the queue</h2>
-          <p class="hint">What this check matched and sent to the queue. Worth a look before
-            any of it is downloaded &mdash; a wrong match is refused here.</p>
+          <p class="hint">Every request a check here has matched to a release, filled in as it
+            goes. Worth a look before any of it is downloaded &mdash; a match is the matcher's
+            opinion, and it is cheaper to disagree with it here than after the release has been
+            fetched and posted.</p>
           <div id="requests-queued"></div>
         </div>
         <div id="requests-results"></div>

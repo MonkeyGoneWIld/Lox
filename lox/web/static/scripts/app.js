@@ -4513,6 +4513,13 @@ It leaves the queue and will not be matched to this request again. The request s
         },
       });
       toast('Noted. It will not be offered for this request again.', 'ok');
+      // Off this table too, not only out of the queue: the row is the thing
+      // being disagreed with, and leaving it up reads as the disagreement not
+      // having registered.
+      state.requestResults.delete(resultKey(row.tracker || state.requestsTracker, String(row.id)));
+      state.requestMatches.delete(String(row.id));
+      renderQueued();
+      renderRequestRows();
       releasesChanged();
       if (state.requestTab === 'history') loadHistory();
     } catch (e) {
@@ -4686,10 +4693,15 @@ It leaves the queue and will not be matched to this request again. The request s
     const host = $('#requests-queued');
     if (!panel || !host) return 0;
 
-    const rows = state.requestRows
-      .map((row) => ({ row, match: requestResult(row) }))
-      .filter(({ match }) => match && match.fillable)
-      .map(({ row, match }) => ({ ...match, id: String(match.request_id ?? row.id), row }));
+    // Built from the results themselves rather than by walking the rows on
+    // screen. A pasted list, a re-check from the history and a page-by-page
+    // search all land here, and not all of them have a row for every result at
+    // the moment it arrives -- deriving from the table meant the run that most
+    // needs this table was the one that never drew it.
+    const rows = [...state.requestResults.values()]
+      .filter((match) => match && match.fillable)
+      .map((match) => ({ ...match, id: String(match.request_id ?? '') }))
+      .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0));
 
     panel.hidden = rows.length === 0;
     if (!rows.length) { host.replaceChildren(); return 0; }
@@ -4777,10 +4789,6 @@ It leaves the queue and will not be matched to this request again. The request s
     state.requestSkipped.clear();
     const host = $('#requests-skipped');
     if (host) { host.replaceChildren(); host.hidden = true; }
-    // Last run's additions belong to last run. Left up, the panel reads as
-    // this run having queued them.
-    const queued = $('#requests-queued-panel');
-    if (queued) { queued.hidden = true; $('#requests-queued')?.replaceChildren(); }
   }
 
   // What a run did not do, and why.
@@ -5401,7 +5409,17 @@ It leaves the queue and will not be matched to this request again. The request s
     // Kept as data first. The cell is a rendering of it, so a sort or a filter
     // afterwards redraws the answer rather than losing it.
     state.requestResults.set(resultKey(match.tracker, id), match);
-    if (match.fillable) state.requestMatches.set(id, match);
+    if (match.fillable) {
+      state.requestMatches.set(id, match);
+      // Here rather than at the end of the run, and here rather than in one
+      // caller: a search checks each page as it lands through runCheckJob,
+      // which is a different path from the one a pasted list takes, and only
+      // the second was drawing this. Every result from either arrives through
+      // this function, so this is the one place that sees them all -- and the
+      // table fills in while the run is still going, which is when it is
+      // worth reading.
+      renderQueued();
+    }
 
     // A pasted request arrives as a placeholder that knows nothing but its own
     // id, and the check is what learns the rest. Without this the row stayed
