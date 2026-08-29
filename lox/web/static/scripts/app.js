@@ -4700,6 +4700,63 @@ It leaves the queue and will not be matched to this request again. The request s
     title: match.deezer_title || match.album || '',
   });
 
+  /**
+   * Whether a matched request actually reached the queue.
+   *
+   * "Fillable" and "queued" are different questions, and the panel was
+   * answering the first while claiming the second: a request the tracker
+   * ALREADY HAS is a confident match and a stale request, and the queue drops
+   * it -- so "Cave Studio - Start 2 Count", matched at 100% with "OPS has it"
+   * printed in its own row, was listed as added to a queue it was never in.
+   *
+   * These mirror the exclusions the queue itself applies to a request row:
+   * api_found skips one already on the requesting tracker, already filled or
+   * with no release behind it, and queue_rules.admits refuses one with nothing
+   * missing anywhere or nothing Deezer can supply. Mirrored rather than asked
+   * for, because the queue is rebuilt from the store and this has to be right
+   * while the check is still running.
+   *
+   * @param {object} match - A request check result.
+   * @returns {boolean} True when the queue will list it.
+   */
+  function queuedFromMatch(match) {
+    if (!match || !match.fillable || !match.deezer_id) return false;
+    // Filling a request the tracker has already had filled is a duplicate.
+    if (match.already_on_tracker === true || match.filled) return false;
+    // Nothing to upload anywhere is not work, whoever asked for it.
+    if (!(match.missing_from || []).length) return false;
+    // And nothing worth uploading: a source that is not all FLAC cannot fill a
+    // request that did not ask for lossy, which the queue decides with the
+    // request's own terms.
+    return !(match.all_flac === false && !requestAllowsLossy(match));
+  }
+
+  /**
+   * Whether a request said, in as many words, that lossy will do.
+   *
+   * The same reading queue_rules.request_allows_lossy makes: silence is not
+   * consent, so a request naming no format and no bitrate wants the lossless
+   * upload everyone assumes a request is for.
+   *
+   * @param {object} match - A request check result.
+   * @returns {boolean} True when a not-all-FLAC source could fill it.
+   */
+  function requestAllowsLossy(match) {
+    // Both spellings. A check result calls them formats and bitrates; the
+    // stored record and the queue row call them request_formats and
+    // request_encodings, and this is handed one or the other.
+    const formats = (match.formats || match.request_formats || []).map(String);
+    const bitrates = (match.bitrates || match.request_encodings || []).map(String);
+    if (!formats.length && !bitrates.length) return false;
+    const lossy = new Set(['MP3', 'AAC', 'AC3', 'DTS', 'Ogg Vorbis']);
+    if (formats.length && !formats.includes('Any') && !formats.some((f) => lossy.has(f))) return false;
+    const lossless = new Set(['Lossless', '24bit Lossless']);
+    if (bitrates.length && !bitrates.includes('Any')) {
+      return bitrates.some((b) => !lossless.has(b));
+    }
+    return formats.length > 0 || bitrates.includes('Any');
+  }
+
   function renderQueued() {
     const panel = $('#requests-queued-panel');
     const host = $('#requests-queued');
@@ -4711,7 +4768,7 @@ It leaves the queue and will not be matched to this request again. The request s
     // the moment it arrives -- deriving from the table meant the run that most
     // needs this table was the one that never drew it.
     const rows = [...state.requestResults.values()]
-      .filter((match) => match && match.fillable)
+      .filter(queuedFromMatch)
       .map((match) => ({ ...match, id: String(match.request_id ?? '') }))
       .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0));
 
@@ -5427,6 +5484,9 @@ It leaves the queue and will not be matched to this request again. The request s
     state.requestResults.set(resultKey(match.tracker, id), match);
     if (match.fillable) {
       state.requestMatches.set(id, match);
+      // Drawn for every result, not only the ones that will be listed: a match
+      // the queue refuses still has to take a row OFF the panel if an earlier,
+      // staler answer had put one there.
       // Here rather than at the end of the run, and here rather than in one
       // caller: a search checks each page as it lands through runCheckJob,
       // which is a different path from the one a pasted list takes, and only

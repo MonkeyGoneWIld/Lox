@@ -106,6 +106,8 @@ const scope = `
   const rejectMatch = () => {};
   const dismissRows = () => {};
   const queueRowFor = (m) => m;
+  ${extract('function requestAllowsLossy(match) {')}
+  ${extract('function queuedFromMatch(match) {')}
   ${extract('function renderQueued() {')}
   ${extract('function applyRequestResult(match) {')}
   return { applyRequestResult, renderQueued, state, compareHref };
@@ -125,6 +127,12 @@ const match = (over) => ({
   deezer_artist: 'Vestjysk Orken',
   deezer_title: 'LSDREI',
   request_url: 'https://orpheus.network/requests.php?action=view&id=80162',
+  // What the queue reads to decide whether this is work: somewhere it is
+  // missing, and a source worth uploading.
+  missing_from: ['RED'],
+  found_on: [],
+  already_on_tracker: false,
+  all_flac: true,
   ...over,
 });
 
@@ -183,6 +191,36 @@ check('to the request beside the release it matched',
       link.attrs.href === compareHref('OPS', '80162'), String(link.attrs.href));
 check('and not to one side of the comparison on its own',
       !String(link.attrs.href).startsWith('/album/'), String(link.attrs.href));
+
+// --- listed means listed, not merely matched -------------------------------
+// "Fillable" and "queued" are different questions, and this panel was
+// answering the first while claiming the second. "Cave Studio - Start 2 Count"
+// was matched at 100% with "OPS has it" printed in its own row, and listed as
+// added to a queue it was never in: the queue drops a request the requesting
+// tracker already has, because filling it would be a duplicate.
+const before = rows().length;
+applyRequestResult(match({ request_id: 74514, deezer_title: 'Start 2 Count',
+                           already_on_tracker: true, found_on: ['OPS'] }));
+check('a request the tracker already has is not listed as queued',
+      rows().length === before, `${rows().length} vs ${before}`);
+
+applyRequestResult(match({ request_id: 74515, deezer_title: 'Already Filled', filled: true }));
+check('nor one that has already been filled', rows().length === before, String(rows().length));
+
+applyRequestResult(match({ request_id: 74516, deezer_title: 'Nothing Missing',
+                           missing_from: [], found_on: ['OPS', 'RED'] }));
+check('nor one with nothing missing anywhere', rows().length === before, String(rows().length));
+
+// Deezer cannot supply a lossless upload, and the request did not ask for
+// anything else -- which is the queue's own reading: silence is not consent.
+applyRequestResult(match({ request_id: 74517, deezer_title: 'Half MP3', all_flac: false }));
+check('nor one Deezer cannot supply losslessly', rows().length === before, String(rows().length));
+
+// ...unless the request said in as many words that lossy will do.
+applyRequestResult(match({ request_id: 74518, deezer_title: 'Lossy Wanted', all_flac: false,
+                           formats: ['MP3'], bitrates: ['320'] }));
+check('but one whose request accepts lossy is', rows().length === before + 1,
+      `${rows().length} vs ${before + 1}`);
 
 const failed = results.filter(([, ok]) => !ok);
 console.log(`\n${results.length - failed.length}/${results.length} passed`);
