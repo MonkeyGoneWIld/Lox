@@ -34,6 +34,11 @@
     paneStack: [],
     found: [],
     selectedFound: new Set(),
+    //: Whether the queue has been loaded once. The first load ticks
+    //: everything, which is what the page is for; every load after it keeps
+    //: whatever was ticked, so leaving the tab and coming back does not undo
+    //: the picking you went there to do.
+    foundSeeded: false,
     // Narrowing what is on screen. Not persisted: it is a way of reading the
     // list, not a setting.
     // Releases ticked for a batch action, by album id.
@@ -5823,13 +5828,43 @@ It leaves the queue and will not be matched to this request again. The request s
   // What earlier checks already established. A scan or a request check pays
   // tracker budget to learn "this exists on Deezer and is not on RED", and both
   // used to throw that away the moment you left the tab.
+  /**
+   * Which queue rows are ticked after a load.
+   *
+   * Every visit to the Queue reloads it, and this used to re-tick every row
+   * each time -- so going to Downloading to check on something and coming back
+   * threw away the picking you had gone there to do, and put the whole queue
+   * back in its place.
+   *
+   * The first load ticks everything, which is what the page is for. After that
+   * the selection is kept, minus rows that have since gone. Rows that have
+   * since arrived stay unticked: "Download & upload selected" must never act
+   * on a release that turned up while you were on another tab and that you
+   * have not seen.
+   *
+   * Unticking everything is a selection too, so it survives -- which is why
+   * this needs a flag rather than treating an empty set as "not seeded yet".
+   *
+   * @param {object[]} found - The rows the queue just returned.
+   */
+  function seedFoundSelection(found) {
+    const present = new Set(found.map((f) => f.id));
+    if (!state.foundSeeded) {
+      state.selectedFound = present;
+      state.foundSeeded = true;
+      return;
+    }
+    state.selectedFound = new Set([...state.selectedFound].filter((id) => present.has(id)));
+  }
+
   async function loadFound() {
     const body = $('#found-body');
     body.replaceChildren(spinner('Loading'));
     try {
       const { found } = await api('/api/found');
       state.found = found;
-      state.selectedFound = new Set(found.map((f) => f.id));
+
+      seedFoundSelection(found);
 
       // What did not make the queue is not the queue's business.
       //

@@ -46,6 +46,9 @@ jobs:
       - name: What a request check queued is listed while it runs
         run: node tests/test_queued_panel.js
 
+      - name: The queue remembers what you ticked
+        run: node tests/test_queue_selection.js
+
       - name: Check for builtins shadowed in annotations
         # Ruff and compileall both miss this: a method named `list` makes a
         # later `-> list[X]` annotation resolve to the method, which only fails
