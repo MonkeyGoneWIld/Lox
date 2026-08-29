@@ -1655,6 +1655,7 @@ async def run_upload(
     link_derived: Any = None,
     linked_requests: dict[str, str] | None = None,
     on_request: Any = None,
+    download_url: str = "",
 ) -> dict[str, Any]:
     """Upload one folder to every chosen tracker, asking the browser as it goes.
 
@@ -1720,6 +1721,7 @@ async def run_upload(
             link_derived=link_derived,
             linked_requests=linked_requests,
             on_request=on_request,
+            download_url=download_url,
         )
 
     uploading.reset(token)
@@ -1746,6 +1748,7 @@ async def run_uploads(
     source: str = "WEB",
     auto_rename: bool = False,
     linked_requests: dict[str, str] | None = None,
+    download_url: str = "",
 ) -> dict[str, Any]:
     """Upload one folder to several trackers, hardlinking per tracker as it goes.
 
@@ -1859,6 +1862,7 @@ async def run_uploads(
                 flow, folder, trackers, source=source, auto_rename=auto_rename,
                 link_for=link_for, on_uploaded=on_uploaded, link_derived=link_derived,
                 linked_requests=linked_requests, on_request=on_request,
+                download_url=download_url,
             )
         except click.Abort:
             flow.note("Aborted.", "warning")

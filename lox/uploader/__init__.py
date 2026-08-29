@@ -277,6 +277,7 @@ async def upload(
     link_derived: "Callable[[str, str], Awaitable[str]] | None" = None,
     linked_requests: dict[str, str] | None = None,
     on_request: "Callable[[str, int], None] | None" = None,
+    download_url: str | None = None,
 ) -> None:
     """Upload an album folder to Gazelle Site.
 
@@ -435,7 +436,9 @@ async def upload(
         spectral_urls = None
     else:
         if lossy_master:
-            lossy_comment = await generate_lossy_approval_comment(source_url, list(track_data.keys()))
+            lossy_comment = await generate_lossy_approval_comment(
+                source_url, list(track_data.keys()), download_url=download_url
+            )
             click.echo()
 
         spectrals_path = get_spectrals_path(path)

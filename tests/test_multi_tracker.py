@@ -762,7 +762,10 @@ def ui_checks() -> None:
     spectral_src = pathlib.Path("lox/uploader/spectrals.py").read_text(encoding="utf-8")
     check("the lossy report starts from where the release came from",
           "def lossy_comment_default" in spectral_src
-          and "default=lossy_comment_default(source_url)" in spectral_src, "")
+          and "default=lossy_comment_default(source_url, download_url)" in spectral_src, "")
+    check("which is what lox downloaded, not what the metadata matched",
+          'download_url=context.get("deezer_url")' in web_api
+          and '"deezer_url"' in web_api, "")
 
     # Five albums at once meant five times five streams open to Deezer.
     dl_src = pathlib.Path("lox/deezer/download.py").read_text(encoding="utf-8")

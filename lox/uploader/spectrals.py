@@ -572,20 +572,32 @@ async def report_lossy_master(
 LOSSY_SOURCE_NOTE = "Downloaded Directly from Deezer:"
 
 
-def lossy_comment_default(source_url: str | None) -> str:
+def lossy_comment_default(source_url: str | None, download_url: str | None = None) -> str:
     """The text the lossy-approval box starts with.
 
+    ``download_url`` is where lox fetched the release, and it is the honest
+    answer to "what is the source": the release came off Deezer whatever the
+    metadata was later matched against. ``source_url`` is whichever metadata
+    source was picked during the lookup -- MusicBrainz, Discogs -- and it is
+    empty until that step has run and often not Deezer at all, which is why
+    the box came up blank.
+
     Args:
-        source_url: Where the release was fetched from, when it is known.
+        source_url: The metadata source chosen for the release.
+        download_url: Where lox downloaded it from.
 
     Returns:
         A comment to start from, or "" when there is no source to name.
     """
-    url = (source_url or "").strip()
-    return f"{LOSSY_SOURCE_NOTE} {url}" if url else ""
+    fetched = (download_url or "").strip()
+    # Only the download origin earns the sentence. This report is read by
+    # tracker staff deciding whether to approve a lossy master, and labelling
+    # a MusicBrainz release page "Downloaded Directly from Deezer" would be a
+    # false claim about the source -- worse than the empty box it replaced.
+    return f"{LOSSY_SOURCE_NOTE} {fetched}" if fetched else ""
 
 
-async def generate_lossy_approval_comment(source_url, filenames):
+async def generate_lossy_approval_comment(source_url, filenames, download_url=None):
     while True:
         comment = await click.prompt(
             click.style(
@@ -595,9 +607,9 @@ async def generate_lossy_approval_comment(source_url, filenames):
                 fg="cyan",
                 bold=True,
             ),
-            default=lossy_comment_default(source_url),
+            default=lossy_comment_default(source_url, download_url),
         )
-        if comment or source_url:
+        if comment or source_url or download_url:
             return comment
         click.secho(
             "This release was not uploaded with go, gos, or the queue, so you must add a comment about the source.",

@@ -333,6 +333,27 @@ async def main() -> int:
     finally:
         cfg.upload.dry_run = False
 
+    # --- the lossy report starts from where lox fetched it -------------
+    # The box came up empty. It was defaulted from source_url, which is
+    # whichever metadata source the lookup picked -- MusicBrainz, Discogs --
+    # and is still None when this is asked, because the metadata step has not
+    # necessarily chosen one and often does not choose Deezer at all.
+    from lox.uploader.spectrals import LOSSY_SOURCE_NOTE, lossy_comment_default
+
+    deezer = "https://www.deezer.com/album/930724701"
+    check("the box starts from where lox downloaded the release",
+          lossy_comment_default(None, deezer) == f"{LOSSY_SOURCE_NOTE} {deezer}",
+          lossy_comment_default(None, deezer))
+    check("which wins over whatever the metadata search matched",
+          lossy_comment_default("https://musicbrainz.org/release/abc", deezer)
+          == f"{LOSSY_SOURCE_NOTE} {deezer}", "")
+    # This report is read by tracker staff deciding whether to approve a lossy
+    # master. Labelling a MusicBrainz page "Downloaded Directly from Deezer"
+    # would be a false claim about the source -- worse than an empty box.
+    check("and nothing is claimed when lox did not fetch it",
+          lossy_comment_default("https://musicbrainz.org/release/abc", None) == "", "")
+    check("nor when there is no source at all", lossy_comment_default(None, None) == "", "")
+
     # --- auto-answering fills what was already decided, and nothing else ---
     #
     # This rule has been wrong twice in opposite directions. First it filled

@@ -1321,6 +1321,10 @@ def _linked_requests(store: CheckerStore, album_id: str, folder: str) -> list[di
             "tracker": tracker,
             "request_id": request_id,
             "request_url": entry.get("request_url") or entry.get("url") or "",
+            # Which release it matched, for an upload started by hand: the
+            # folder is all that identified it, and this is how that becomes
+            # a Deezer id again.
+            "deezer_id": str(entry.get("deezer_id") or ""),
         })
     return found
 
@@ -1334,14 +1338,27 @@ def _upload_context(store: CheckerStore, album_id: str, folder: str = "") -> dic
         folder: The release folder, for uploads started by hand.
 
     Returns:
-        The first linked request for the card to name, plus every one of them
-        keyed by tracker for the pipeline to fill. Empty when there are none.
+        Where lox fetched the release, the first linked request for the card to
+        name, and every linked request keyed by tracker for the pipeline to
+        fill. Empty when none of that is known.
     """
     linked = _linked_requests(store, album_id, folder)
+
+    # Where it came from. Known from the release itself when the upload came
+    # from a queue row, and otherwise from whatever a linked request matched --
+    # both are the same Deezer id. The lossy-approval report asks the operator
+    # to name the source, and lox is the one that downloaded it.
+    release = str(album_id or "")
+    if not release and linked:
+        release = str(linked[0].get("deezer_id") or "")
+    context: dict[str, Any] = {}
+    if release.isdigit():
+        context["deezer_url"] = f"https://www.deezer.com/album/{release}"
+
     if not linked:
-        return {}
+        return context
     first = linked[0]
-    return {
+    context.update({
         "request_url": first["request_url"],
         "request_tracker": first["tracker"],
         "request_id": first["request_id"],
@@ -1349,7 +1366,8 @@ def _upload_context(store: CheckerStore, album_id: str, folder: str = "") -> dic
         # per tracker as it works through them.
         "linked_requests": {r["tracker"]: r["request_id"] for r in linked},
         "request_urls": {r["tracker"]: r["request_url"] for r in linked if r["request_url"]},
-    }
+    })
+    return context
 
 
 def _mark_uploaded(store: CheckerStore, album_id: str, folder: str, trackers: list[str]) -> None:
@@ -2542,6 +2560,10 @@ async def api_upload(request: web.Request) -> web.Response:
         result = await run_uploads(
             f, folder, trackers, source=source, auto_rename=auto_rename,
             linked_requests=context.get("linked_requests") or {},
+            # Where lox fetched it. The lossy-approval report asks the operator
+            # to say what the source was, and lox is the one that downloaded
+            # it -- so the box starts filled in rather than empty.
+            download_url=context.get("deezer_url") or "",
         )
         # Where the release actually ended up. The pipeline renames the folder
         # partway through, so the path this started with is not the one on disk
