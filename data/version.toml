@@ -1,4 +1,65 @@
-current = "0.10.0"
+current = "1.0.0"
+
+[[changelog]]
+version = "1.0.0"
+date = "2026-08-28"
+notes = """
+This is the first stable release. It is the branch that turned lox from a Deezer-shaped fork of smoked-salmon into an app with its own pipeline: four ways to find work feeding three stages, every one of them addressable, filterable and re-runnable.
+
+## Upload once, offer to every tracker
+
+A release is now prepared **once** and offered to each tracker that is missing it -- one transcode, one set of spectrals, one metadata form, one set of descriptions, and a `.torrent` per tracker. Previously a two-tracker upload did the whole job twice.
+
+- A tracker refusing a post no longer stops the others, and the history records each one separately
+- The blacklist means it: a blacklisted release stays out of the queue rather than returning on the next scan
+- "Does the tracker already have this" is answered correctly for groups that exist without a WEB FLAC in them
+- A request search that finds nothing no longer stops the upload
+- The request an upload filled is kept in the history
+
+## Scanning stops paying twice
+
+The scan filters moved to the Scan tab, where they belong: they narrow what a scan looks at and nothing else, and a release ruled out by them is never looked up at all.
+
+- An album already answered inside the recheck window is skipped rather than re-bought
+- A request already answered is not paid for twice -- `check_many` was comparing request state against the album scanner's statuses, so nothing was ever skipped and every run started from nothing
+- Queue rows past a configurable age are re-confirmed in the background, one at a time, only while nothing else is running
+- Saved searches are links you can open, rename and scan several at once
+
+## Requests, per tracker
+
+RED and OPS run the same software and do not agree about it. The request form is now built from whichever tracker is selected, with one filter vocabulary per tracker transcribed from their live search pages -- because media `WEB` is 7 on RED and 1 on OPS, and a shared table would not fail, it would succeed with the wrong filter.
+
+- Fetch size is chosen in pages, the unit the cost is actually measured in, with that cost shown next to the button
+- Requests are looked up while the pages are still arriving
+- A request that was passed over says why, rather than "not checked"
+- Non-FLAC releases are kept out of the queue unless a request says lossy will do
+
+## Nothing reaches the queue that Deezer cannot supply
+
+Availability and FLAC gates used to run only on the request path, so albums checked from Search or Browse joined the queue unproven. A pre-release with four of eleven tracks playable was reported as "11/11 FLAC, all streamable" and queued.
+
+The queue also stopped listing the scanner's own notes -- albums Deezer refused, as nameless rows under a heading blaming the queue rules, which had nothing to do with any of them.
+
+## The interface
+
+- **Every screen, tab and page has an address.** Back walks the way it came
+- One set of filters per list, in the columns, with ranges for numbers and typed durations instead of a dropdown of guesses
+- Browse leads somewhere: the category grid carries the artwork Deezer has for it, and any channel module can be sent to the Scan tab
+- Batch controls live in the batch's own bar, and a batch stays on its own list
+- The queue remembers what you ticked when you leave the tab
+- A failed download's folder can be deleted
+- The metadata form can answer the error it shows
+
+## Documentation
+
+The README is now what it does, a feature list with screenshots, and how to install it -- Docker Compose, Portainer and Dockge. Everything that used to crowd it out moved to [the wiki](https://github.com/MonkeyGoneWIld/Lox/wiki), which documents all 87 settings, every `LOX_*` variable, the seeding layout, and the pieces that have never been exercised against the real thing.
+
+## Also
+
+- Every dependency upgraded
+- The Qobuz test stops reporting the app ID as wrong when the token is
+- A new icon, framed for small sizes
+"""
 
 [[changelog]]
 version = "0.10.0"
