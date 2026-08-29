@@ -26,7 +26,7 @@
 
 services:
   lox:
-    image: ghcr.io/monkeygonewild/lox:alpha
+    image: ghcr.io/monkeygonewild/lox:latest
     # Or build from source:
     # build: https://github.com/MonkeyGoneWIld/Lox.git#main
     container_name: lox

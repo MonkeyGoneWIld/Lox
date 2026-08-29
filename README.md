@@ -193,7 +193,7 @@ seeding layout, budgets and notifications are all set in the UI under Settings a
 ```yaml
 services:
   lox:
-    image: ghcr.io/monkeygonewild/lox:alpha
+    image: ghcr.io/monkeygonewild/lox:latest
     container_name: lox
     restart: unless-stopped
     command: ["ui"]
