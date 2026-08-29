@@ -76,16 +76,20 @@ async def check_requests(
     results = await get_request_results(gazelle_site, searchstrs)
     print_request_results(gazelle_site, results, " / ".join(searchstrs))
 
-    # A dry run asks even when the search found nothing.
+    # Nothing matched, so there is nothing to decide. "Nothing matched. Paste a
+    # url to fill a request anyway, or don't" is a question with no subject: it
+    # offers an empty list and asks you to go and find a request id by hand, in
+    # the middle of an upload, for a release the search has just said nobody is
+    # asking for.
     #
-    # A real upload has a reason to stay quiet: no requests matched, so there is
-    # nothing to decide, and one fewer question between you and a posted
-    # torrent. A rehearsal has the opposite job. It exists so you can watch
-    # every step happen before one of them happens for real, and a step that
-    # silently does not run looks exactly like a step that is broken -- which is
-    # what this looked like. So it asks, with an empty list and the paste field,
-    # and you can still fill a request the search did not turn up.
-    if not results and not (cfg.upload.requests.always_ask_for_request_fill or cfg.upload.dry_run):
+    # A dry run used to be the exception, on the reasoning that a rehearsal
+    # should show every step it would take. It shows this one either way -- the
+    # search runs and reports what it found -- and stopping on a dead prompt is
+    # not a step, it is a wait.
+    #
+    # "Ask even when nothing matched" is still there for anyone who fills
+    # requests the search cannot find, and it is off by default.
+    if not results and not cfg.upload.requests.always_ask_for_request_fill:
         return None
 
     # Asked again when the id turns out not to exist, rather than abandoning

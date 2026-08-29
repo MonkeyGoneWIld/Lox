@@ -304,29 +304,27 @@ async def main() -> int:
     check("and pasting one still works then", value == 9902, str(value))
     cfg.upload.requests.always_ask_for_request_fill = False
 
-    # --- a dry run rehearses the step whatever the search found --------
+    # --- a dry run asks what a real upload asks -------------------------
     #
-    # A rehearsal exists to show every part of a run before any of it happens
-    # for real, and a step that silently does not run is indistinguishable from
-    # one that is broken. Nothing is filled either way: the upload itself is
-    # what posts the fill, and in a dry run that is replaced by a report.
+    # It used to be the exception: a rehearsal showed every step it would take,
+    # including this one, so it stopped on "Nothing matched. Paste a url to
+    # fill a request anyway, or don't" for a release the search had just said
+    # nobody was asking for. That is a question with no subject, and stopping
+    # on a dead prompt is not a step being shown, it is a wait.
     cfg.upload.dry_run = True
     try:
-        seen, value, log = await drive(["n"], tracker=Empty())
-        check("a dry run asks even when nothing matched", len(seen) == 1, str(len(seen)))
-        check("and says so rather than offering a list that is not there",
-              seen and "nothing matched" in seen[0]["prompt"].lower(),
-              seen[0]["prompt"] if seen else "")
-        check("with the paste field, so an unmatched request can still be filled",
-              seen and seen[0]["text_label"] != "", seen[0]["text_label"] if seen else "")
-        check("and declining still fills nothing", value is None, str(value))
+        # An answer is offered so that a prompt, if one is raised, is recorded.
+        # Driving it with none would leave `seen` empty whether or not it asked,
+        # which is a check that cannot fail.
+        seen, value, _log = await drive(["n"], tracker=Empty())
+        check("a dry run does not stop on a search that found nothing",
+              not seen, str([s["prompt"] for s in seen]))
+        check("and fills nothing, having asked nothing", value is None, str(value))
 
-        seen, value, _ = await drive([URL_9902, "y"], tracker=Empty())
-        check("pasting one in a dry run reaches the payload", value == 9902, str(value))
-
-        # With matches, a dry run is the same question a real upload asks.
+        # With matches it is the same question a real upload asks, and the
+        # answer still reaches the payload the rehearsal reports.
         seen, value, _ = await drive([URL_8811, "y"])
-        check("and with matches it is the same question as a real upload",
+        check("with matches it is the same question as a real upload",
               seen and seen[0]["values"][:2] == [URL_8811, URL_9902], str(seen[0]["values"]) if seen else "")
         check("still returning the request so the rehearsal can report it",
               value == 8811, str(value))
