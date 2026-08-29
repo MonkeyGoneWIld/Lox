@@ -10,6 +10,7 @@ verification are all free, so they run afterwards and filter hard — a wrong fi
 is worse than no fill.
 """
 
+import contextlib
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -58,6 +59,60 @@ def _unset(value: object) -> bool:
     return not any(char.isdigit() and char != "0" for char in text)
 
 
+#: Where a request's refused matches are kept.
+#:
+#: Its own collection rather than a field on the request record, because that
+#: record is rewritten in full by every check -- a rejection stored on it would
+#: last exactly until the next one, which is the problem it exists to solve.
+REJECTIONS = "rejections"
+
+
+def rejected_ids(store: Any, tracker: str, request_id: str) -> set[str]:
+    """The Deezer releases refused for one request.
+
+    Args:
+        store: The checker store.
+        tracker: Tracker code.
+        request_id: The request.
+
+    Returns:
+        Deezer album ids, as strings.
+    """
+    entry = store.get(REJECTIONS, f"{tracker}:{request_id}") or {}
+    return {str(i) for i in entry.get("deezer_ids") or ()}
+
+
+def rejected_match(store: Any, tracker: str, request_id: str, deezer_id: str) -> bool:
+    """Whether this release has already been refused for this request."""
+    return str(deezer_id) in rejected_ids(store, tracker, request_id)
+
+
+def reject_match(store: Any, tracker: str, request_id: str, deezer_id: str, note: str = "") -> dict[str, Any]:
+    """Record that a release does not fill a request.
+
+    Args:
+        store: The checker store.
+        tracker: Tracker code.
+        request_id: The request.
+        deezer_id: The release that does not fill it.
+        note: What the release was called, for reading back later.
+
+    Returns:
+        The stored rejection record.
+    """
+    key = f"{tracker}:{request_id}"
+    entry = dict(store.get(REJECTIONS, key) or {})
+    ids = [str(i) for i in entry.get("deezer_ids") or ()]
+    if str(deezer_id) not in ids:
+        ids.append(str(deezer_id))
+    names = dict(entry.get("titles") or {})
+    if note:
+        names[str(deezer_id)] = note
+    entry = {"tracker": tracker, "request_id": request_id, "deezer_ids": ids, "titles": names}
+    store.put(REJECTIONS, key, entry, flush=True)
+    return entry
+
+
 class RequestMatch(msgspec.Struct):
     """The outcome of checking one request."""
 
@@ -89,6 +144,19 @@ class RequestMatch(msgspec.Struct):
     # open after somebody uploaded it is not worth filling twice.
     already_on_tracker: bool | None = None
     tracker_group_url: str | None = None
+    #: Whether this pairing was refused by hand. The matcher is confident about
+    #: a wrong match and stays confident, so being told once has to stick.
+    rejected: bool = False
+    #: The same answer in the vocabulary the queue reads.
+    #:
+    #: "already_on_tracker: false" and "missing_from: [OPS]" are the same
+    #: sentence, and only the second one is a sentence the queue understands.
+    #: Writing only the first is why a request that was checked, matched at
+    #: 100% and confirmed absent from the tracker was held out of the queue as
+    #: "not checked against any tracker yet".
+    found_on: list[str] = msgspec.field(default_factory=list)
+    missing_from: list[str] = msgspec.field(default_factory=list)
+    group_ids: dict[str, int] = msgspec.field(default_factory=dict)
     # Whether the request was already filled before we looked at it, and by
     # whom. A filled request cannot be filled again, so this ends the check.
     filled: bool = False
@@ -501,6 +569,12 @@ class DeezerRequestChecker:
                         "confidence": match.confidence,
                         "already_on_tracker": match.already_on_tracker,
                         "tracker_group_url": match.tracker_group_url,
+                        # Refused by hand, so the history can say so and the
+                        # matching can be judged on it later.
+                        "rejected": match.rejected,
+                        "found_on": match.found_on,
+                        "missing_from": match.missing_from,
+                        "group_ids": match.group_ids,
                         # What Deezer has, and what this request will take.
                         # The queue needs both to answer the only question
                         # that matters for a source that is not all FLAC: did
@@ -521,9 +595,21 @@ class DeezerRequestChecker:
 
         return results
 
+    @staticmethod
+    def _rejection_key(tracker: str, request_id: str) -> str:
+        """Where one request's refused matches are filed."""
+        return f"{tracker}:{request_id}"
+
     async def _check_one(self, tracker: str, request_id: str, verifier: TrackCountVerifier) -> RequestMatch:
         """Run the full pipeline for a single request."""
         raw = await self.gateway.get_request(tracker, int(request_id))
+        # The payload is already in hand and the tracker takes the better part
+        # of a minute to produce it, so the page's copy is rendered and kept
+        # here rather than fetched again the first time somebody opens the row.
+        # Imported here: request_detail imports this module for format_bounty.
+        from lox.checker.request_detail import cache_detail  # noqa: PLC0415
+
+        cache_detail(self.store, self.gateway, tracker, int(request_id), raw)
         match = RequestMatch(
             request_id=str(request_id),
             tracker=tracker,
@@ -648,24 +734,76 @@ class DeezerRequestChecker:
             match.reason = f"track count disagrees with {', '.join(match.verification['disagree'])}"
             return match
 
+        # A release the operator has blacklisted is not an upload, whatever
+        # a request says about it. Checked here rather than when the queue is
+        # drawn, so the row never gets made and no tracker call is spent
+        # confirming something that has already been refused.
+        if self.store.get("dismissed", str(match.deezer_id or "")):
+            match.status = "skipped"
+            match.reason = "the release it matches is blacklisted"
+            return match
+
+        # A match the operator has already looked at and refused. The matcher
+        # is confident about it and will go on being confident about it, so
+        # without this the same wrong release is proposed for the same request
+        # on every check, and taking it off the queue lasts until the next one.
+        if match.deezer_id and rejected_match(self.store, tracker, request_id, match.deezer_id):
+            match.status = "skipped"
+            match.reason = "you said this release does not fill this request"
+            match.rejected = True
+            return match
+
         match.status = "fillable"
         match.reason = None
 
         # One more question, and the one that decides whether filling is worth
-        # doing: is this release already on the tracker? A request can sit open
-        # for a release somebody uploaded since, and filling it with a duplicate
-        # helps nobody. One search, and only for a match that got this far.
-        try:
-            match.already_on_tracker = await self._on_tracker(tracker, match)
-        except Exception as e:  # noqa: BLE001 - an extra fact, never a failure
-            match.already_on_tracker = None
-            match.reason = None
-            debug.log("tracker search for request %s failed: %s", match.request_id, e, level=30)
+        # doing: who already has this release? A request can sit open for
+        # something somebody uploaded since, and filling it with a duplicate
+        # helps nobody.
+        #
+        # Every configured tracker, not only the one the request is on. The
+        # release is the same release whoever is asked, and asking only the
+        # requesting tracker produced a queue row that knew about OPS and
+        # nothing about RED -- so the upload that followed either skipped a
+        # tracker that wanted it or offered one that already had it.
+        await self._locate(match)
+
+        # The requesting tracker's answer, kept as its own field because
+        # "should I fill this request" is a question about that tracker.
+        if tracker in match.found_on:
+            match.already_on_tracker = True
+        elif tracker in match.missing_from:
+            match.already_on_tracker = False
 
         return match
 
+    async def _locate(self, match: RequestMatch) -> None:
+        """Ask every configured tracker whether it already has this release.
+
+        Writes ``found_on``, ``missing_from`` and ``group_ids`` on the match --
+        the same three facts a scan produces, in the same words, so the queue
+        cannot tell a request-matched release apart from a scanned one.
+
+        A tracker with no budget left, or one that errors, is simply not in
+        either list: not asked is not the same as asked and answered.
+        """
+        for code in self.gateway.configured_trackers():
+            if not self.gateway.can_check(code):
+                debug.log("request %s: %s not asked, no budget", match.request_id, code, level=20)
+                continue
+            try:
+                on_it = await self._on_tracker(code, match)
+            except Exception as e:  # noqa: BLE001 - an extra fact, never a failure
+                debug.log("tracker search for request %s on %s failed: %s",
+                          match.request_id, code, e, level=30)
+                continue
+            if on_it is True:
+                match.found_on.append(code)
+            elif on_it is False:
+                match.missing_from.append(code)
+
     async def _on_tracker(self, tracker: str, match: RequestMatch) -> bool | None:
-        """Whether the tracker already has the release this match would fill."""
+        """Whether one tracker already has the release this match would fill."""
         query = " ".join(p for p in (match.deezer_artist, match.deezer_title) if p).strip()
         if not query:
             return None
@@ -689,6 +827,13 @@ class DeezerRequestChecker:
             candidates, match.deezer_artist or "", match.deezer_title or ""
         )
         if best and score >= MIN_TOTAL_SCORE:
-            match.tracker_group_url = f"{self.gateway.api(tracker).base_url}/torrents.php?id={best.get('id')}"
+            # The link belongs to the requesting tracker, which is the one
+            # the "already on tracker" tag on the request row is about.
+            if tracker == match.tracker:
+                match.tracker_group_url = f"{self.gateway.api(tracker).base_url}/torrents.php?id={best.get('id')}"
+            group_id = best.get("id")
+            if group_id is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    match.group_ids[tracker] = int(group_id)
             return True
         return False

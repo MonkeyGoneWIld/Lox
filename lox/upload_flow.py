@@ -99,7 +99,14 @@ _BLOCK_HEADS = {
     # answer to "what would this have done", so it is kept rather than scrolled
     # past in the log.
     "would have posted": ("dryrun", "What would have been posted"),
+    # Which request is about to be filled. "Are you sure you would like to fill
+    # this request" was asked with the request itself scattered into the log,
+    # which is collapsed -- so the question had no subject on screen.
+    "selected request": ("request", "The request this would fill"),
 }
+
+#: "Bounty: 10.00 GiB" -- the shape _print_request_details writes.
+_LABELLED = re.compile(r"^([A-Z][A-Za-z ]{1,24}):\s+(.+?)\s*$")
 # "title                        Sammaouny". Matched after the line has been
 # stripped -- it is indented in the pipeline's output, but _echo strips every
 # line before this sees it, so requiring the indent here matched nothing and
@@ -110,6 +117,46 @@ _FOLDER_NAME = re.compile(r"^(Old|New pending)\s+folder name\s*:\s*(.+?)\s*$", r
 # "[DRY RUN] album description that would have been posted:"
 _DESCRIPTION_HEAD = re.compile(r"^\[DRY RUN\]\s+(.+?)\s+that would have been posted", re.IGNORECASE)
 _RENAME_LINE = re.compile(r"^(?P<old>.+?)\s+>>>\s+(?P<new>.+?)\s*$")
+
+#: The question that asks which torrent group to post into.
+_GROUP_QUESTION = re.compile(r"existing group|upload to an existing", re.IGNORECASE)
+#: The question that asks which open request to fill.
+_REQUEST_QUESTION = re.compile(r"fill a request|paste a url to fill", re.IGNORECASE)
+
+
+def _for_this_question(prompt: str, found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Only the offered answers that belong to the question being asked.
+
+    Everything the pipeline lists before a prompt becomes a button on it, which
+    is right until a list is printed for a question that never gets asked. The
+    request search prints its results and then declines to ask when prompts are
+    being auto-answered, so the requests were still sitting there when the next
+    question came round -- and "Would you like to upload to an existing group
+    on RED?" was offered an open request, with its bounty and its accepted
+    formats, as a group to post into. Picking it would have posted the release
+    into whatever that URL resolved to.
+
+    Matched on what the question is rather than on where the list came from,
+    so a list left behind by any skipped prompt cannot reach the wrong one.
+
+    Args:
+        prompt: The question as the pipeline wrote it.
+        found: The candidates collected since the last question.
+
+    Returns:
+        The subset that answers this question.
+    """
+    if not found:
+        return found
+
+    def is_request(option: dict[str, Any]) -> bool:
+        return str(option.get("link_label", "")).startswith("Open request")
+
+    if _GROUP_QUESTION.search(prompt):
+        return [o for o in found if not is_request(o)]
+    if _REQUEST_QUESTION.search(prompt):
+        return [o for o in found if is_request(o)]
+    return found
 # "> 2025 / Deluxe / 602488195980 / WEB / AAC / 256" -- year, then any number of
 # edition and catalogue-number parts, then media, format and encoding. The three
 # that matter for deciding whether your upload duplicates one of these are the
@@ -401,6 +448,11 @@ class _Answer:
 class FlowPrompts:
     """Redirects click's prompt functions into a flow for as long as it is active."""
 
+    #: Which tracker the pipeline is currently working on, so a question that
+    #: is only about one of them can say so. Uploading to two trackers asks
+    #: "upload the torrent?" twice, and the two look identical.
+    tracker: str = ""
+
     def __init__(self, flow: Flow, folder: str = "") -> None:
         """Initialize with the flow that questions should go to.
 
@@ -419,6 +471,8 @@ class FlowPrompts:
         # Group candidates printed since the last question, so the next prompt
         # can offer them instead of asking for a pasted URL.
         self._candidates: list[dict[str, Any]] = []
+        #: What the pipeline renamed the release folder to, if it did.
+        self.renamed_to: str = ""
         # The last question's candidates, kept so a rejected answer does not
         # take the buttons with it when the pipeline asks again.
         self._offered: tuple[str, list[dict[str, Any]]] | None = None
@@ -493,13 +547,17 @@ class FlowPrompts:
             # out -- everything up to the post is still changeable, and a typo
             # in the metadata should not mean aborting the whole upload.
             if _RERUN_METADATA.search(prompt):
+                where = f" to {self.tracker}" if self.tracker else ""
                 choice = await self.flow.choose(
-                    prompt.split("(")[0].strip().rstrip("?:, ") or "Upload the torrent?",
+                    f"Upload the torrent{where}?",
                     [
-                        {"value": "yes", "label": "Upload the torrent"},
+                        {"value": "yes", "label": f"Upload to {self.tracker}" if self.tracker
+                                                  else "Upload the torrent"},
                         {"value": "no", "label": "← Back to the metadata"},
                     ],
-                    detail="Nothing has been posted yet, so going back changes what will be.",
+                    detail=(f"Nothing has been posted{where} yet, so going back changes what will be."
+                            if self.tracker
+                            else "Nothing has been posted yet, so going back changes what will be."),
                     default="yes",
                     tables=tables,
                 )
@@ -540,6 +598,7 @@ class FlowPrompts:
         tables = self._tables if self._table_stage == self.flow.stage else []
         self._tables, self._block, self._table_stage = [], None, None
         options = options or parse_extra_options(prompt)
+        found = _for_this_question(prompt, found)
 
         # "Press enter once you are finished viewing" wants acknowledgement,
         # not typing -- and it is the moment the spectrals are meant to be
@@ -709,7 +768,7 @@ class FlowPrompts:
         else:
             # Metadata results and numbered menus are offered the same way: the
             # pipeline wants the index back, so that is the option's value.
-            result = _RESULT_LINE.match(text) if text.startswith(">") else None
+            result = _RESULT_LINE.match(text) if text.startswith(">") and ">>>" not in text else None
             menu = _MENU_LINE.match(text)
             if result:
                 index, description, url = result[1], result[2].strip(), result[3]
@@ -726,7 +785,15 @@ class FlowPrompts:
                         "link_label": "Open on Deezer ↗",
                     }
                 )
-            elif menu and len(text) < 60:
+            elif menu and len(text) < 60 and ">>>" not in text:
+                # A line carrying the rename arrow is a file being renamed, not
+                # an answer to anything. "05. Night Piano.flac >>> 05. Ronan -
+                # Night Piano.flac" reads as a numbered menu entry, so it was
+                # offered as a button beside "upload to an existing group on
+                # RED?" -- a filename presented as a torrent group to post
+                # into. The downconvert menu already refused these; every
+                # question should, because no question has a filename for an
+                # answer.
                 self._candidates.append({"value": menu[1], "label": menu[2][:60], "detail": ""})
 
         if "spectrals are available" in text.lower():
@@ -825,6 +892,13 @@ class FlowPrompts:
             if not rows:
                 rows.append({"group": "", "label": "", "before": "", "after": "", "changed": True})
             rows[0]["before" if name[1].lower() == "old" else "after"] = name[2]
+            # Kept as a value, not only as a row to draw. The pipeline renames
+            # the folder mid-run, so the path the run started with is not the
+            # path on disk when it ends -- and the tidy-up afterwards looked
+            # for the old one, found nothing, and silently left the release
+            # sitting in the download folder.
+            if name[1].lower() != "old":
+                self.renamed_to = name[2]
             return True
 
         if self._block["kind"] == "dryrun":
@@ -842,6 +916,16 @@ class FlowPrompts:
             )
             # Kept for the result summary as well as the question it sits under.
             self.dry_run_payload[field[1].strip()] = field[2].strip()
+            return True
+
+        if self._block["kind"] == "request":
+            labelled = _LABELLED.match(text)
+            if not labelled:
+                return False
+            self._block["rows"].append(
+                {"group": "", "label": labelled[1].strip(), "before": labelled[2].strip(),
+                 "after": "", "changed": False}
+            )
             return True
 
         if self._block["kind"] == "renames":
@@ -980,7 +1064,40 @@ class FlowPrompts:
             return None
         return _editor_text(shape, answer, original)
 
-    def _metadata_sections(self, metadata: dict) -> list[dict[str, Any]]:
+    #: Which field a validator complaint is about, by a phrase from its text.
+    #:
+    #: The message went into the prose above a form of thirteen fields and left
+    #: the reader to work out which one it meant. "You must specify at least
+    #: one genre" with the genre list four screens down reads as a form that
+    #: will not save and will not say why.
+    _PROBLEM_FIELDS = (
+        ("genre", "genres"),
+        ("main artist per track", "tracks"),
+        ("main artist", "artists"),
+        ("artist importance", "artists"),
+        ("year", "year"),
+        ("release type", "rls_type"),
+        ("label", "label"),
+        ("catno", "catno"),
+    )
+
+    @classmethod
+    def _problem_field(cls, problem: str) -> str:
+        """The field key a validator message is about, or "".
+
+        Args:
+            problem: The InvalidMetadataError text.
+
+        Returns:
+            A field key from the metadata form, or "" when nothing matches.
+        """
+        text = (problem or "").lower()
+        for needle, key in cls._PROBLEM_FIELDS:
+            if needle in text:
+                return key
+        return ""
+
+    def _metadata_sections(self, metadata: dict, problem_field: str = "") -> list[dict[str, Any]]:
         """Every editable field of a release, as one form.
 
         The pipeline's metadata screen is a menu: it prints the record, asks
@@ -999,7 +1116,11 @@ class FlowPrompts:
                 "key": f"{disc}/{num}",
                 "label": f"Disc {disc} · track {num}" if len(metadata.get("tracks") or {}) > 1 else f"Track {num}",
                 "value": track.get("title") or "",
+                # Editable, because the trackers refuse a track with no main
+                # artist and this is the only place that can be said. Roles
+                # ride along so a name keeps the one it already has.
                 "artists": ", ".join(name for name, _role in (track.get("artists") or [])),
+                "roles": [{"name": name, "role": role} for name, role in (track.get("artists") or [])],
             }
             for disc, disc_tracks in (metadata.get("tracks") or {}).items()
             for num, track in disc_tracks.items()
@@ -1008,10 +1129,20 @@ class FlowPrompts:
         def text(key: str, label: str, hint: str = "") -> dict[str, Any]:
             return {"kind": "text", "key": key, "label": label, "value": metadata.get(key) or "", "hint": hint}
 
+        def mark(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """Flag the field the validator is complaining about."""
+            if not problem_field:
+                return groups
+            for group in groups:
+                for field in group["fields"]:
+                    if field.get("key") == problem_field:
+                        field["error"] = True
+            return groups
+
         # Grouped, because thirteen fields in one run is a wall. Each group is
         # a question you can answer on its own: what is this release, who is on
         # it, which pressing is it, how is it filed.
-        return [
+        return mark([
             # The two years sit together. They are the same question asked
             # twice -- when the album came out, and when this pressing did --
             # and putting them in different groups meant comparing them was a
@@ -1045,12 +1176,13 @@ class FlowPrompts:
                  "value": metadata.get("comment") or ""},
             ]},
             {"group": "Tracks", "fields": [
-                {"kind": "tracks", "key": "tracks", "label": "Track titles", "rows": tracks},
+                {"kind": "tracks", "key": "tracks", "label": "Tracks", "rows": tracks,
+                 "hint": "Each track needs at least one main artist. The first name listed is the main "
+                         "one unless the credits above give it another role."},
             ]},
-        ]
+        ])
 
-    @staticmethod
-    def _apply_metadata(metadata: dict, answer: Any) -> None:
+    def _apply_metadata(self, metadata: dict, answer: Any) -> None:
         """Write a metadata form's answer back over the release.
 
         Only the keys the form sent are touched, so a field the form does not
@@ -1089,19 +1221,72 @@ class FlowPrompts:
             if key in answer:
                 metadata[key] = str(answer.get(key) or "").strip() or None
 
+        # Emptied means emptied, for both. Genres used to be the exception:
+        # clearing the list left the old ones in place, so a genre removed
+        # because it was wrong came straight back, the record validated on the
+        # strength of it, and the upload went out with the genre the operator
+        # had just deleted. An empty list is an answer -- and one the validator
+        # is there to refuse.
         for key in ("genres", "urls"):
             if isinstance(answer.get(key), list):
-                values = [str(v).strip() for v in answer[key] if str(v).strip()]
-                if values or key == "urls":
-                    metadata[key] = values
+                metadata[key] = [str(v).strip() for v in answer[key] if str(v).strip()]
 
-        titles = answer.get("tracks")
-        if isinstance(titles, dict):
-            for key, title in titles.items():
+        edits = answer.get("tracks")
+        if isinstance(edits, dict):
+            album_roles = {name.lower(): role for name, role in (metadata.get("artists") or [])}
+            for key, edit in edits.items():
                 disc, _, num = str(key).partition("/")
-                text_title = str(title).strip()
-                if text_title and disc in metadata.get("tracks", {}) and num in metadata["tracks"][disc]:
-                    metadata["tracks"][disc][num]["title"] = text_title
+                if disc not in metadata.get("tracks", {}) or num not in metadata["tracks"][disc]:
+                    continue
+                track = metadata["tracks"][disc][num]
+                # The form used to send a bare title. Both shapes are read so
+                # an answer in flight across a restart still lands.
+                if not isinstance(edit, dict):
+                    edit = {"title": edit}
+
+                text_title = str(edit.get("title", "")).strip()
+                if text_title:
+                    track["title"] = text_title
+
+                if "artists" in edit:
+                    track["artists"] = self._track_artists(
+                        str(edit.get("artists") or ""), track.get("artists") or [], album_roles
+                    )
+
+    @staticmethod
+    def _track_artists(
+        written: str, current: list[tuple[str, str]], album_roles: dict[str, str]
+    ) -> list[tuple[str, str]]:
+        """The artists of one track, as edited, each with a role.
+
+        The form asks for names, because that is what a track credit reads
+        like. The role comes from what the name already had here, then from
+        what the release credits it as, and a track with nobody left as a main
+        artist takes its first name as one -- the trackers require one, and a
+        release that cannot satisfy that cannot be posted at all.
+
+        Args:
+            written: The names as typed, separated by commas.
+            current: What the track was credited with before the edit.
+            album_roles: Lowercased name to role, from the release credits.
+
+        Returns:
+            Name and role pairs, in the order they were written.
+        """
+        was = {name.lower(): role for name, role in current}
+        people: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for name in (n.strip() for n in written.split(",")):
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            people.append((name, was.get(name.lower()) or album_roles.get(name.lower()) or "guest"))
+
+        if not people:
+            return list(current)
+        if not any(role == "main" for _name, role in people):
+            people[0] = (people[0][0], "main")
+        return people
 
     def _review_metadata(self) -> Any:
         """A replacement for the pipeline's metadata menu: one form, one Save."""
@@ -1116,7 +1301,7 @@ class FlowPrompts:
                         "edit",
                         "Release metadata",
                         detail=problem or "Everything the upload will be posted with. Change what you need, then save.",
-                        options=self._metadata_sections(metadata),
+                        options=self._metadata_sections(metadata, self._problem_field(problem)),
                         edit_shape="metadata",
                     )
                 )
@@ -1461,19 +1646,35 @@ class FlowPrompts:
 async def run_upload(
     flow: Flow,
     folder: str,
-    tracker: str,
+    trackers: list[str],
     *,
     source: str = "WEB",
     auto_rename: bool = False,
+    link_for: Any = None,
+    on_uploaded: Any = None,
+    link_derived: Any = None,
+    linked_requests: dict[str, str] | None = None,
+    on_request: Any = None,
+    download_url: str = "",
 ) -> dict[str, Any]:
-    """Upload one folder to one tracker, asking the browser as it goes.
+    """Upload one folder to every chosen tracker, asking the browser as it goes.
+
+    One pass of the pipeline, not one per tracker. Everything that is a fact
+    about the release -- the spectrals, the metadata lookup, the retagging, the
+    folder and file names, which formats to convert to -- happens once; only
+    what is genuinely per-tracker happens per tracker.
 
     Args:
         flow: The flow questions and progress are published to.
         folder: Release folder to upload.
-        tracker: Tracker code.
+        trackers: Tracker codes, in the order they should run.
         source: Media source.
         auto_rename: Rename files and folders without asking.
+        link_for: Called with ``(tracker, path)`` before each tracker's post,
+            returning the path that tracker seeds from.
+        on_uploaded: Called with ``(tracker, url)`` after each tracker takes it.
+        link_derived: Called with ``(tracker, path)`` for a transcode, so it is
+            made once and linked rather than encoded again per tracker.
 
     Returns:
         A summary of what happened.
@@ -1484,12 +1685,26 @@ async def run_upload(
     import lox.trackers
     from lox.uploader import upload as run_pipeline
 
-    flow.progress(f"Preparing {tracker}")
-    flow.note(f"Uploading {folder} to {tracker}")
-    debug.log("upload start tracker=%s folder=%s", tracker, folder, level=20)
+    first = trackers[0]
+    flow.progress(f"Preparing {', '.join(trackers)}")
+    flow.note(f"Uploading {folder} to {', '.join(trackers)}")
+    debug.log("upload start trackers=%s folder=%s", ",".join(trackers), folder, level=20)
 
-    gazelle = lox.trackers.get_class(tracker)()
+    gazelle = lox.trackers.get_class(first)()
+    # This task is an upload, so its tracker calls take the upload allowance
+    # rather than queueing behind whatever the checker is doing. A scan makes
+    # hundreds of calls; an upload is one release and a person watching it.
+    from lox.trackers.base import uploading  # noqa: PLC0415
+
+    token = uploading.set(True)
     with FlowPrompts(flow, folder) as prompts:
+        prompts.tracker = first
+
+        def on_tracker(tracker: str) -> None:
+            """Which tracker the questions from here on are about."""
+            prompts.tracker = tracker
+            flow.progress(f"Uploading to {tracker}")
+
         await run_pipeline(
             gazelle,
             folder,
@@ -1499,12 +1714,25 @@ async def run_upload(
             (),
             None,
             auto_rename=auto_rename,
+            also_upload_to=list(trackers),
+            link_for=link_for,
+            on_uploaded=on_uploaded,
+            on_tracker=on_tracker,
+            link_derived=link_derived,
+            linked_requests=linked_requests,
+            on_request=on_request,
+            download_url=download_url,
         )
 
-    flow.progress(f"Finished {tracker}", 100.0)
-    debug.log("upload finished tracker=%s folder=%s", tracker, folder, level=20)
+    uploading.reset(token)
+    flow.progress(f"Finished {', '.join(trackers)}", 100.0)
+    debug.log("upload finished trackers=%s folder=%s", ",".join(trackers), folder, level=20)
     posts = prompts.finish_posts()
     return {
+        # Where the release actually is now. The pipeline renames the folder
+        # partway through, so this is not always what was passed in.
+        "folder": (os.path.join(os.path.dirname(folder.rstrip("/\\")), prompts.renamed_to)
+                   if prompts.renamed_to else folder),
         "posts": posts,
         # The first is the release itself; any others are its downconversions.
         "fields": posts[0]["fields"] if posts else {},
@@ -1519,13 +1747,28 @@ async def run_uploads(
     *,
     source: str = "WEB",
     auto_rename: bool = False,
+    linked_requests: dict[str, str] | None = None,
+    download_url: str = "",
 ) -> dict[str, Any]:
-    """Upload one folder to several trackers, hardlinking per tracker first.
+    """Upload one folder to several trackers, hardlinking per tracker as it goes.
+
+    This used to call the pipeline once per tracker, which meant the second
+    tracker asked every question the first had already answered: the spectrals
+    were regenerated and re-reviewed, the metadata was looked up and confirmed
+    again, the files were retagged and the folder renamed again, and the
+    downconversions were chosen again -- all about a release that had not
+    changed in the intervening minute. The pipeline has always had its own
+    tracker loop that does the shared work once; it was being switched off.
+
+    It is driven rather than switched off now. The loop is given exactly the
+    trackers picked in the UI, in the order picked, so it never offers one that
+    was deliberately left out -- which was the reason for switching it off in
+    the first place.
 
     Args:
         flow: The flow to drive.
         folder: Release folder.
-        trackers: Tracker codes.
+        trackers: Tracker codes, in the order they should run.
         source: Media source.
         auto_rename: Rename without asking.
 
@@ -1533,36 +1776,203 @@ async def run_uploads(
         Per-tracker outcomes.
     """
     from lox import cfg
+    from lox.seeding.links import LinkError, link_release
 
-    # The pipeline has its own multi-tracker loop: at the end of a release it
-    # offers whatever other trackers are configured. Here that is both redundant
-    # and wrong -- this function is already looping over exactly the trackers
-    # picked in the UI, so the offer names ones that were deliberately not
-    # picked, and taking it would upload twice.
-    was_multi = cfg.upload.multi_tracker_upload
-    cfg.upload.multi_tracker_upload = False
+    outcomes: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}
+    # Transcodes made beside the download and linked into each tracker's
+    # folder. The originals are duplicates once that is done.
+    derived_links: list[str] = []
+    # Which trackers actually took the torrent, recorded as it happens. A run
+    # that stops on the second tracker must not report the second as uploaded,
+    # nor the first as failed.
+    posted_to: dict[str, str] = {}
+    # Which request each tracker's post filled, so the card can link it. A
+    # filled request is a page that now points at this upload, and the operator
+    # was told the release went up and left to find out for themselves whether
+    # the request they queued it for had been answered.
+    filled: dict[str, int] = {}
+
+    def on_uploaded(tracker: str, url: Any) -> None:
+        posted_to[tracker] = str(url or "")
+        flow.note(f"{tracker} took the upload.")
+
+    def on_request(tracker: str, request_id: int) -> None:
+        filled[tracker] = request_id
+        flow.note(f"{tracker}: filling request {request_id}.")
+        # On the card while it is still running, not only in the result.
+        context = dict(flow.context or {})
+        context.setdefault("filled_requests", {})
+        context["filled_requests"] = {**context["filled_requests"], tracker: request_id}
+        flow.context = context
+
+    async def link(tracker: str, path: str, label: str) -> str:
+        """Place one prepared folder where a tracker can seed it from.
+
+        Args:
+            tracker: Tracker code.
+            path: The folder as it was prepared, once, for the release.
+            label: What it is, for the note.
+
+        Returns:
+            Where that tracker seeds it from -- the same bytes, one hardlink.
+        """
+        if not cfg.linking.enabled:
+            return path
+        flow.progress(f"Linking {label} for {tracker}")
+        try:
+            made = await _to_thread(link_release, path, tracker)
+        except LinkError as e:
+            # Not fatal: the tracker can still have the release, it just seeds
+            # from the same folder as the others.
+            flow.note(f"{tracker}: linking {label} failed — {e}", "error")
+            return path
+        flow.note(f"{tracker}: {'reused' if made.reused else made.method} "
+                  f"{made.files} file(s) for {label}")
+        return made.destination
+
+    async def link_for(tracker: str, path: str) -> str:
+        """Where this tracker should seed the release from."""
+        if tracker in seen:
+            return seen[tracker]
+        destination = await link(tracker, path, "the release")
+        seen[tracker] = destination
+        return destination
+
+    async def link_derived(tracker: str, path: str) -> str:
+        """Where this tracker should seed a transcode from.
+
+        A transcode is a fact about the release, not about the tracker: the
+        same thirteen tracks at V0 whoever is being uploaded to. It is made
+        once and linked, exactly like the lossless folder beside it -- encoding
+        it again per tracker wrote a second copy of identical audio and took as
+        long again to do it.
+        """
+        derived_links.append(path)
+        return await link(tracker, path, os.path.basename(path))
+
+    result: dict[str, Any] = {}
+    # Where the release is on disk when the run ends. The pipeline renames the
+    # folder partway through, so this is not always what was passed in, and the
+    # tidy-up afterwards has to remove the one that is really there.
+    source_folder = folder
+    with _record_transcodes() as transcoded:
+        try:
+            posted = await run_upload(
+                flow, folder, trackers, source=source, auto_rename=auto_rename,
+                link_for=link_for, on_uploaded=on_uploaded, link_derived=link_derived,
+                linked_requests=linked_requests, on_request=on_request,
+                download_url=download_url,
+            )
+        except click.Abort:
+            flow.note("Aborted.", "warning")
+            outcomes = [{"tracker": t, "ok": False, "error": "aborted"} for t in trackers]
+            posted = {}
+        except Exception as e:  # noqa: BLE001 - reported rather than raised
+            flow.note(f"{type(e).__name__}: {e}", "error")
+            outcomes = [{"tracker": t, "ok": False, "error": str(e)} for t in trackers]
+            posted = {}
+        else:
+            reached = set(posted_to)
+            source_folder = posted.get("folder") or folder
+
+            outcomes = [
+                {
+                    "tracker": tracker,
+                    "ok": tracker in reached,
+                    "folder": seen.get(tracker, folder),
+                    # Where the torrent now lives. The pipeline hands this over
+                    # as each tracker takes the upload and it was recorded and
+                    # then dropped here, so the history had nothing to link to
+                    # and fell back to a search for the folder name -- the one
+                    # page that knows the exact torrent id was sending people
+                    # to a search box.
+                    "url": posted_to.get(tracker, ""),
+                    # The request this post filled, if it filled one.
+                    "request_id": filled.get(tracker),
+                    "would_post": posted.get("fields") or {},
+                    "descriptions": posted.get("descriptions") or {},
+                    "posts": posted.get("posts") or [],
+                }
+                if tracker in reached
+                else {"tracker": tracker, "ok": False, "error": "did not reach this tracker"}
+                for tracker in trackers
+            ]
+
+        succeeded = [o["tracker"] for o in outcomes if o["ok"]]
+        result = {
+            "folder": folder,
+            # Where it ended up, which is what has to be removed afterwards.
+            "source_folder": source_folder,
+            "filled_requests": dict(filled),
+            "outcomes": outcomes,
+            "succeeded": succeeded,
+            "dry_run": _dry_run(),
+        }
+        # Kept, never deleted, and only worth mentioning on a rehearsal. A dry
+        # run exists to be inspected, and deleting the transcodes it just made
+        # removes the part you most wanted to look at. A real run's
+        # downconversions were uploaded and are seeding, so they are not
+        # leftovers at all.
+        if _dry_run():
+            for path in transcoded:
+                flow.note(f"Transcode kept at {path}")
+            result["transcodes"] = list(transcoded)
+            for outcome in result.get("outcomes") or []:
+                outcome["kept"] = list(transcoded)
+        else:
+            result["transcodes"] = []
+
+    _discard_spectrals(flow, folder)
+    _clean_up_source(flow, result.get("source_folder") or folder, result, derived_links)
+    return result
+
+
+def _clean_up_source(flow: Flow, folder: str, result: dict[str, Any],
+                     derived: list[str] | None = None) -> None:
+    """Remove the download the release was made from, once it is somewhere else.
+
+    A finished upload leaves the release seeding from the per-tracker link
+    directories, and the original download sitting in the download folder --
+    where it stays on the Uploading list for ever, offering to upload a release
+    that has already been uploaded.
+
+    Only ever when all three are true: the upload was real, at least one
+    tracker took it, and linking is on so the bytes genuinely exist somewhere
+    else. With linking off the tracker is seeding from this very folder, and
+    deleting it would break the torrent.
+    """
+    import shutil
+
+    from lox import cfg
+
+    if _dry_run() or not result.get("succeeded"):
+        return
+    if not cfg.linking.enabled or not cfg.linking.remove_source_after_upload:
+        return
+    linked = [o.get("folder") for o in result.get("outcomes") or [] if o.get("ok")]
+    if not any(path and os.path.abspath(path) != os.path.abspath(folder) for path in linked):
+        # Nothing was linked anywhere else, so this folder is what is seeding.
+        return
+    if not os.path.isdir(folder):
+        return
+    # The transcodes were made beside the download and linked into each
+    # tracker's folder, so the ones here are the same duplicates the release
+    # itself is, and go the same way.
+    for path in dict.fromkeys(derived or ()):
+        if not os.path.isdir(path) or os.path.abspath(path) == os.path.abspath(folder):
+            continue
+        try:
+            shutil.rmtree(path)
+        except OSError as e:
+            flow.note(f"Could not remove {path}: {e}", "warning")
+
     try:
-        with _record_transcodes() as transcoded:
-            result: dict[str, Any] = {}
-            try:
-                result = await _upload_each(flow, folder, trackers, source=source, auto_rename=auto_rename)
-                return result
-            finally:
-                # Kept, never deleted. A dry run exists to be inspected, and
-                # deleting the transcodes it just made meant the one part you
-                # most wanted to check -- that the conversion produced the
-                # right files -- was gone before you could look. They are
-                # listed on the result with a button to remove them, so the
-                # decision is yours rather than automatic.
-                for path in transcoded:
-                    flow.note(f"Transcode kept at {path}")
-                if result:
-                    result["transcodes"] = list(transcoded)
-                    for outcome in result.get("outcomes") or []:
-                        outcome["kept"] = list(transcoded)
-    finally:
-        cfg.upload.multi_tracker_upload = was_multi
-        _discard_spectrals(flow, folder)
+        shutil.rmtree(folder)
+    except OSError as e:
+        flow.note(f"Could not remove {folder}: {e}", "warning")
+        return
+    flow.note(f"Removed the download at {folder}; the trackers seed from their own copies.")
 
 
 @contextlib.contextmanager
@@ -1620,60 +2030,6 @@ def _discard_spectrals(flow: Flow, folder: str) -> None:
         flow.note(f"Removed spectral scratch: {os.path.basename(path)}")
     except OSError as e:
         flow.note(f"Could not remove {path}: {e}", "warning")
-
-
-async def _upload_each(
-    flow: Flow,
-    folder: str,
-    trackers: list[str],
-    *,
-    source: str,
-    auto_rename: bool,
-) -> dict[str, Any]:
-    """Upload to each tracker in turn. See :func:`run_uploads`."""
-    from lox import cfg
-    from lox.seeding.links import LinkError, link_release
-
-    outcomes: list[dict[str, Any]] = []
-    for tracker in trackers:
-        target = folder
-        if cfg.linking.enabled:
-            flow.progress(f"Linking for {tracker}")
-            try:
-                link = await _to_thread(link_release, folder, tracker)
-                target = link.destination
-                flow.note(f"{tracker}: {'reused' if link.reused else link.method} {link.files} file(s)")
-            except LinkError as e:
-                flow.note(f"{tracker}: linking failed — {e}", "error")
-                outcomes.append({"tracker": tracker, "ok": False, "error": str(e)})
-                continue
-
-        try:
-            posted = await run_upload(flow, target, tracker, source=source, auto_rename=auto_rename)
-            outcomes.append(
-                {
-                    "tracker": tracker,
-                    "ok": True,
-                    "folder": target,
-                    "would_post": posted.get("fields") or {},
-                    "descriptions": posted.get("descriptions") or {},
-                    "posts": posted.get("posts") or [],
-                }
-            )
-        except click.Abort:
-            flow.note(f"{tracker}: aborted", "warning")
-            outcomes.append({"tracker": tracker, "ok": False, "error": "aborted"})
-        except Exception as e:  # noqa: BLE001 - one tracker failing must not stop the rest
-            flow.note(f"{tracker}: {type(e).__name__}: {e}", "error")
-            outcomes.append({"tracker": tracker, "ok": False, "error": str(e)})
-
-    succeeded = [o["tracker"] for o in outcomes if o["ok"]]
-    return {
-        "folder": folder,
-        "outcomes": outcomes,
-        "succeeded": succeeded,
-        "dry_run": _dry_run(),
-    }
 
 
 def _dry_run() -> bool:

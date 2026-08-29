@@ -841,38 +841,22 @@ button.link {
 .hitlist .hit { display: flex; flex-direction: column; gap: 1px; padding: 6px 0 6px 9px; border-left: 2px solid var(--border); margin-bottom: 5px; }
 .hitlist .hit.matched { border-left-color: var(--ok); }
 
-/* One saved search per line, in columns, so the names read down the page and
-   the buttons sit under each other rather than wherever the name before them
-   happened to end. The row was a flex line of five things of five different
-   widths, which is a list you have to read left to right to find anything in.
-
-   The when-column drops out before the name does: which module this is
-   matters more than when it was last scanned. */
-.watchrow {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  padding: 10px 0;
-}
-.watchrow:last-of-type { border-bottom: 0; }
-.watch-what { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.watch-what strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.watch-when { white-space: nowrap; }
-.watch-acts { display: flex; align-items: center; gap: 8px; }
-.watch-acts button, .watch-acts .linkbtn { padding: 5px 10px; font-size: 12px; }
-
 /* Renaming happens in the row, not in a dialogue over the top of it: the name
-   you are changing is worth having on screen while you change it. */
-.watch-rename { display: flex; align-items: center; gap: 8px; grid-column: 2 / -1; }
+   you are changing is worth having on screen while you change it.
+
+   The rest of the saved-search row is gone: it is one of the app's tables now,
+   so it gets the same column filters, the same sorting and the same
+   shift-click selection as every other list rather than its own grid with no
+   way to find a search by name. */
+.watch-rename { display: flex; align-items: center; gap: 8px; }
 .watch-rename input { flex: 1; min-width: 0; }
 
-@media (max-width: 760px) {
-  .watchrow { grid-template-columns: auto minmax(0, 1fr); }
-  .watch-when { grid-column: 2; }
-  .watch-acts { grid-column: 2; }
-}
+/* A filter bar for a list that is not a table. The downloads are cards with
+   progress bars, so they cannot carry per-column filters -- but forty of them
+   still need narrowing. */
+.listfilter { margin-bottom: 12px; }
+.listfilter .th-filter { width: auto; min-width: 180px; }
+.listfilter select.th-filter { min-width: 120px; }
 
 /* The scan's filters. Four short answers -- a count, two dates and an age --
    so four fields across, wrapping when there is no room for four.
@@ -1016,16 +1000,54 @@ select {
 }
 
 /* A credential that stands on its own gets its own test beside its label. */
-.setting-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.setting-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }
 .setting-head > label { flex: 1; min-width: 0; }
 .field-test { font-size: 11.5px; padding: 4px 10px; flex: none; }
 
+/* Settings line up across a row, not just down a column.
+
+   Every setting is a label, a control and a note. Laid out as independent
+   flex columns they only ever agreed by luck: a two-line label pushed its own
+   box down while the box beside it stayed put, a long note stretched one cell
+   and left its neighbour floating, and a checkbox -- which had no control row
+   at all -- sat level with the labels rather than with the controls. Reading
+   across a row of four settings meant reading four different layouts.
+
+   Each setting spans the same three grid rows, so every label in a row shares
+   a baseline, every control shares one, and every note starts at the same
+   height. settingField() guarantees the three parts, empty or not. */
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
-  margin-top: 14px;
+  gap: 20px 18px;
+  margin-top: 16px;
+  align-items: start;
 }
+
+.settings-grid > .setting {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+}
+
+@supports (grid-template-rows: subgrid) {
+  .settings-grid > .setting {
+    grid-row: span 3;
+    grid-template-rows: subgrid;
+  }
+}
+
+/* The label row keeps its height whether or not there is a label in it, so a
+   row of checkboxes does not close up while the row above it does not. */
+.setting-head { min-height: 19px; }
+.setting-head:empty { min-height: 19px; }
+.setting-control { display: flex; flex-direction: column; gap: 8px; justify-content: flex-start; }
+.setting-control > * { margin: 0; }
+/* An empty note takes no space but still holds its row open for the notes
+   beside it. */
+.setting-help:empty { display: none; }
 
 /* One torrent client per card: how to reach it above the rule, what to do with
    it below. Without the border the two clients ran into each other and the
@@ -1204,18 +1226,6 @@ select {
 /* A partial read is worth noticing, because more of it is one click away. */
 .requests-summary.partial { border-left: 3px solid var(--accent); color: var(--text); }
 
-/* What is keeping each group out, said once at the top instead of repeated
-   down the "why" column, and only where something can be done about it. */
-.held-why {
-  margin: 8px 0 14px;
-  padding-left: 18px;
-  font-size: 13px;
-  color: var(--text-dim);
-}
-
-.held-why li { margin-bottom: 4px; }
-.held-actions { margin-bottom: 10px; }
-
 /* Dates do not read well broken over two lines. */
 .table td.nowrap { white-space: nowrap; }
 
@@ -1233,17 +1243,41 @@ select {
   padding-bottom: 10px;
 }
 
+/* A column is a label, the filter that narrows it, and the values -- one
+   stack, on one centre line. They were all left-aligned against cells of very
+   different widths, so a short label sat at the far left of a wide column with
+   its filter box under it and the values somewhere off to the side, and
+   nothing in a column looked like it belonged to anything else in it.
+
+   The release name is the exception and stays left: a column of ragged
+   centred titles cannot be scanned down, which is the one thing that column
+   is for. Its header goes left with it, so the label still sits over the
+   values it names. */
 .datatable thead th > .th-label {
   display: flex;
   align-items: flex-end;
+  justify-content: center;
   min-height: 20px;
 }
 
+/* The slot is the same height in every column, filter or no filter, so the
+   header does not step up where a column has nothing to filter on. */
 .datatable thead th > .th-filter-slot {
-  display: block;
-  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
   padding-top: 6px;
 }
+
+.datatable td { text-align: center; }
+.datatable th.col-pick, .datatable td.col-pick { text-align: center; }
+
+/* Text that is read rather than compared. */
+.datatable th.col-text > .th-label,
+.datatable th.col-text > .th-filter-slot { justify-content: flex-start; }
+.datatable td.col-text { text-align: left; }
+.datatable th.col-text .th-filter, .datatable th.col-text .th-range-pair { margin-right: auto; }
 
 .th-sort {
   display: inline-flex;
@@ -1269,18 +1303,165 @@ select {
 .track-missing { opacity: 0.55; }
 .track-missing .track-title { text-decoration: line-through; }
 
+/* Every filter control is the same height, whatever kind it is.
+
+   A select is laid out by the browser from its own font metrics and a text
+   input from its padding, so the same rule gave a dropdown several pixels
+   more height than the box beside it -- and a header row with one of each
+   stepped up and down across the table. Fixing the height and the box model
+   is what makes the row read as one row. */
 .th-filter {
   display: block;
   width: 100%;
   max-width: 220px;
   min-width: 0;
+  height: 28px;
+  box-sizing: border-box;
   font-size: 12px;
+  line-height: 18px;
   padding: 4px 7px;
+  vertical-align: middle;
 }
 
-/* A lower and an upper limit, side by side and equally wide. */
-.th-range-pair { display: flex; gap: 5px; max-width: 220px; }
+/* Number inputs come with spinners that shrink the usable width to nothing in
+   a narrow column, and nobody nudges a year one at a time. */
+.th-filter[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.th-filter[type="number"]::-webkit-outer-spin-button,
+.th-filter[type="number"]::-webkit-inner-spin-button { appearance: none; margin: 0; }
+
+select.th-filter { padding-right: 22px; }
+
+/* A choice column is a set of facts, so its filter is a set of tick boxes --
+   the way a spreadsheet asks the same question. It was a single-select of the
+   whole joined value, so asking for "OPS missing" meant finding a row whose
+   entire verdict happened to read that, and a fact only ever drawn as a tag
+   ("already on tracker") was not in the list at all.
+
+   details/summary rather than a popover library: it opens in place and closes
+   on the next click without a line of script.
+
+   Written first against --panel and --line, neither of which this stylesheet
+   has: both resolved to nothing, so the menu had no ground and no edge and the
+   table showed straight through it. */
+/* A panel that can be folded away. The saved searches grow without limit and
+   sit between the scan box and its own results, so a long list pushed the
+   thing you came to read off the screen. */
+.panel-fold > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.panel-fold > summary::-webkit-details-marker { display: none; }
+.panel-fold > summary::marker { content: ""; }
+.panel-fold > summary h2 { margin: 0; }
+.panel-fold > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid var(--text-dim);
+  transition: transform 0.12s ease;
+}
+.panel-fold[open] > summary::before { transform: rotate(90deg); }
+.panel-fold > summary:hover::before { border-left-color: var(--accent); }
+/* Folded, the heading is the whole panel, so it should not keep the gap the
+   open one leaves under it. */
+.panel-fold:not([open]) { padding-bottom: 14px; }
+
+.th-choicebox { position: relative; max-width: 220px; }
+.th-choicebox > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text);
+  /* The header uppercases and letter-spaces its own text, which is right for
+     a column label and wrong for the value of a control sitting under it. */
+  text-transform: none;
+  letter-spacing: normal;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.th-choicebox > summary::-webkit-details-marker { display: none; }
+/* The value takes the room and truncates; the arrow keeps its own. */
+.th-choice-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.th-choicebox > summary::marker { content: ""; }
+/* Something to say it opens. Without it the control read as a label. */
+.th-choicebox > summary::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid var(--text-dim);
+  transition: transform 0.12s ease;
+}
+.th-choicebox[open] > summary { border-color: var(--accent); }
+.th-choicebox[open] > summary::after { transform: rotate(180deg); }
+.th-choicebox > summary:hover { border-color: var(--accent-edge); }
+/* Narrowed to something, so the column says so without being opened. */
+.th-choicebox.th-choicebox-on > summary { border-color: var(--accent); color: var(--accent); }
+
+.th-choices {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* Opaque, and lifted off the rows underneath. */
+  background: var(--bg-raised);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 55%);
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.th-choices-head {
+  display: flex;
+  gap: 10px;
+  padding: 2px 4px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
+}
+.th-choice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 5px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.th-choice:hover { background: var(--bg-input); }
+.th-choice input { flex: 0 0 auto; margin: 0; }
+
+/* A lower and an upper limit, side by side and equally wide -- and, for a
+   date column, what the two of them are measured in. Two bare numbers over a
+   column of dates is not a question anybody can answer. */
+.th-range-pair { display: flex; align-items: center; gap: 5px; max-width: 260px; width: 100%; }
 .th-range-pair .th-range { flex: 1 1 0; min-width: 0; }
+.th-range-pair .th-unit { flex: 0 0 auto; width: auto; min-width: 74px; }
 
 /* What a run passed over. Sits under the log it belongs to, and goes when it
    is acted on. */
@@ -1308,8 +1489,9 @@ select {
 .filter-note { color: var(--warn); }
 
 .setting { display: flex; flex-direction: column; gap: 5px; }
-.setting > label { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
-.setting-help { margin: 0; font-size: 11.5px; }
+.setting > label,
+.setting-head > label { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.setting-help { margin: 0; font-size: 11.5px; line-height: 1.45; }
 .saved-tag { font-weight: 500; }
 
 /* A size, entered as a number and a unit. */
@@ -1577,6 +1759,14 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 .meta-form-field select,
 .meta-form-field textarea { width: 100%; }
 
+/* The field a validator refused, so the message has something to point at. */
+.meta-form-field.meta-form-bad {
+  outline: 1px solid var(--bad);
+  outline-offset: 6px;
+  border-radius: 4px;
+}
+.meta-form-error { color: var(--bad); }
+
 .meta-tracks { display: flex; flex-direction: column; gap: 6px; }
 .meta-track { display: flex; align-items: center; gap: 10px; }
 .meta-track-no {
@@ -1586,18 +1776,19 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
   font-variant-numeric: tabular-nums;
 }
 .meta-track input { flex: 1 1 auto; min-width: 0; }
-.meta-track-artists {
-  flex: 0 0 190px;
+/* The artists of a track are editable now, so this is a field rather than a
+   caption. It keeps the quieter type, because the title is the thing being
+   read down the column and the credits are the exception you correct. */
+.meta-track input.meta-track-artists {
+  flex: 0 1 260px;
   color: var(--text-dim);
   font-size: 11.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
+.meta-track input.meta-track-artists:focus { color: var(--text); }
 
 @media (max-width: 720px) {
   .meta-track { flex-wrap: wrap; }
-  .meta-track-no, .meta-track-artists { flex-basis: auto; }
+  .meta-track-no, .meta-track input.meta-track-artists { flex-basis: auto; }
 }
 
 /* Editing metadata as a form rather than in vim. */
@@ -1655,10 +1846,23 @@ button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
 
 /* One tag per tracker on a Found row. They wrap rather than stretching the
    column, so three trackers do not squeeze the release title. */
-.found-trackers { display: flex; flex-wrap: wrap; gap: 5px; }
+/* The tags lay themselves out; the cell does not.
+   `display: flex` on a <td> takes it out of the row's own height calculation,
+   so the cell stopped at the height of its tags while the row went on -- and
+   the cell's bottom border drew there, as a short bright line under the tags
+   with the real row line below it. It also made the whole group one flex item
+   pinned to the left of a centred column. Both go away by leaving the cell a
+   cell and letting the wrapper inside it do the arranging. */
+.found-trackers > span,
+.found-sources > span {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
 /* Both ways a release can have got here, side by side rather than run
    together: it used to be two rows, so the gap is the whole point. */
-.found-sources { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Reading the queue you have, as opposed to the Settings rules that decide
@@ -1671,10 +1875,6 @@ a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 /* What the rules kept out. Deliberately quiet -- it is a footnote to the
    queue, not a second queue -- but never invisible, because a rule that
    silently shortens a list is indistinguishable from an empty scan. */
-.held-note { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
-.held-block { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border); }
-.held-block .table { opacity: 0.72; }
-.held-block .table:hover { opacity: 1; }
 .section-head-plain {
   margin: 0 0 12px;
   font-size: 13px;
@@ -1873,3 +2073,180 @@ a.tag.warn:hover { border-color: var(--accent); color: var(--accent); }
 /* Revealed text is the value itself, so it is set in the face used for
    anything compared character by character. */
 .secret-field input[type="text"] { font-family: var(--mono); font-size: 12px; }
+
+
+/* ---------- upload targets, in the order they run ---------- */
+/* Two trackers is two posts, one after the other, and which of them goes first
+   decides who owns the group the second one adds to -- so the order is a real
+   decision and this is a real list. You drag it into the order you want, which
+   is what everyone tries first. It replaces a pair of chevrons per chip, which
+   was four more buttons on a row that already had too many and read as
+   punctuation rather than as controls. */
+.upload-targets { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.upload-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.upload-target:hover { color: var(--text); }
+.upload-target.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text, #1b1200);
+}
+.upload-target.draggable { cursor: grab; }
+.upload-target.dragging { opacity: 0.45; cursor: grabbing; }
+
+/* Where it would land. A line rather than a gap: a gap opening up shifts every
+   chip after it, and the row jumps about while you are aiming at it. */
+.upload-target.drop-before { box-shadow: -3px 0 0 0 var(--text); }
+.target-end.drop-before { box-shadow: -3px 0 0 0 var(--text); }
+.target-end { display: inline-block; width: 4px; align-self: stretch; border-radius: 2px; }
+
+/* Which position it holds, inside the chip rather than beside it. */
+.target-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.22);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* ---------- the upload queue ---------- */
+.upload-queue { border-left: 3px solid var(--accent); margin-bottom: 14px; }
+.queue-list { margin: 10px 0 0; padding-left: 22px; font-size: 13px; color: var(--text-dim); }
+.queue-list li { margin-bottom: 4px; }
+.queue-list .linkbtn { margin-left: 10px; font-size: 12px; }
+
+/* ---------- a download that came back below FLAC ---------- */
+.dl-quality { margin-top: 6px; font-size: 12px; display: flex; align-items: center; gap: 4px; }
+.danger-link { color: var(--bad); }
+
+/* ---------- a note you have read ---------- */
+.note-dismiss { margin-left: auto; padding: 2px 9px; font-size: 15px; line-height: 1; }
+
+/* ---------- browse ---------- */
+/* Every list in Browse can be sent to a scan, so every heading has room for
+   the button that does it. */
+.browse-head { margin-top: 18px; justify-content: flex-start; }
+.browse-head .section-title { margin: 0; margin-right: auto; }
+
+/* ---------- a tracker verdict you can follow ---------- */
+/* "OPS is missing this" is a claim about a page that exists. It used to be
+   text you had to retype into the tracker's own search. */
+a.tag-link { text-decoration: none; }
+a.tag-link:hover { filter: brightness(1.15); text-decoration: underline; }
+
+/* ---------- row actions inside a table ---------- */
+/* The Result column carries a sentence, and it was the last column in a table
+   that gave every other one whatever it asked for -- so the request name took
+   the width and the result wrapped onto a second line under it. */
+.table td.req-result, .table th.req-result { min-width: 220px; }
+.table td.req-name { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+
+.table td.row-actions { white-space: nowrap; text-align: right; }
+/* Every control in the cell, not just the buttons. The gap was written as
+   `button + button`, and "Open" is an anchor styled as a button -- so it sat
+   flush against Rename while Rename and Delete were spaced. */
+.table td.row-actions > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+
+/* ---------- spectrals ---------- */
+/* One surface, not a box inside a box.
+
+   Each track was drawn as its own dark rectangle inside the panel's dark
+   rectangle, with a sliver of a third colour trapped between them and a
+   hairline gap down the middle of every pair. Three edges where the release
+   has one. The pair now spans the panel exactly -- no padding beside it, no
+   gap between the full and the zoom, no rounding on either -- so a track reads
+   as one image and the panel is the only frame. */
+.step:has(.spectrals) {
+  padding-right: 0;
+  padding-top: 0;
+  /* The panel's own outline is the only one there should be, and it is drawn
+     by the flow card around it. A second rule a pixel outside the images is
+     the sliver of background that made every track a box in a box. */
+  border: 0;
+  overflow: hidden;
+}
+.spectrals { margin: 0; }
+/* The caption above each track is what separates them; padding here as well
+   put a band of panel colour between images that are meant to read as one
+   column of spectrograms. */
+.spectral-row { padding: 0; background: transparent; border: 0; }
+.spectral-row:last-child { padding-bottom: 0; }
+.spectral-num { padding: 8px 0 4px; margin: 0; }
+.spectral-pair { gap: 0; background: transparent; border: 0; }
+.spectral-full { width: 86.15%; }
+.spectral-zoom { width: 13.85%; margin-left: 0; }
+.spectral-full, .spectral-zoom { display: block; line-height: 0; border: 0; border-radius: 0; }
+.spectral-pair img { border: 0; border-radius: 0; }
+
+
+/* ---------- upload history ---------- */
+/* An upload cannot be run again to find out what it did, so what it did is
+   kept: what it was posted as, which tracker took it, and everything it
+   printed on the way. Folded away by default -- the list is for finding one,
+   the disclosure is for reading it. */
+.upload-row > summary { cursor: pointer; }
+.upload-detail { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.upload-desc {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.upload-log { max-height: 320px; overflow: auto; }
+.upload-log .joblog-line.warning { color: var(--warn); }
+.upload-log .joblog-line.error { color: var(--bad); }
+
+/* ---------- a channel with no artwork ---------- */
+/* Deezer gives most of its channels a colour and no picture, which left two
+   thirds of the grid as plain rectangles you had to read the caption under to
+   tell apart. The initial is drawn on the colour instead: it is not artwork,
+   but it is something to aim at. */
+.card-art.card-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: rgb(255 255 255 / 0.82);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+}
+
+
+/* ---------- an answer on its way ---------- */
+/* Answering is not instant: the pipeline picks the answer up on its own
+   schedule and may take a while before it publishes the next question. Nothing
+   said so, so Save looked like it had done nothing and a second press was met
+   with "that question has already been answered". */
+.flow-card.answering .step { opacity: 0.6; }
+.answering-note { color: var(--accent); }

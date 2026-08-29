@@ -148,15 +148,16 @@
              numbers into a screenful. -->
         <div class="panel">
           <h2>Scan filters</h2>
-          <p class="hint">Applied while a scan expands its sources, before any tracker is contacted.
-            They do not affect requests, searches or anything you check by hand.</p>
+          <p class="hint">What a scan will even look at. A release ruled out here is never looked up at all.
+            These apply to scanning only &mdash; requests, searches and anything you check by hand ignore them.</p>
           <div class="scanfilters" id="scan-filters"></div>
         </div>
 
         <div class="panel">
           <h2>Scan Deezer against your trackers</h2>
           <p class="hint">Paste Deezer links &mdash; a playlist, a channel module, an artist, an album &mdash;
-            one per line. Expanding them is free; checking each album against a tracker is not.</p>
+            one per line. Each one is expanded into the albums it holds, and every album is then
+            checked against your trackers.</p>
           <!-- autocomplete=off so a reload does not hand back the list the
                last scan ran, sitting in the box looking like the next thing
                you were about to do. -->
@@ -169,13 +170,19 @@
                  questions about the link already in the box. -->
             <button id="missing-save">Save for later</button>
           </div>
-          <p class="hint" id="missing-cost"></p>
           <div class="joblog" id="missing-collect-log" hidden></div>
           <div class="joblog" id="missing-check-log" hidden></div>
         </div>
 
-        <div class="panel">
-          <h2>Saved searches</h2>
+        <!-- Collapsible, because a long list of saved searches is taller than
+             the screen and sits between the scan box and its own results.
+             A details element rather than a script: it remembers nothing by
+             itself, so the state is kept alongside. -->
+        <details class="panel panel-fold" id="watchlist-panel" open>
+          <summary>
+            <h2>Saved searches</h2>
+            <span class="hint" id="watchlist-summary"></span>
+          </summary>
           <p class="hint">Links you kept. Deezer names them; rename any of them if its name is unhelpful.
             Scanning several at once is one scan over all of them.</p>
           <div class="row">
@@ -185,28 +192,36 @@
             <span class="hint" id="watchlist-count"></span>
           </div>
           <div id="watchlists"></div>
-        </div>
+        </details>
 
         <div class="panel" id="missing-candidates-panel" hidden>
           <h2>Results</h2>
           <div class="row">
             <button id="missing-check">Check again</button>
+            <span class="hint" id="missing-selected"></span>
+            <span class="hint" id="missing-cost"></span>
           </div>
-          <table class="table" id="missing-table"></table>
+          <div id="missing-table"></div>
         </div>
         </div>
 
         <div id="scan-tab-history" hidden>
           <div class="panel">
             <h2>Lookup History</h2>
-            <p class="hint">Every album a scan has looked up. A scan skips what is listed here, so the same
-              tracker calls are not paid for twice &mdash; select rows and re-check to look again.</p>
+            <p class="hint">Every album a scan has looked up, and what it found. A later scan leaves these
+              alone until the answer goes stale &mdash; select any of them and press Check again to
+              ask now.</p>
             <div class="row">
               <button class="primary" id="scanhistory-rerun" disabled>Check again</button>
               <button id="scanhistory-clear-filters">Clear filters</button>
               <button id="scanhistory-forget">Forget</button>
               <span class="hint" id="scanhistory-count"></span>
             </div>
+            <!-- Its own, because a re-check started here used to report into
+                 the queue's log on another page: the button did nothing you
+                 could see, and the only way to know it was working was to go
+                 and look somewhere else. -->
+            <div class="joblog" id="scanhistory-log" hidden></div>
           </div>
           <div id="scanhistory-results"></div>
         </div>
@@ -267,12 +282,27 @@
             </div>
           </details>
           <div class="joblog" id="requests-log" hidden></div>
+          <!-- What the run skipped, and why. One panel, replaced by the next
+               run rather than stacked on top of the last one. -->
+          <div id="requests-skipped" hidden></div>
         </div>
 
         <!-- How much of the search is on screen and how much there was. This
              was a toast, which vanished -- for the one number that decides
              whether to read more pages, the wrong place to put it. -->
         <div class="requests-summary" id="requests-summary" hidden></div>
+        <!-- What the run actually produced, above the hundreds of rows that
+             produced nothing. A check of two hundred requests that finds three
+             worth filling is a run about those three, and they are also the
+             ones worth a second pair of eyes before anything is uploaded. -->
+        <div class="panel" id="requests-queued-panel" hidden>
+          <h2>Added to the queue</h2>
+          <p class="hint">Every request a check here has matched to a release, filled in as it
+            goes. Worth a look before any of it is downloaded &mdash; a match is the matcher's
+            opinion, and it is cheaper to disagree with it here than after the release has been
+            fetched and posted.</p>
+          <div id="requests-queued"></div>
+        </div>
         <div id="requests-results"></div>
         </div>
 
@@ -284,39 +314,66 @@
               <button id="history-clear-filters">Clear filters</button>
               <span class="hint" id="history-count"></span>
             </div>
+            <!-- The same reason as the scan's: pressing Check again jumped to
+                 another sub-tab to show progress, so the page you pressed it
+                 on had nothing to say for itself. -->
+            <div class="joblog" id="history-log" hidden></div>
           </div>
           <div id="history-results"></div>
         </div>
       </section>
 
       <section class="view" id="view-found">
+        <!-- What is waiting to be uploaded, and what has been refused. The
+             blacklist used to be a one-way door: the entry went into a file
+             nothing could read back, and the only way out was to clear the
+             whole thing at once. -->
+        <div class="segmented reqtabs" id="queue-tabs">
+          <button type="button" class="active" data-queuetab="queue">Queue</button>
+          <button type="button" data-queuetab="blacklist">Blacklist</button>
+        </div>
+
+        <div id="queue-tab-queue">
         <div class="panel">
           <h2>Upload Queue</h2>
-          <p class="hint">Releases matched to a Deezer source and not found on a
-            tracker. Kept so the budget you already spent is not spent again.</p>
+          <p class="hint">Releases that exist on Deezer and are missing from at least one of
+            your trackers.</p>
           <div class="row">
-            <button class="primary" id="found-download">Download selected</button>
-            <button id="found-upload">Download &amp; upload selected</button>
+            <!-- The default is the one that finishes the job. Downloading on
+                 its own leaves the release in the download folder waiting for
+                 a second decision nobody meant to make. -->
+            <button class="primary" id="found-upload">Download &amp; upload selected</button>
+            <button id="found-download">Download selected</button>
             <button id="found-recheck">Re-check on trackers</button>
             <!-- Two ways off the list, because they answer different
                  questions: one forgets the row so a later scan can find it
                  again, the other says never show me this release. -->
             <button id="found-dismiss">Remove</button>
             <button class="danger" id="found-blacklist">Blacklist</button>
-            <button id="found-restore" hidden>Clear blacklist</button>
             <span class="hint" id="found-count"></span>
           </div>
-          <!-- What the queue rules in Settings kept out. Shown as a count with
-               a way to look, never as a silently shorter list. -->
-          <div class="row held-note" id="found-held-row" hidden>
-            <span class="hint" id="found-held"></span>
-            <button class="linkbtn" id="found-held-toggle">Show excluded</button>
-          </div>
-          <!-- A re-check spends a tracker call per release and used to show
-               nothing but a Stop button while it did. -->
+          <!-- A queue row is a claim about somebody else's tracker, and it
+               decays. This says whether lox is keeping it honest by itself. -->
+          <p class="hint" id="found-upkeep"></p>
           <div class="joblog" id="found-log" hidden></div>
         </div>
         <div id="found-body"></div>
+        </div>
+
+        <div id="queue-tab-blacklist" hidden>
+          <div class="panel">
+            <h2>Blacklist</h2>
+            <p class="hint">Releases you have refused. Nothing here is collected by a scan, matched to a
+              request or listed in the queue &mdash; saying no once means not being asked again. Take one
+              off and it can be found as normal.</p>
+            <div class="row">
+              <button class="primary" id="blacklist-restore" disabled>Take off the blacklist</button>
+              <button class="danger" id="blacklist-clear">Clear the whole list</button>
+              <span class="hint" id="blacklist-count"></span>
+            </div>
+          </div>
+          <div id="blacklist-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-downloads">
@@ -328,10 +385,27 @@
       </section>
 
       <section class="view" id="view-uploads">
+        <!-- Two halves, as on Requests and Scan: what is waiting to be
+             uploaded, and what has been. An upload is the one thing here that
+             cannot be run again to find out what it did -- the torrent is
+             posted and the flow is gone with the page. -->
+        <div class="segmented reqtabs" id="upload-tabs">
+          <button type="button" class="active" data-uptab="folders">Ready to upload</button>
+          <button type="button" data-uptab="history">Upload History</button>
+        </div>
+
+        <div id="upload-tab-folders">
         <div class="row toolbar">
           <button id="folders-refresh">Refresh folders</button>
+          <button class="primary" id="folders-upload" disabled>Upload selected</button>
+          <button class="danger" id="folders-delete" disabled>Delete selected</button>
+          <span class="hint" id="folders-selected"></span>
+          <!-- Which trackers, and in what order they run when there are two.
+               Uploading to both is two uploads in sequence, and which goes
+               first decides who owns the group the other one adds to. -->
           <span class="hint">Upload to:</span>
-          <div class="segmented" id="upload-tracker"></div>
+          <div class="upload-targets" id="upload-tracker"></div>
+          <span class="hint" id="upload-order-note"></span>
           <!-- The same two settings as Settings → Uploading, not copies of
                them: these write through to the config and are re-read from the
                server, so the two pages cannot disagree. -->
@@ -344,8 +418,26 @@
           <span class="hint" id="uploads-dir"></span>
         </div>
         <p class="hint" id="linking-note"></p>
+        <!-- What is uploading and what is waiting behind it. -->
+        <div id="upload-queue" hidden></div>
         <div id="folders-list"></div>
         <div id="upload-flows"></div>
+        </div>
+
+        <div id="upload-tab-history" hidden>
+          <div class="panel">
+            <h2>Upload History</h2>
+            <p class="hint">Every upload this install has run: what it was posted as, which trackers took
+              it, and everything it printed on the way. Kept because an upload cannot be run again to
+              find out what it did.</p>
+            <div class="row">
+              <button id="uphistory-refresh">Refresh</button>
+              <button class="danger" id="uphistory-clear">Clear history</button>
+              <span class="hint" id="uphistory-count"></span>
+            </div>
+          </div>
+          <div id="uphistory-results"></div>
+        </div>
       </section>
 
       <section class="view" id="view-settings">

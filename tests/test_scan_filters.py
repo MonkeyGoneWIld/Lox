@@ -175,8 +175,14 @@ async def main() -> int:
     queued = {"found_on": [], "missing_from": ["RED", "OPS"], "all_flac": True, "sources": ["scan"]}
     ok, _ = admits(queued, rules)
     check("a release missing from both trackers is in the queue", ok, "")
-    check("and a scan will look at it again rather than trusting the answer",
-          recheck.album_verdict({**queued, "checked_at": 1}, 365, 2, ["RED", "OPS"])[0], "")
+    # Asking again is the confirmation's job, not a sweep's. A sweep that
+    # re-checked every queued release paid a tracker call apiece for the newest
+    # answers it had, every time it ran.
+    check("a confirmation looks at it again rather than trusting the answer",
+          recheck.album_verdict({**queued, "checked_at": 1}, 365, 2, ["RED", "OPS"],
+                                confirming=True)[0], "")
+    check("while a sweep leaves the queue alone",
+          not recheck.album_verdict({**queued, "checked_at": 1}, 365, 2, ["RED", "OPS"])[0], "")
 
     filled = {**queued, "found_on": ["RED", "OPS"], "missing_from": []}
     ok, why = admits(filled, rules)

@@ -150,12 +150,14 @@ class StubTracker:
         return {}
 
 
-async def drive(answers: list, tracker=None):
+async def drive(answers: list, tracker=None, linked=None):
     """Run check_requests, answering each question in turn.
 
     Args:
         answers: One answer per question, in order.
         tracker: The stub tracker to use.
+        linked: The request this release was already matched to on this
+            tracker, as a request check would have recorded it.
 
     Returns:
         Tuple of (steps seen, returned value, log lines).
@@ -167,7 +169,8 @@ async def drive(answers: list, tracker=None):
 
     async def run():
         with FlowPrompts(flow, os.environ["LOX_DOWNLOAD_DIR"]):
-            out["value"] = await check_requests(tracker or StubTracker(), ["Doja Cat Scarlet"])
+            out["value"] = await check_requests(
+                tracker or StubTracker(), ["Doja Cat Scarlet"], linked_request_id=linked)
 
     task = asyncio.create_task(run())
     for reply in answers:
@@ -301,54 +304,120 @@ async def main() -> int:
     check("and pasting one still works then", value == 9902, str(value))
     cfg.upload.requests.always_ask_for_request_fill = False
 
-    # --- a dry run rehearses the step whatever the search found --------
+    # --- a dry run asks what a real upload asks -------------------------
     #
-    # A rehearsal exists to show every part of a run before any of it happens
-    # for real, and a step that silently does not run is indistinguishable from
-    # one that is broken. Nothing is filled either way: the upload itself is
-    # what posts the fill, and in a dry run that is replaced by a report.
+    # It used to be the exception: a rehearsal showed every step it would take,
+    # including this one, so it stopped on "Nothing matched. Paste a url to
+    # fill a request anyway, or don't" for a release the search had just said
+    # nobody was asking for. That is a question with no subject, and stopping
+    # on a dead prompt is not a step being shown, it is a wait.
     cfg.upload.dry_run = True
     try:
-        seen, value, log = await drive(["n"], tracker=Empty())
-        check("a dry run asks even when nothing matched", len(seen) == 1, str(len(seen)))
-        check("and says so rather than offering a list that is not there",
-              seen and "nothing matched" in seen[0]["prompt"].lower(),
-              seen[0]["prompt"] if seen else "")
-        check("with the paste field, so an unmatched request can still be filled",
-              seen and seen[0]["text_label"] != "", seen[0]["text_label"] if seen else "")
-        check("and declining still fills nothing", value is None, str(value))
+        # An answer is offered so that a prompt, if one is raised, is recorded.
+        # Driving it with none would leave `seen` empty whether or not it asked,
+        # which is a check that cannot fail.
+        seen, value, _log = await drive(["n"], tracker=Empty())
+        check("a dry run does not stop on a search that found nothing",
+              not seen, str([s["prompt"] for s in seen]))
+        check("and fills nothing, having asked nothing", value is None, str(value))
 
-        seen, value, _ = await drive([URL_9902, "y"], tracker=Empty())
-        check("pasting one in a dry run reaches the payload", value == 9902, str(value))
-
-        # With matches, a dry run is the same question a real upload asks.
+        # With matches it is the same question a real upload asks, and the
+        # answer still reaches the payload the rehearsal reports.
         seen, value, _ = await drive([URL_8811, "y"])
-        check("and with matches it is the same question as a real upload",
+        check("with matches it is the same question as a real upload",
               seen and seen[0]["values"][:2] == [URL_8811, URL_9902], str(seen[0]["values"]) if seen else "")
         check("still returning the request so the rehearsal can report it",
               value == 8811, str(value))
     finally:
         cfg.upload.dry_run = False
 
-    # --- auto-answered prompts are not prompts -------------------------
+    # --- the lossy report starts from where lox fetched it -------------
+    # The box came up empty. It was defaulted from source_url, which is
+    # whichever metadata source the lookup picked -- MusicBrainz, Discogs --
+    # and is still None when this is asked, because the metadata step has not
+    # necessarily chosen one and often does not choose Deezer at all.
+    from lox.uploader.spectrals import LOSSY_SOURCE_NOTE, lossy_comment_default
+
+    deezer = "https://www.deezer.com/album/930724701"
+    check("the box starts from where lox downloaded the release",
+          lossy_comment_default(None, deezer) == f"{LOSSY_SOURCE_NOTE} {deezer}",
+          lossy_comment_default(None, deezer))
+    check("which wins over whatever the metadata search matched",
+          lossy_comment_default("https://musicbrainz.org/release/abc", deezer)
+          == f"{LOSSY_SOURCE_NOTE} {deezer}", "")
+    # This report is read by tracker staff deciding whether to approve a lossy
+    # master. Labelling a MusicBrainz page "Downloaded Directly from Deezer"
+    # would be a false claim about the source -- worse than an empty box.
+    check("and nothing is claimed when lox did not fetch it",
+          lossy_comment_default("https://musicbrainz.org/release/abc", None) == "", "")
+    check("nor when there is no source at all", lossy_comment_default(None, None) == "", "")
+
+    # --- auto-answering fills what was already decided, and nothing else ---
     #
-    # Turning prompts off has to turn this one off too. It did not, so an
-    # unattended run stopped on a question nobody was there to click -- and
-    # after the dry-run change above, it stopped on every release rather than
-    # only the ones with a matching request.
+    # This rule has been wrong twice in opposite directions. First it filled
+    # nothing ever, which made the auto-answer setting a way to turn request
+    # filling off: a release queued BECAUSE it fills an open request went up
+    # without filling it. Then it filled any single search hit, which decided
+    # on a default the one thing worth refusing -- filling a request is a claim
+    # against somebody else's specific request and there is no undo.
+    #
+    # What it fills now is the request this release was already matched to by a
+    # request check, on this tracker. That pairing was decided by a search that
+    # ran on its own time and can be read back in the lookup history; filling
+    # it is carrying out a decision, not making one. Everything else is asked,
+    # whatever the setting says.
     cfg.upload.yes_all = True
     try:
-        for label, tracker, dry in (
-            ("with matches", None, False),
-            ("with none", Empty(), False),
-            ("in a dry run", Empty(), True),
-        ):
-            cfg.upload.dry_run = dry
-            seen, value, log = await drive(["n"], tracker=tracker)
-            check(f"auto-answering asks nothing {label}", not seen, str([s["prompt"] for s in seen]))
-            check(f"and fills nothing {label}", value is None, str(value))
-            check(f"but says why {label}",
-                  any("auto-answered" in line for line in log), "")
+        cfg.upload.dry_run = False
+
+        # The linked one: filled, without a question.
+        seen, value, log = await drive([], linked=8811)
+        check("auto-answering fills the request already matched to this release",
+              value == 8811, str(value))
+        check("without asking about it", not seen, str([s["prompt"] for s in seen]))
+        check("and says which one, so an unattended run can be read back",
+              any("8811" in line for line in log), "")
+
+        # No linked request: asked, even though prompts are auto-answered.
+        # A search at upload time that turns up candidates is a choice.
+        seen, value, _log = await drive(["n"])
+        check("with nothing linked it asks, auto-answer or not",
+              bool(seen), str([s["prompt"] for s in seen]))
+        check("offering what the search found",
+              seen and seen[0]["values"][:2] == [URL_8811, URL_9902],
+              str(seen[0]["values"]) if seen else "")
+        check("and fills nothing when the answer is no", value is None, str(value))
+
+        # One search hit is still a choice when nothing linked it.
+        class OneRequest(StubTracker):
+            """A tracker with exactly one open request for this release."""
+
+            async def request(self, action, data=None, **_):
+                if action == "requests":
+                    return {"results": [OPEN_REQUESTS[0]]}
+                return await StubTracker.request(self, action, data)
+
+        seen, value, _log = await drive(["n"], tracker=OneRequest())
+        check("a single unlinked match is asked about rather than assumed",
+              bool(seen), str([s["prompt"] for s in seen]))
+
+        # A linked request the tracker no longer has: not filled on the
+        # strength of a stale record, and not abandoned either -- the search
+        # runs and the question is asked.
+        class GoneRequest(StubTracker):
+            """The linked request has been filled or deleted since."""
+
+            async def request(self, action, data=None, **_):
+                if action == "requests":
+                    return {"results": [OPEN_REQUESTS[0]]}
+                raise RequestError("no such request")
+
+        seen, value, log = await drive(["n"], tracker=GoneRequest(), linked=4041)
+        check("a linked request that has gone is not filled", value is None, str(value))
+        check("and it says so rather than going quiet",
+              any("no longer there" in line for line in log), "")
+        check("then asks, rather than abandoning the request search",
+              bool(seen), str([s["prompt"] for s in seen]))
     finally:
         cfg.upload.yes_all = False
         cfg.upload.dry_run = False

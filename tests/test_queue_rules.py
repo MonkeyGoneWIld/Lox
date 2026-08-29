@@ -226,9 +226,15 @@ async def main_endpoint() -> None:
         field = next(f for s in settings_payload["sections"] for f in s["fields"]
                      if f["key"] == "checker.queue_when")
         check("the rule dropdown is labelled", len(field["labels"]) == len(field["choices"]), "")
-        check("and there are only two queue settings left",
-              len([f for s in settings_payload["sections"] for f in s["fields"]
-                   if f["key"].startswith("checker.queue")]) == 2, "")
+        # Two questions about what belongs in the queue, and one about how long
+        # a row stays trustworthy. Nothing else: the truth table this replaced
+        # asked six.
+        queue_fields = sorted(f["key"] for s in settings_payload["sections"] for f in s["fields"]
+                              if f["key"].startswith("checker.queue"))
+        check("and the queue is still three settings, not a truth table",
+              queue_fields == ["checker.queue_recheck_after_days", "checker.queue_requests_too",
+                               "checker.queue_when"],
+              str(queue_fields))
     finally:
         await session.close()
         await runner.cleanup()

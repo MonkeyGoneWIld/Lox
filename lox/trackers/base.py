@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import html
 import re
 from typing import Any, cast
@@ -86,6 +87,22 @@ class SearchReleaseData(msgspec.Struct, frozen=True):
     url: str
 
 
+#: Whether the work on this task is an upload.
+#:
+#: A context variable rather than a flag on the client: the client is shared,
+#: the upload runs in its own task, and nothing else running at the same time
+#: should be affected by what this one is doing.
+uploading: contextvars.ContextVar[bool] = contextvars.ContextVar("lox_uploading", default=False)
+
+#: authkey and passkey per (tracker, session cookie).
+#:
+#: Keyed by the cookie so a changed login is a cache miss rather than a stale
+#: hit. Held for the life of the process: a Gazelle authkey is good for the
+#: session, and asking again costs a call from the same allowance the upload
+#: is waiting on.
+_CREDENTIALS: dict[tuple[str, str], tuple[str, str]] = {}
+
+
 class RetryableError(Exception):
     """Exception for retryable network errors."""
 
@@ -134,6 +151,22 @@ class BaseGazelleApi:
 
     # Rate limiter: 10 requests per 10 seconds (shared across all instances)
     _rate_limiter = AsyncLimiter(10, 10)
+    #: A separate, wider allowance for an upload in progress.
+    #:
+    #: One bucket for everything meant an upload queued behind whatever the
+    #: checker was doing. A scan makes hundreds of calls and each one takes a
+    #: slot, so pressing Upload while one ran left the pipeline waiting on the
+    #: back of that queue -- and the operator watching a spinner for work that
+    #: had nothing to do with theirs. An upload is one release and a handful of
+    #: calls; it is not what a rate limit is there to protect the tracker from,
+    #: and it is the one thing on this page that a person is waiting for.
+    #:
+    #: Splitting the bucket was only half of it: this was given the same 10
+    #: per 10 seconds as the scanner, so an upload still stalled -- just in a
+    #: queue of its own. A release posts to two trackers with its
+    #: downconversions, which is a few dozen calls over a couple of minutes,
+    #: nothing like a scan's sustained rate.
+    _upload_limiter = AsyncLimiter(30, 10)
 
     def __init__(self) -> None:
         """Initialize the API client. Subclasses should call this after setting cookie/base_url."""
@@ -171,7 +204,22 @@ class BaseGazelleApi:
         return f"{self.base_url}/requests.php?action=view&id={id}"
 
     async def authenticate(self) -> None:
-        """Authenticate with the tracker API and get authkey/passkey."""
+        """Authenticate with the tracker API and get authkey/passkey.
+
+        The answer is cached against the session cookie that earned it, and
+        shared by every client for that tracker. ``_authenticated`` is an
+        instance flag and the pipeline builds a fresh client per tracker per
+        torrent, so uploading one release with two downconversions to two
+        trackers opened with eight identical ``index`` calls in the same
+        second -- most of an upload's rate allowance spent re-asking who it
+        was logged in as. A new cookie is a different key, so changing the
+        login still authenticates.
+        """
+        cached = _CREDENTIALS.get((self.site_code, self.cookie))
+        if cached:
+            self.authkey, self.passkey = cached
+            self._authenticated = True
+            return
         try:
             acctinfo = await self.request("index")
         except RequestError as err:
@@ -179,11 +227,20 @@ class BaseGazelleApi:
         self.authkey = acctinfo["authkey"]
         self.passkey = acctinfo["passkey"]
         self._authenticated = True
+        # Only a complete pair is worth keeping. A partial answer cached here
+        # would be handed to every later client as though it were a login.
+        if self.authkey and self.passkey:
+            _CREDENTIALS[(self.site_code, self.cookie)] = (self.authkey, self.passkey)
 
     async def ensure_authenticated(self) -> None:
         """Ensure we are authenticated before making requests."""
         if not self._authenticated:
             await self.authenticate()
+
+    @staticmethod
+    def forget_credentials() -> None:
+        """Drop every cached login. For a settings change or a failed call."""
+        _CREDENTIALS.clear()
 
     @retry(
         retry=retry_if_exception_type(RetryableError),
@@ -208,11 +265,15 @@ class BaseGazelleApi:
         """
         url = self.base_url + "/ajax.php"
         params = {"action": action, **(params or {})}
-        timeout = aiohttp.ClientTimeout(total=5)
+        # Five seconds total was not enough for a tracker that regularly takes
+        # longer than that to answer a request lookup, and a timeout here is
+        # retried five times over -- so a slow answer became five slow answers
+        # and then a failure.
+        timeout = aiohttp.ClientTimeout(total=60)
 
         try:
             async with (
-                self._rate_limiter,
+                self._upload_limiter if uploading.get() else self._rate_limiter,
                 aiohttp.ClientSession(timeout=timeout, cookies=self._get_cookies()) as session,
                 session.get(url, params=params, headers=self.headers, allow_redirects=False) as resp,
             ):
@@ -247,6 +308,13 @@ class BaseGazelleApi:
                 await asyncio.sleep(retry_after)
                 raise RetryableError("Rate limit exceeded")
             else:
+                # A dead session answers 302 to the login page. The cached
+                # authkey came from a session that is gone, so it is dropped
+                # rather than handed to every later call -- otherwise one
+                # expiry would wedge the cache for the life of the process.
+                if http_status in (301, 302, 303, 307, 308):
+                    _CREDENTIALS.pop((self.site_code, self.cookie), None)
+                    self._authenticated = False
                 raise RequestFailedError(str(error_msg))
         return cast("dict", resp_json["response"])
 

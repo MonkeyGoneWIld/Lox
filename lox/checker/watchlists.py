@@ -155,7 +155,14 @@ class WatchlistManager:
             created=time.time(),
             count=max(0, int(count)),
         )
-        self.store.put(self.COLLECTION, watch.id, msgspec.to_builtins(watch))
+        # Written through to disk, not left in the store's write buffer.
+        #
+        # Every other caller of put() is a scan writing thousands of rows, so
+        # the store debounces: the first write only starts the timer, and the
+        # bytes reach disk on a later write five seconds after it. A saved
+        # search is one write, by hand, and there is rarely a later one -- so
+        # saving a search and restarting the container lost it every time.
+        self.store.put(self.COLLECTION, watch.id, msgspec.to_builtins(watch), flush=True)
         return watch
 
     async def resolve(self, link: str) -> tuple[WatchKind, str, str, int]:
@@ -229,7 +236,7 @@ class WatchlistManager:
         if not watch:
             return None
         watch.name = name.strip() or watch.name
-        self.store.put(self.COLLECTION, watch.id, msgspec.to_builtins(watch))
+        self.store.put(self.COLLECTION, watch.id, msgspec.to_builtins(watch), flush=True)
         return watch
 
     def delete(self, watch_id: str) -> bool:
@@ -311,6 +318,6 @@ class WatchlistManager:
                 sources.extend(f"https://www.deezer.com/album/{a['id']}" for a in albums if a.get("id"))
 
             watch.last_run = time.time()
-            self.store.put(self.COLLECTION, watch.id, msgspec.to_builtins(watch))
+            self.store.put(self.COLLECTION, watch.id, msgspec.to_builtins(watch), flush=True)
 
         return list(dict.fromkeys(sources)), problems

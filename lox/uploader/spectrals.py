@@ -564,7 +564,40 @@ async def report_lossy_master(
     click.secho("\nReported upload for Lossy Master/WEB Approval Request.", fg="cyan")
 
 
-async def generate_lossy_approval_comment(source_url, filenames):
+#: What lox fetched the release from, said the way a staffer reading the report
+#: wants it: where it came from, then the address. Offered as the starting text
+#: rather than sent -- it is the operator's report and they may have more to say
+#: about the source than a URL, but an empty box for a question with an obvious
+#: answer is a question asked for nothing.
+LOSSY_SOURCE_NOTE = "Downloaded Directly from Deezer:"
+
+
+def lossy_comment_default(source_url: str | None, download_url: str | None = None) -> str:
+    """The text the lossy-approval box starts with.
+
+    ``download_url`` is where lox fetched the release, and it is the honest
+    answer to "what is the source": the release came off Deezer whatever the
+    metadata was later matched against. ``source_url`` is whichever metadata
+    source was picked during the lookup -- MusicBrainz, Discogs -- and it is
+    empty until that step has run and often not Deezer at all, which is why
+    the box came up blank.
+
+    Args:
+        source_url: The metadata source chosen for the release.
+        download_url: Where lox downloaded it from.
+
+    Returns:
+        A comment to start from, or "" when there is no source to name.
+    """
+    fetched = (download_url or "").strip()
+    # Only the download origin earns the sentence. This report is read by
+    # tracker staff deciding whether to approve a lossy master, and labelling
+    # a MusicBrainz release page "Downloaded Directly from Deezer" would be a
+    # false claim about the source -- worse than the empty box it replaced.
+    return f"{LOSSY_SOURCE_NOTE} {fetched}" if fetched else ""
+
+
+async def generate_lossy_approval_comment(source_url, filenames, download_url=None):
     while True:
         comment = await click.prompt(
             click.style(
@@ -574,9 +607,9 @@ async def generate_lossy_approval_comment(source_url, filenames):
                 fg="cyan",
                 bold=True,
             ),
-            default="",
+            default=lossy_comment_default(source_url, download_url),
         )
-        if comment or source_url:
+        if comment or source_url or download_url:
             return comment
         click.secho(
             "This release was not uploaded with go, gos, or the queue, so you must add a comment about the source.",

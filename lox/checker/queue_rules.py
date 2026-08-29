@@ -124,6 +124,13 @@ SETTLED = (
     "not released yet",
     "tracks can be downloaded",
     "not all FLAC on Deezer",
+    # Deezer's own wording for the same fact -- "only 4/11 tracks are FLAC" --
+    # which reaches the gate as ``blocked`` and is checked before the sentence
+    # above is ever composed. Every other reason TrackAvailability gives was
+    # listed here and this one was not, so a release Deezer serves half in MP3
+    # was parked in the held-back list for ever instead of being dropped: a row
+    # waiting on a re-check that could only ever return the same answer.
+    "tracks are FLAC",
     "no song ID",
     "no filesize",
     "no tracks returned",

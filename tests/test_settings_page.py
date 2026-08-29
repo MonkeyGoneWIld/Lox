@@ -127,19 +127,33 @@ async def main() -> int:
               for f in labelled
               for shown, stored in zip(f.labels, f.choices, strict=True)), "")
 
-    # --- what reaches the queue is two questions, not six -------------
+    # --- what reaches the queue is about the queue --------------------
     # The first version asked for a three-way rule per tracker, an all/any to
     # combine them, and an enum for requests: a truth table with dropdowns in
     # front of it. Nobody wants to say "RED must already be there".
+    #
+    # And it went on to include the request-lookup window, which is not about
+    # the queue at all -- nothing in the queue consults it, and a queue row you
+    # re-check by hand is always re-checked. It is edited on the Requests tab
+    # now, beside the search it governs.
     queue_keys = {f.key for f in FIELDS if f.section == "queue"}
-    check("the queue is configured by a rule and two switches",
+    check("the queue is configured by a rule, a switch and a staleness window",
           queue_keys == {"checker.queue_when", "checker.queue_requests_too",
-                         "checker.request_recheck_after_days"},
+                         "checker.queue_recheck_after_days"},
           str(sorted(queue_keys)))
+    check("the request lookup window is not one of the queue's settings",
+          "checker.request_recheck_after_days" not in queue_keys, "")
 
-    # How long a request check is trusted. The same setting is offered on the
-    # Requests page, beside the search it governs, because a setting reachable
-    # only from another page is a setting nobody changes.
+    # How long a queue row is trusted before it is confirmed again in the
+    # background. A row claims nobody has uploaded the release yet, and that
+    # stops being true without anyone telling you.
+    stale = next(f for f in FIELDS if f.key == "checker.queue_recheck_after_days")
+    check("the queue staleness window is a number of days", stale.kind == "int", stale.kind)
+    check("and 0 turns it off rather than meaning immediately", stale.minimum == 0, str(stale.minimum))
+
+    # How long a request check is trusted. Offered on the Requests page, beside
+    # the search it governs, because a setting reachable only from another page
+    # is a setting nobody changes.
     window = next(f for f in FIELDS if f.key == "checker.request_recheck_after_days")
     check("the recheck window is a number of days", window.kind == "int", window.kind)
     check("and cannot be negative", window.minimum == 0, str(window.minimum))

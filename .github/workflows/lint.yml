@@ -43,6 +43,12 @@ jobs:
         # this says where it goes, and that Back walks the way it came.
         run: node tests/test_routing.js
 
+      - name: What a request check queued is listed while it runs
+        run: node tests/test_queued_panel.js
+
+      - name: The queue remembers what you ticked
+        run: node tests/test_queue_selection.js
+
       - name: Check for builtins shadowed in annotations
         # Ruff and compileall both miss this: a method named `list` makes a
         # later `-> list[X]` annotation resolve to the method, which only fails
@@ -223,6 +229,12 @@ jobs:
         # and widening brings the same rows back with no tracker call.
         run: uv run python tests/test_queue_rules.py
 
+      - name: Re-checking a queue row must not delete it
+        run: uv run python tests/test_queue_recheck.py
+
+      - name: Refusing a request match has to stick
+        run: uv run python tests/test_reject_match.py
+
       - name: A saved setting reaches the running process
         # The page could report a value nothing was using: the gateway copies
         # budgets and tracker credentials once, at startup.
@@ -243,6 +255,29 @@ jobs:
         # The tracker refuses to be framed, so this code renders the request
         # itself -- which puts it between someone else's BBCode and the page.
         run: uv run python tests/test_request_detail.py
+
+      - name: Whether a tracker already has a release, answered correctly
+        # A release the tracker had was reported missing, because a title with
+        # a subtitle was searched for by its subtitle; and one it did not have
+        # was reported present, because a character-set similarity cannot see
+        # the difference between Vol. 4 and Vol. 2.
+        run: uv run python tests/test_matching_quality.py
+
+      - name: One release, prepared once, posted to every tracker picked
+        # Uploading to two trackers ran the whole pipeline twice: the second
+        # pass regenerated the spectrals, looked the metadata up again,
+        # retagged, renamed and asked about downconversions -- every question a
+        # second time about a release that had not changed. Also pins the
+        # request verdict the queue reads, and the request detail cache.
+        run: uv run python tests/test_multi_tracker.py
+
+      - name: Browse leads somewhere, and a download says what it is
+        # The channel list asked the gateway with the argument in the body;
+        # page.get reads it out of the query string, so every channel request
+        # failed and the genre fallback it dropped to could not be opened
+        # either. New releases had one region-dependent source. And a lossy
+        # download landed in a folder named [WEB FLAC].
+        run: uv run python tests/test_browse_and_quality.py
 
       - name: Start with a broken download directory
         # Sets its own LOX_* environment, deliberately pointing at a path that

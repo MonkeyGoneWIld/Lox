@@ -164,11 +164,40 @@ def album_checks() -> None:
     check("and the reason names them and says when",
           "RED" in why and "OPS" in why and "day" in why, why)
 
-    # --- and everything that is not ----------------------------------------
+    # --- a sweep trusts the answer it already has --------------------------
+    # A release missing from a tracker used to be looked up again on every
+    # pass, on the reasoning that somebody might have uploaded it first. That
+    # made a scan pay a tracker call for every release already sitting in the
+    # queue, every time it ran: re-scanning a playlist re-checked the four
+    # releases the first scan had just queued, which are the four whose answer
+    # is newest. Confirming the queue is a real job, and it belongs to the
+    # queue's own re-check and the background upkeep pass, not to a sweep
+    # looking for new work.
     ok, why = recheck.album_verdict(album(found=["RED"], missing=["OPS"], status="exists_red"), 365, now, both)
-    check("one missing from a tracker is looked up again", ok, why)
+    check("a sweep does not re-check what it already answered", not ok, why)
+    check("and the reason says which tracker wants it, and when it looked",
+          "OPS" in why and "day" in why, why)
     ok, why = recheck.album_verdict(album(missing=both, status="missing_ops_red"), 365, now, both)
-    check("and so is one missing from all of them", ok, why)
+    check("nor one missing from all of them", not ok, why)
+
+    # ...but the queue asking whether its own rows still hold is that question,
+    # and it is always worth the call.
+    ok, why = recheck.album_verdict(album(found=["RED"], missing=["OPS"], status="exists_red"),
+                                    365, now, both, confirming=True)
+    check("while a confirmation asks anyway", ok, why)
+    ok, why = recheck.album_verdict(album(found=both, status="exists_ops_red"),
+                                    365, now, both, confirming=True)
+    check("except for one nothing can change", not ok, why)
+
+    # The window is still the ceiling over all of it.
+    ok, why = recheck.album_verdict(album(missing=["OPS"], status="missing_ops", age_days=400), 365, now, both)
+    check("and an answer past the window is asked again either way", ok, why)
+
+    # A tracker that never answered is not an answer to trust. Tested against
+    # everything that replied, not only what has it: a release found on RED and
+    # missing from OPS has heard from both.
+    ok, why = recheck.album_verdict(album(found=["RED"], missing=[], status="exists_red"), 365, now, both)
+    check("a configured tracker nobody asked is still asked", ok, why)
     ok, why = recheck.album_verdict({"status": "skipped_filter", "checked_at": now}, 365, now, both)
     check("an album a filter stopped is reconsidered, so widening one brings it back", ok, why)
     ok, why = recheck.album_verdict({"status": "skipped_no_flac", "checked_at": now}, 365, now, both)

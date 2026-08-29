@@ -17,45 +17,79 @@ if TYPE_CHECKING:
     from lox.trackers.base import BaseGazelleApi
 
 
-async def check_requests(gazelle_site: "BaseGazelleApi", searchstrs: list[str]) -> int | None:
+async def check_requests(
+    gazelle_site: "BaseGazelleApi",
+    searchstrs: list[str],
+    linked_request_id: int | str | None = None,
+) -> int | None:
     """Search for requests on site and offer a choice to fill one.
+
+    Auto-answering fills exactly one thing without asking: the request this
+    release was already matched to by a request check, on this tracker. That
+    pairing was decided by a search that ran on its own time and can be looked
+    at in the lookup history -- filling it is carrying out a decision already
+    made, not making one on a default.
+
+    Everything else is asked, whatever the auto-answer setting says. A search
+    at upload time that turns up three candidates is a choice, and filling a
+    request is a claim against somebody else's specific request with no undo;
+    a release with no linked request at all is a discovery, and worth stopping
+    for. Auto-answering used to skip the question entirely, which made the
+    setting a way to turn request filling off; then it filled any single match,
+    which decided on a default the thing worth refusing.
 
     Args:
         gazelle_site: The tracker API instance.
         searchstrs: Search strings to find requests.
+        linked_request_id: The request this release is already matched to on
+            this tracker, when a request check found one.
 
     Returns:
-        Request ID if user chooses to fill one, None otherwise. Nothing is ever
-        filled in a dry run -- the whole upload is skipped there -- but the id
-        is still returned, so it appears in the payload the rehearsal reports.
+        Request ID if a request is to be filled, None otherwise. Nothing is
+        ever filled in a dry run -- the whole upload is skipped there -- but the
+        id is still returned, so it appears in the payload the rehearsal
+        reports.
     """
+    # The linked one is settled before anything is searched for: it costs a
+    # tracker call to confirm rather than a search, and it is the answer.
+    if cfg.upload.yes_all and linked_request_id:
+        try:
+            chosen = int(linked_request_id)
+        except (TypeError, ValueError):
+            chosen = 0
+        if chosen:
+            click.secho(
+                f"Filling request {chosen}, which this release was already matched to. "
+                "Prompts are being auto-answered.",
+                fg="cyan",
+            )
+            # Confirmed against the tracker even so: a match recorded last week
+            # can name a request somebody has since filled or deleted, and the
+            # confirmation is what re-reads it.
+            if await _confirm_request_id(gazelle_site, chosen) is True:
+                return chosen
+            click.secho(
+                f"Request {chosen} is no longer there; asking instead.",
+                fg="yellow",
+            )
+
     results = await get_request_results(gazelle_site, searchstrs)
     print_request_results(gazelle_site, results, " / ".join(searchstrs))
 
-    # Auto-answering means not being asked. This prompt's own default is "fill
-    # nothing", and that is the only safe thing to do unattended: filling a
-    # request is a claim against someone else's specific request, not a
-    # yes-or-no about your own upload, so it is not something to decide on a
-    # default while nobody is watching. Said out loud rather than skipped
-    # silently, because an unattended run that quietly declined to fill a
-    # request you were expecting it to fill is its own kind of wrong.
-    if cfg.upload.yes_all:
-        click.secho(
-            f"Not filling a request: prompts are being auto-answered ({len(results)} found).",
-            fg="yellow",
-        )
-        return None
-
-    # A dry run asks even when the search found nothing.
+    # Nothing matched, so there is nothing to decide. "Nothing matched. Paste a
+    # url to fill a request anyway, or don't" is a question with no subject: it
+    # offers an empty list and asks you to go and find a request id by hand, in
+    # the middle of an upload, for a release the search has just said nobody is
+    # asking for.
     #
-    # A real upload has a reason to stay quiet: no requests matched, so there is
-    # nothing to decide, and one fewer question between you and a posted
-    # torrent. A rehearsal has the opposite job. It exists so you can watch
-    # every step happen before one of them happens for real, and a step that
-    # silently does not run looks exactly like a step that is broken -- which is
-    # what this looked like. So it asks, with an empty list and the paste field,
-    # and you can still fill a request the search did not turn up.
-    if not results and not (cfg.upload.requests.always_ask_for_request_fill or cfg.upload.dry_run):
+    # A dry run used to be the exception, on the reasoning that a rehearsal
+    # should show every step it would take. It shows this one either way -- the
+    # search runs and reports what it found -- and stopping on a dead prompt is
+    # not a step, it is a wait.
+    #
+    # "Ask even when nothing matched" is still there for anyone who fills
+    # requests the search cannot find, and it is off by default.
+    if not results and not cfg.upload.requests.always_ask_for_request_fill:
         return None
 
     # Asked again when the id turns out not to exist, rather than abandoning
@@ -132,31 +166,40 @@ def print_request_results(gazelle_site, results, searchstr):
 def _print_request_details(gazelle_site, req):
     """Print request details.
 
+    Printed as a labelled block rather than a run of coloured lines, so the web
+    prompt bridge captures it as a table and shows it beside the question. It
+    used to scatter into the log, which is collapsed -- so "are you sure you
+    would like to fill this request" was asked with no way to see which
+    request, which is the whole of what the question is about.
+
     Read with .get throughout: the two trackers do not return the same set of
     fields, and a request missing one used to raise KeyError in the middle of
     the fill prompt -- which took the whole upload with it.
     """
-    click.secho("\nSelected Request:")
-    click.secho(gazelle_site.request_url(req.get("requestId", "")))
-    click.secho(f" {req.get('artist', '')}", fg="cyan", nl=False)
-    click.secho(f" - {req.get('title', '')} ", fg="cyan", nl=False)
-    click.secho(f"({req.get('year', '')})", fg="yellow")
-    click.secho(f" - {req.get('requestorName', '')} ", fg="cyan", nl=False)
-
     bounty = req.get("totalBounty") or req.get("bounty") or 0
     try:
         bounty_str = humanfriendly.format_size(int(bounty), binary=True)
     except (TypeError, ValueError):
         bounty_str = str(bounty)
-    click.secho(bounty_str, fg="cyan")
 
-    click.secho(f"Allowed Bitrate: {' | '.join(req.get('bitrateList') or ['Any'])}")
-    click.secho(f"Allowed Formats: {' | '.join(req.get('formatList') or ['Any'])}")
     media = list(req.get("mediaList") or [])
     if "CD" in media:
         media.remove("CD")
         media.append("CD " + str(req.get("logCue", "")))
-    click.secho(f"Allowed   Media: {' | '.join(media or ['Any'])}")
+
+    click.secho("\nSelected Request:")
+    rows = [
+        ("Request", f"{req.get('artist', '')} - {req.get('title', '')} ({req.get('year', '')})".strip()),
+        ("On", gazelle_site.request_url(req.get("requestId", ""))),
+        ("Asked by", str(req.get("requestorName", ""))),
+        ("Bounty", bounty_str),
+        ("Allowed formats", " | ".join(req.get("formatList") or ["Any"])),
+        ("Allowed bitrates", " | ".join(req.get("bitrateList") or ["Any"])),
+        ("Allowed media", " | ".join(media or ["Any"])),
+    ]
+    for label, value in rows:
+        if value:
+            click.secho(f"{label}: {value}")
     click.secho("Description:", fg="cyan")
     description = (req.get("bbDescription") or req.get("description") or "").splitlines(True)
 

@@ -26,14 +26,14 @@ dottorrents_dir = '.torrents'
 # ===============================
 # IMAGE UPLOAD SETTINGS
 # ===============================
-# Image hosters: ptpimg, ptscreens, oeimg, imgbb, catbox, imgbox
+# Image hosters: ptscreens, oeimg, imgbb, catbox, imgbox
+# ptpimg is gone -- ptpimg.me answers HTTP 500 to everything, its own upload
+# endpoint included -- so it is neither a default nor a choice any more.
 [image]
-image_uploader = "ptpimg"
-cover_uploader = "ptpimg"
-specs_uploader = "ptpimg"
+image_uploader = "catbox"
+cover_uploader = "catbox"
+specs_uploader = "catbox"
 
-# ptpimg API key (log into ptpimg, developpers tools, go to the Elements tab, and search for 'api_key')
-ptpimg_key = 'api_key'
 # ptscreens API key (log into ptscreens, settings, API)
 ptscreens_key = 'api_key'
 # oeimg API key (log into imgoe, settings, API)
@@ -196,7 +196,7 @@ session = 'get-from-site-cookie'
 # various_artist_threshold = 4
 # blacklisted_substitution = "_"
 # guests_in_track_title = false
-# various_artist_word = "Various"
+# various_artist_word = "Various Artists"
 # strip_useless_versions = true
 # add_edition_title_to_album_tag = true
 

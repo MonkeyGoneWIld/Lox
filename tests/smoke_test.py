@@ -259,6 +259,30 @@ async def main() -> int:
                 check("deletes a release folder", r.status == 200, f"got {r.status}")
             check("the files are gone", not os.path.exists(victim))
 
+            # --- a download that failed partway -------------------------
+            # The folder is created before the first track is fetched, so a
+            # download that fails halfway leaves a real folder behind -- nine
+            # of ten tracks, still named [WEB FLAC]. Delete was shown only for
+            # status "done", so that folder had no way off the page: Cancel had
+            # gone, Delete never appeared, and Clear finished drops the row and
+            # leaves the files.
+            broken = os.path.join(root, "Halfway - Release (2026) [WEB FLAC]")
+            os.makedirs(broken, exist_ok=True)
+            with open(os.path.join(broken, "01.flac"), "wb") as f:
+                f.write(b"x")
+            job.status = "failed"
+            job.error = "1 of 10 track(s) failed"
+            job.folder = broken
+            check("a failed download still knows its folder",
+                  downloader.jobs[job.id].folder == broken, str(job.folder))
+
+            async with s.post(f"{BASE}/api/folders/delete", headers=h, json={"folder": broken}) as r:
+                check("a half-finished folder can be deleted", r.status == 200, f"got {r.status}")
+            check("and the files really go", not os.path.exists(broken))
+            # Otherwise the row stays, offering Delete for a path that has gone.
+            check("the download it came from is forgotten with it",
+                  job.id not in downloader.jobs, str(list(downloader.jobs)))
+
             async with s.get(f"{BASE}/api/settings", headers=h) as r:
                 data = await r.json()
                 check("setting persisted and read back",

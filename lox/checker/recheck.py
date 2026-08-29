@@ -139,6 +139,7 @@ def album_verdict(
     recheck_after_days: int,
     now: float | None = None,
     trackers: Any = (),
+    confirming: bool = False,
 ) -> tuple[bool, str]:
     """Whether a scan should look this album up again.
 
@@ -146,25 +147,30 @@ def album_verdict(
     and it is about the request; an album has an answer per tracker, and which
     of them said what is the whole of the decision.
 
-    Skipped, and only this: the album is on every tracker there is. Nothing to
-    upload, no rule that could ever want it, and no setting that changes
-    either.
-
-    Looked up again, for reasons that are all the same reason -- the answer
-    can still move:
+    Looked up again, for reasons that are all the same reason -- nobody has
+    answered yet, so there is nothing to trust:
 
     * no tracker ever answered. A filter stopped it, or Deezer did. Both are
       settings or facts that change, and re-deciding costs no tracker call:
       the filters run before a tracker is contacted.
-    * it is missing from somewhere. That is a release worth uploading, so it
-      is worth knowing whether somebody has beaten you to it -- and if they
-      have, this is what takes it back out of the queue.
     * a configured tracker was never asked, because it was out of budget when
       the scan reached it.
     * the lookup failed.
 
-    The window is the ceiling over all of it: past it, even the settled answer
-    is asked again, which is what "Looked up more than ... ago" is for.
+    Otherwise the answer stands until the window runs out, whatever it was.
+    A release missing from a tracker used to be re-checked on every pass, on
+    the reasoning that somebody might have uploaded it first -- but that made
+    a scan pay a tracker call for every release already sitting in the queue,
+    every time it ran. Re-scanning a playlist a second time re-checked the four
+    releases the first scan had just put in the queue, which is the one set of
+    albums whose answer was newest.
+
+    Confirming the queue still holds is a real job; it is just not this one.
+    The queue's own "Re-check on trackers" and the background upkeep pass both
+    hand their albums straight to :meth:`MissingScanner.check`, which asks
+    every time and never consults this -- so they are unaffected. ``confirming``
+    states the rule for anything that does route a confirmation through the
+    sweep, so that case cannot quietly inherit the wrong answer.
 
     Args:
         entry: The stored album record, or None.
@@ -172,6 +178,8 @@ def album_verdict(
         now: Current epoch seconds, for tests.
         trackers: The tracker codes configured now, so a tracker that was
             never asked is not mistaken for one that answered.
+        confirming: True when the caller is asking whether a queued release
+            still qualifies, rather than sweeping for new work.
 
     Returns:
         ``(True, "")`` to look it up, or ``(False, reason)`` to skip it.
@@ -184,23 +192,34 @@ def album_verdict(
     found, missing = tracker_sets(entry)
     if not found and not missing:
         return True, ""
-    if missing:
-        return True, ""
 
     wanted = {str(t).upper() for t in trackers or ()}
     # "*" is the older "on every tracker asked", which names none of them and
     # so cannot be checked against the list of trackers configured now.
-    if "*" not in found and wanted - found:
+    #
+    # Against everything that answered, not just what has it: a release found
+    # on OPS and missing from RED has heard from both, and testing against
+    # `found` alone called RED unasked and swept it up again every time.
+    answered = found | missing
+    if "*" not in found and wanted - answered:
         return True, ""
 
-    where = "every tracker" if "*" in found else ", ".join(sorted(found))
+    # The queue asking whether its own rows still hold. That is the question
+    # the button is for, so it is always worth a call.
+    if missing and confirming:
+        return True, ""
+
+    if missing:
+        where = f"missing from {', '.join(sorted(missing))}"
+    else:
+        where = "already on " + ("every tracker" if "*" in found else ", ".join(sorted(found)))
     age = age_days(entry, now)
     if age is None:
-        return False, f"already on {where}, no date recorded"
+        return False, f"{where}, no date recorded"
     if recheck_after_days and age >= recheck_after_days:
         return True, ""
     when = "today" if age < 1 else f"{int(age)} day{'s' if int(age) != 1 else ''} ago"
-    return False, f"already on {where}, checked {when}"
+    return False, f"{where}, checked {when}"
 
 
 def plan(

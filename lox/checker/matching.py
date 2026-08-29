@@ -178,6 +178,48 @@ def strip_prefix(title: str) -> str:
     return title
 
 
+def title_head(title: str) -> str:
+    """The first half of an ``X - Y`` or ``X: Y`` title, when it has one.
+
+    :func:`strip_prefix` keeps the second half, on the assumption that the
+    first is a composer or a series name -- which is right for
+    "Beethoven - Symphony No. 5" and wrong for "BLINGY - The 7th Album", where
+    the first half is the album and the second is a subtitle. Nothing can tell
+    those apart from the string alone, so both halves are now tried rather than
+    one being discarded.
+
+    Args:
+        title: The release title.
+
+    Returns:
+        The first half, or "" when the title is not of that shape.
+    """
+    if strip_prefix(title) == title:
+        return ""
+    head = title.split(":", 1)[0] if ":" in title else re.split(r"\s*-\s+", title, maxsplit=1)[0]
+    head = head.strip()
+    return head if head and head != title else ""
+
+
+#: A run of digits that is not a year. Years are edition markers -- "(2009
+#: Remaster)" -- and are already dropped from the base title; everything else
+#: is part of what the release IS.
+_YEAR_RE = re.compile(r"^(?:1[89]|20)\d{2}$")
+
+
+def numbers_in(title: str) -> list[str]:
+    """The volume, part and disc numbers a title carries, years excluded.
+
+    Args:
+        title: A release title.
+
+    Returns:
+        Sorted digit runs, e.g. ``["4"]`` for "Instrumental Remixes Vol. 4".
+    """
+    found = [n for n in re.findall(r"\d+", normalize_keep_spaces(title)) if not _YEAR_RE.match(n)]
+    return sorted(found)
+
+
 def base_title(title: str) -> str:
     """Reduce a title to its core words, dropping editions and years."""
     reduced = strip_prefix(strip_parenthetical(title))
@@ -210,12 +252,28 @@ def title_matches(deezer_title: str, tracker_title: str) -> tuple[bool, float]:
     if not deezer_title or not tracker_title:
         return False, 0.0
 
+    # "Instrumental Remixes Vol. 4" is not "Instrumental Remixes, Vol. 2", and
+    # the similarity below cannot see the difference: it is a Jaccard measure
+    # over character SETS, so two long titles differing by one digit score 0.87
+    # and match. A volume, part or disc number is what distinguishes one
+    # release from another in a series, so when both sides carry numbers they
+    # have to be the same numbers.
+    left_numbers, right_numbers = numbers_in(deezer_title), numbers_in(tracker_title)
+    if left_numbers and right_numbers and left_numbers != right_numbers:
+        return False, 0.0
+
     pairs = (
         (deezer_title, tracker_title),
         (strip_prefix(deezer_title), tracker_title),
         (deezer_title, strip_prefix(tracker_title)),
         (strip_prefix(deezer_title), strip_prefix(tracker_title)),
         (base_title(deezer_title), base_title(tracker_title)),
+        # Either half of a split title can be the album name, so both are
+        # compared. Keeping only the second half is what made "BLINGY - The
+        # 7th Album" fail to match the group actually called "BLINGY".
+        (title_head(deezer_title), tracker_title),
+        (deezer_title, title_head(tracker_title)),
+        (title_head(deezer_title), title_head(tracker_title)),
     )
     for left, right in pairs:
         if left and right and normalize(left) == normalize(right):
@@ -394,6 +452,16 @@ def build_search_queries(deezer_info: dict) -> list[str]:
     base = base_title(title)
     if artist and base:
         queries.append(f"{artist} {base}")
+
+    # Both halves of a split title, because either can be the album name. Only
+    # the second was ever searched for, so a release called "BLINGY - The 7th
+    # Album" was looked up as "The 7th Album" -- which finds nothing, and the
+    # release was reported as missing from a tracker that had it.
+    head = title_head(title)
+    if head:
+        if artist:
+            queries.append(f"{artist} {head}")
+        queries.append(head)
 
     stripped = strip_prefix(title)
     if stripped != title:
