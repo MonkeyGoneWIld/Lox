@@ -50,7 +50,7 @@ packages = ["lox", "data"]
 py-modules = ["run"]
 
 [dependency-groups]
-dev = ["ruff>=0.16.4"]
+dev = ["ruff>=0.16.5"]
 
 [tool.ruff]
 line-length = 120
